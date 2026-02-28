@@ -1,0 +1,65 @@
+<?php
+require '../../core/config.php';
+require_once '../../core/response.php';
+
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// Basic Validation
+if (!isset($data->name) || !isset($data->email) || !isset($data->password)) {
+    sendResponse(false, null, 'Name, email, and password are required.', 400, 'INVALID_INPUT');
+}
+
+// Sanitize and Validate Inputs
+$name = trim($data->name);
+$email = trim($data->email);
+$password = trim($data->password);
+
+if (empty($name)) {
+    sendResponse(false, null, 'Name cannot be empty.', 400, 'INVALID_INPUT');
+}
+
+if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    sendResponse(false, null, 'Invalid email format.', 400, 'INVALID_INPUT');
+}
+
+// Use our global password strength validator from config.php
+if (!validatePasswordStrength($password)) {
+    sendResponse(false, null, 'Password must be at least 8 characters and include a letter, number, and symbol.', 400, 'WEAK_PASSWORD');
+}
+
+try {
+    // Check if user already exists
+    $sql_check = "SELECT id FROM users WHERE email = ?";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->bind_param("s", $email);
+    $stmt_check->execute();
+    if ($stmt_check->get_result()->num_rows > 0) {
+        $stmt_check->close();
+        sendResponse(false, null, 'An account with this email address already exists.', 409, 'DUPLICATE_ENTRY');
+    }
+    $stmt_check->close();
+
+    // Hash the password and insert the new user
+    $hashed_password = password_hash($password, PASSWORD_BCRYPT);
+    $is_verified = 1; // Admin-created users are auto-verified
+    $status = 'active';
+
+    $sql_insert = "INSERT INTO users (name, email, password, is_verified, status) VALUES (?, ?, ?, ?, ?)";
+    $stmt_insert = $conn->prepare($sql_insert);
+    $stmt_insert->bind_param("sssis", $name, $email, $hashed_password, $is_verified, $status);
+    
+    if ($stmt_insert->execute()) {
+        sendResponse(true, ['userId' => $conn->insert_id], 'User created successfully!', 201);
+    } else {
+        throw new Exception("Database insert failed: " . $stmt_insert->error);
+    }
+    $stmt_insert->close();
+
+} catch (Exception $e) {
+    error_log("Error in add_user.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

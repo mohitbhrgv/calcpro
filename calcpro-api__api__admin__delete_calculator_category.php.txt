@@ -1,0 +1,62 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php'; 
+
+// --- Security Check ---
+// Ensures only a logged-in admin can perform a delete operation.
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    // A valid, numeric ID is absolutely required to know which category to delete.
+    if (!isset($data->id) || !is_numeric($data->id)) {
+        sendResponse(false, null, 'A valid Category ID is required.', 400, 'INVALID_INPUT');
+    }
+
+    // Sanitize the ID to ensure it's an integer.
+    $id = (int)$data->id;
+
+    // --- 3. The SQL DELETE Query ---
+    // This is a straightforward command to delete the row from the 'calculator_categories'
+    // table where the 'id' column matches the one provided.
+    $sql = "DELETE FROM calculator_categories WHERE id = ?";
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        throw new Exception('Failed to prepare the SQL statement.');
+    }
+
+    $stmt->bind_param("i", $id);
+
+    // --- 4. Execute and Send Response ---
+    if ($stmt->execute()) {
+        // We check 'affected_rows' to confirm that a category was actually deleted.
+        if ($stmt->affected_rows > 0) {
+            // A row was deleted successfully.
+            sendResponse(true, null, 'Category deleted successfully.', 200);
+        } else {
+            // No rows were affected, which means no category with that ID was found.
+            // This could happen if the admin clicks delete twice quickly.
+            sendResponse(false, null, 'Category not found or already deleted.', 404, 'NOT_FOUND');
+        }
+    } else {
+        // If the database query itself fails.
+        throw new Exception("Database delete failed: " . $stmt->error);
+    }
+
+    $stmt->close();
+
+} catch (Exception $e) {
+    // This will catch any errors from the 'try' block.
+    error_log("Error in delete_calculator_category.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

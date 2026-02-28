@@ -1,0 +1,14 @@
+<?php
+require '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// The verifyAdminToken() function is the only thing we need.
+// It will automatically handle a valid token by doing nothing,
+// or it will send a 401 response and exit if the token is invalid.
+verifyAdminToken();
+
+// If the script reaches this line, it means the token was valid.
+sendResponse(true, ['status' => 'valid'], 'Token is valid.', 200);
+
+?>

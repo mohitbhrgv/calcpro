@@ -1,0 +1,147 @@
+<?php
+// File: calcpro-api/api/admin/add_page.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->title) || empty(trim($data->title))) {
+        sendResponse(false, null, 'Page title is required.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->slug) || empty(trim($data->slug))) {
+        sendResponse(false, null, 'Page slug is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize and Prepare Data ---
+    $title = trim($data->title);
+    $slug = trim($data->slug);
+    $status = in_array($data->status, ['published', 'draft']) ? $data->status : 'draft';
+    
+    $content_json = json_encode($data->content_json ?? new stdClass());
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new Exception('Invalid content JSON provided.');
+    }
+
+    $meta_title = isset($data->metaTitle) ? trim($data->metaTitle) : null;
+    $meta_description = isset($data->metaDescription) ? trim($data->metaDescription) : null;
+    $focus_keywords = isset($data->focusKeywords) ? trim($data->focusKeywords) : null;
+    
+    $og_image = isset($data->og_image) ? trim($data->og_image) : null;
+    $canonical_url = isset($data->canonical_url) ? trim($data->canonical_url) : null;
+
+    // Social SEO (Facebook)
+    $ogTitle = isset($data->ogTitle) ? trim($data->ogTitle) : null;
+    $ogDescription = isset($data->ogDescription) ? trim($data->ogDescription) : null;
+
+    // Social SEO (Twitter) - NEW
+    $twitterTitle = isset($data->twitterTitle) ? trim($data->twitterTitle) : null;
+    $twitterDescription = isset($data->twitterDescription) ? trim($data->twitterDescription) : null;
+    $twitterImage = isset($data->twitterImage) ? trim($data->twitterImage) : null;
+
+    // Robots Meta
+    $no_index = (isset($data->no_index) && $data->no_index !== null) ? (int)$data->no_index : null;
+    $no_follow = (isset($data->no_follow) && $data->no_follow !== null) ? (int)$data->no_follow : null;
+    $no_archive = (isset($data->no_archive) && $data->no_archive !== null) ? (int)$data->no_archive : null;
+    $no_image_index = (isset($data->no_image_index) && $data->no_image_index !== null) ? (int)$data->no_image_index : null;
+    $no_snippet = (isset($data->no_snippet) && $data->no_snippet !== null) ? (int)$data->no_snippet : null;
+
+    // Advanced Robot Meta
+    $maxSnippet = isset($data->max_snippet) && $data->max_snippet !== null ? (int)$data->max_snippet : null;
+    $maxVideoPreview = isset($data->max_video_preview) && $data->max_video_preview !== null ? (int)$data->max_video_preview : null;
+    $maxImagePreview = isset($data->max_image_preview) ? trim($data->max_image_preview) : null;
+
+    $schema_json = (isset($data->schema_json) && (is_object($data->schema_json) || is_array($data->schema_json))) 
+                    ? json_encode($data->schema_json) 
+                    : '[]';
+    
+    // --- 4. Check for Duplicate Slug ---
+    $sql_check = "SELECT id FROM pages WHERE slug = ?";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->bind_param("s", $slug);
+    $stmt_check->execute();
+    if ($stmt_check->get_result()->num_rows > 0) {
+        $stmt_check->close();
+        sendResponse(false, null, 'A page with this slug already exists.', 409, 'DUPLICATE_SLUG');
+    }
+    $stmt_check->close();
+
+    // --- 5. The SQL INSERT Query ---
+    $sql = "
+        INSERT INTO pages (
+            title, slug, content_json, status, 
+            meta_title, meta_description, focus_keywords, canonical_url,
+            og_title, og_description, og_image, 
+            twitter_title, twitter_description, twitter_image,
+            no_index, no_follow, no_archive, no_image_index, no_snippet,
+            max_snippet, max_video_preview, max_image_preview,
+            schema_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ";
+
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        throw new Exception("Database prepare failed: " . $conn->error);
+    }
+
+    // Bind Params: 
+    // 8 strings (title...canonical_url)
+    // 3 strings (og)
+    // 3 strings (twitter) <-- ADDED
+    // 5 ints (robots)
+    // 2 ints (advanced)
+    // 2 strings (max_image, schema)
+    // Total: 14 strings + 7 ints + 2 strings = "ssssssssssssssiiiiiiiss" (23 chars)
+    $stmt->bind_param(
+        "ssssssssssssssiiiiiiiss", 
+        $title, 
+        $slug, 
+        $content_json, 
+        $status, 
+        $meta_title, 
+        $meta_description,
+        $focus_keywords,
+        $canonical_url,
+        $ogTitle,
+        $ogDescription,
+        $og_image,
+        $twitterTitle, 
+        $twitterDescription, 
+        $twitterImage,
+        $no_index,
+        $no_follow,
+        $no_archive,
+        $no_image_index,
+        $no_snippet,
+        $maxSnippet,
+        $maxVideoPreview,
+        $maxImagePreview,
+        $schema_json
+    );
+
+    // --- 6. Execute and Send Response ---
+    if ($stmt->execute()) {
+        $newPageId = $conn->insert_id;
+        sendResponse(true, ['id' => $newPageId], 'Page created successfully!', 201);
+    } else {
+        throw new Exception("Database insert failed: " . $stmt->error);
+    }
+    $stmt->close();
+
+} catch (Exception $e) {
+    error_log("Error in add_page.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

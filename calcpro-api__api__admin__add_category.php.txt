@@ -1,0 +1,87 @@
+<?php
+// Include the core configuration and response helper files
+require '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php'; // Ensure admin access
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// Get the data sent from the frontend
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// Basic Validation
+if (!isset($data->name) || !isset($data->slug)) {
+    sendResponse(false, null, 'Category name and slug are required.', 400, 'INVALID_INPUT');
+}
+
+// Sanitize and Validate Inputs
+$name = trim($data->name);
+$slug = trim($data->slug);
+$description = isset($data->description) ? trim($data->description) : null;
+$meta_title = isset($data->meta_title) ? trim($data->meta_title) : null;
+$meta_description = isset($data->meta_description) ? trim($data->meta_description) : null;
+
+// Handle Parent ID
+$parent_id = (isset($data->parent_id) && is_numeric($data->parent_id) && $data->parent_id > 0) 
+             ? (int)$data->parent_id 
+             : null;
+
+if (empty($name) || empty($slug)) {
+    sendResponse(false, null, 'Category name and slug cannot be empty.', 400, 'INVALID_INPUT');
+}
+
+try {
+    // Check for Duplicates
+    $sql_check = "SELECT id FROM categories WHERE name = ? OR slug = ?";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->bind_param("ss", $name, $slug);
+    $stmt_check->execute();
+    if ($stmt_check->get_result()->num_rows > 0) {
+        $stmt_check->close();
+        sendResponse(false, null, 'A category with this name or slug already exists.', 409, 'DUPLICATE_ENTRY');
+    }
+    $stmt_check->close();
+
+    // Insert the New Category
+    $sql_insert = "INSERT INTO categories (name, slug, description, parent_id, meta_title, meta_description) VALUES (?, ?, ?, ?, ?, ?)";
+    $stmt_insert = $conn->prepare($sql_insert);
+    
+    if ($stmt_insert === false) {
+        throw new Exception('Database prepare failed: ' . $conn->error);
+    }
+    
+    // --- BUG FIX: Corrected Type String ---
+    // Previous: "sssiis" (Meta Title as INT) -> WRONG
+    // New: "sssiss" (String, String, String, Integer, String, String) -> CORRECT
+    $stmt_insert->bind_param("sssiss", $name, $slug, $description, $parent_id, $meta_title, $meta_description);
+    
+    if ($stmt_insert->execute()) {
+        $new_category_id = $conn->insert_id;
+        
+        // Fetch the newly created category to send it back
+        $sql_fetch = "SELECT id, name, slug, description, parent_id, meta_title, meta_description, created_at FROM categories WHERE id = ?";
+        $stmt_fetch = $conn->prepare($sql_fetch);
+        $stmt_fetch->bind_param("i", $new_category_id);
+        $stmt_fetch->execute();
+        $new_category = $stmt_fetch->get_result()->fetch_assoc();
+        $stmt_fetch->close();
+
+        // Add default post count for frontend consistency
+        $new_category['post_count'] = 0;
+        $new_category['parent_id'] = $new_category['parent_id'] ? (int)$new_category['parent_id'] : null;
+
+        sendResponse(true, $new_category, 'Category created successfully!', 201);
+    } else {
+        throw new Exception("Database insert failed: " . $stmt_insert->error);
+    }
+    $stmt_insert->close();
+
+} catch (Exception $e) {
+    error_log("Error in add_category.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

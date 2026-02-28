@@ -1,0 +1,72 @@
+<?php
+// File: calcpro-api/api/admin/delete_categories_bulk.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->ids) || !is_array($data->ids) || empty($data->ids)) {
+        sendResponse(false, null, 'No items selected.', 400, 'INVALID_INPUT');
+    }
+
+    // Sanitize IDs
+    $ids = array_map('intval', $data->ids);
+    $id_list = implode(',', $ids);
+
+    // --- 3. Execute Delete ---
+    // Note: If any category is in use (FK constraint), this single query might fail for all.
+    // To handle this gracefully, we check usage first or handle the specific error.
+    
+    // Check if any are in use by posts
+    $check_sql = "SELECT COUNT(*) as usage_count FROM post_categories WHERE category_id IN ($id_list)";
+    $check_result = $conn->query($check_sql);
+    $usage = $check_result->fetch_assoc();
+
+    if ($usage['usage_count'] > 0) {
+        sendResponse(false, null, 'Some selected categories are currently assigned to posts. Please unassign them before deleting.', 409, 'CONFLICT_IN_USE');
+    }
+    
+    // Check if any have sub-categories (Parent Constraint)
+    $parent_check_sql = "SELECT COUNT(*) as child_count FROM categories WHERE parent_id IN ($id_list)";
+    $parent_result = $conn->query($parent_check_sql);
+    $children = $parent_result->fetch_assoc();
+
+    if ($children['child_count'] > 0) {
+        sendResponse(false, null, 'Some selected categories act as parents to other categories. Please reassign sub-categories first.', 409, 'CONFLICT_PARENT');
+    }
+
+    // Proceed with Delete
+    $sql = "DELETE FROM categories WHERE id IN ($id_list)";
+
+    if ($conn->query($sql) === TRUE) {
+         $affected = $conn->affected_rows;
+         if ($affected > 0) {
+             sendResponse(true, ['affected' => $affected], "Selected categories deleted successfully.", 200);
+         } else {
+             sendResponse(false, null, 'No records were deleted.', 404, 'NO_CHANGES');
+         }
+    } else {
+         throw new Exception("Database query failed: " . $conn->error);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in delete_categories_bulk.php: " . $e->getMessage());
+    // Fallback for unexpected constraint errors
+    if ($conn->errno == 1451) {
+        sendResponse(false, null, 'Cannot delete one or more categories because they are in use.', 409, 'CONFLICT_IN_USE');
+    }
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

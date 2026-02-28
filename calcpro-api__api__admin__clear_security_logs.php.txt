@@ -1,0 +1,52 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// Optional: You could add a role check here to ensure only a 'super_admin' can perform this.
+// if ($admin_data->adminRole !== 'super_admin') {
+//     sendResponse(false, null, 'You do not have permission to perform this action.', 403, 'FORBIDDEN');
+// }
+
+try {
+    // --- Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    if (!isset($data->log_type)) {
+        sendResponse(false, null, 'A log type is required.', 400, 'INVALID_INPUT');
+    }
+
+    $log_type = $data->log_type;
+
+    $allowed_tables = [
+        'login_attempts' => 'Failed Login Attempts',
+        'temporary_blocks' => 'Temporary Block Log'
+    ];
+
+    if (!array_key_exists($log_type, $allowed_tables)) {
+        sendResponse(false, null, 'Invalid log type specified.', 400, 'INVALID_LOG_TYPE');
+    }
+
+    // --- Perform the TRUNCATE operation ---
+    // TRUNCATE is generally faster than DELETE FROM for clearing an entire table.
+    $sql = "TRUNCATE TABLE `{$log_type}`";
+
+    if ($conn->query($sql) === TRUE) {
+        $log_name = $allowed_tables[$log_type];
+        sendResponse(true, null, "The '{$log_name}' log has been cleared successfully.");
+    } else {
+        throw new Exception("Database query failed: " . $conn->error);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in clear_security_logs.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred while clearing logs.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

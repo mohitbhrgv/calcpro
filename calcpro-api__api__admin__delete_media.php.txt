@@ -1,0 +1,114 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->id) || !is_numeric($data->id)) {
+        sendResponse(false, null, 'A valid Media ID is required.', 400, 'INVALID_INPUT');
+    }
+    $mediaId = (int)$data->id;
+
+    // --- 3. Start Database Transaction ---
+    $conn->begin_transaction();
+
+    // --- 4. Fetch the media record ---
+    $sql_fetch = "SELECT upload_path FROM media WHERE id = ?";
+    $stmt_fetch = $conn->prepare($sql_fetch);
+    $stmt_fetch->bind_param("i", $mediaId);
+    $stmt_fetch->execute();
+    $result = $stmt_fetch->get_result();
+    
+    if ($result->num_rows === 0) {
+        $stmt_fetch->close();
+        $conn->rollback();
+        sendResponse(false, null, 'Media item not found.', 404, 'NOT_FOUND');
+    }
+    $media = $result->fetch_assoc();
+    $relativePath = $media['upload_path'];
+    $fullUrl = rtrim($_ENV['API_PUBLIC_URL'], '/') . '/' . $relativePath;
+    $filePath = PROJECT_ROOT . '/' . $relativePath;
+    $stmt_fetch->close();
+
+    // --- 5. CLEANUP: Body Content (Remove <img> tags) ---
+    $escapedUrl = preg_quote($fullUrl, '/');
+    $regexPattern = "<p><img src=\\\"" . $escapedUrl . "\\\"[^>]*><\\/p>|<img src=\\\"" . $escapedUrl . "\\\"[^>]*>";
+    $likePattern = '%' . $fullUrl . '%';
+
+    // Posts Content
+    $stmtPosts = $conn->prepare("UPDATE posts SET content = REGEXP_REPLACE(content, ?, '') WHERE content LIKE ?");
+    $stmtPosts->bind_param("ss", $regexPattern, $likePattern);
+    $stmtPosts->execute();
+    $stmtPosts->close();
+
+    // Calculators Content
+    $stmtCalcs = $conn->prepare("UPDATE calculators SET content = REGEXP_REPLACE(content, ?, '') WHERE content LIKE ?");
+    $stmtCalcs->bind_param("ss", $regexPattern, $likePattern);
+    $stmtCalcs->execute();
+    $stmtCalcs->close();
+
+    // --- 6. CLEANUP: Relational Fields (Featured Image ID) ---
+    // Sets featured_image_id to NULL if it matches the deleted media ID
+    $conn->query("UPDATE posts SET featured_image_id = NULL WHERE featured_image_id = $mediaId");
+
+    // --- 7. CLEANUP: String References (OG Image, Settings) ---
+    // Sets the column to empty string or NULL if it exactly matches the URL
+    
+    // Posts & Calculators OG Image
+    $stmtOgPosts = $conn->prepare("UPDATE posts SET og_image = '' WHERE og_image = ?");
+    $stmtOgPosts->bind_param("s", $fullUrl);
+    $stmtOgPosts->execute();
+    $stmtOgPosts->close();
+
+    $stmtOgCalcs = $conn->prepare("UPDATE calculators SET og_image = '' WHERE og_image = ?");
+    $stmtOgCalcs->bind_param("s", $fullUrl);
+    $stmtOgCalcs->execute();
+    $stmtOgCalcs->close();
+
+    // Pages (OG Image + Content JSON is tricky, handling OG Image primarily)
+    $stmtOgPages = $conn->prepare("UPDATE pages SET og_image = '' WHERE og_image = ?");
+    $stmtOgPages->bind_param("s", $fullUrl);
+    $stmtOgPages->execute();
+    $stmtOgPages->close();
+
+    // Global Settings (Logo, Default OG)
+    $stmtSettings = $conn->prepare("UPDATE settings SET setting_value = '' WHERE setting_value = ?");
+    $stmtSettings->bind_param("s", $fullUrl);
+    $stmtSettings->execute();
+    $stmtSettings->close();
+    
+    // --- 8. Delete Record ---
+    $sql_delete = "DELETE FROM media WHERE id = ?";
+    $stmt_delete = $conn->prepare($sql_delete);
+    $stmt_delete->bind_param("i", $mediaId);
+    $stmt_delete->execute();
+    $stmt_delete->close();
+
+    // --- 9. Delete Physical File ---
+    if (file_exists($filePath)) {
+        if (!unlink($filePath)) {
+            $conn->rollback();
+            throw new Exception('Could not delete the file from server.');
+        }
+    }
+
+    $conn->commit();
+    sendResponse(true, null, 'Media permanently deleted and removed from all content.', 200);
+
+} catch (Exception $e) {
+    $conn->rollback();
+    error_log("Error in delete_media.php: " . $e->getMessage());
+    sendResponse(false, null, 'Server error: ' . $e->getMessage(), 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

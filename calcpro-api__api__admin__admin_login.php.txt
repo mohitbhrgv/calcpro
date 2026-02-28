@@ -1,0 +1,201 @@
+<?php
+// Use the JWT and PHPMailer classes
+use Firebase\JWT\JWT;
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+// Use robust, absolute paths
+require_once dirname(__DIR__, 2) . '/core/config.php';
+require_once dirname(__DIR__, 2) . '/core/response.php';
+require_once dirname(__DIR__, 2) . '/core/SecurityGuard.php'; 
+
+/**
+ * Generates and sends an OTP to the specified admin.
+ */
+function generateAndSendOtp($conn, $admin, $ip_address) {
+    $otp_code = random_int(100000, 999999);
+    $otp_hash = password_hash($otp_code, PASSWORD_BCRYPT);
+    $expires_at = date('Y-m-d H:i:s', time() + 600); // 10 minutes
+
+    $delete_stmt = $conn->prepare("DELETE FROM admin_otp_verifications WHERE admin_id = ?");
+    $delete_stmt->bind_param("i", $admin['id']);
+    $delete_stmt->execute();
+    $delete_stmt->close();
+
+    $insert_stmt = $conn->prepare("INSERT INTO admin_otp_verifications (admin_id, otp_code_hash, ip_address, expires_at) VALUES (?, ?, ?, ?)");
+    $insert_stmt->bind_param("isss", $admin['id'], $otp_hash, $ip_address, $expires_at);
+    if (!$insert_stmt->execute()) {
+        throw new Exception('Failed to store OTP in the database.');
+    }
+    $insert_stmt->close();
+
+    $subject = 'Your CalcPro Admin Verification Code';
+    $htmlBody = "<p>Hello {$admin['name']},</p><p>A login attempt requires verification. Please use the following code to complete your sign-in:</p><h2 style='text-align:center; font-size: 28px; letter-spacing: 4px; color: #1d4ed8;'>{$otp_code}</h2><p>This code is valid for 10 minutes and was requested from the IP address: {$ip_address}.</p><p>If you did not request this code, please secure your account immediately.</p>";
+    $altBody = "Your CalcPro verification code is: {$otp_code}. It is valid for 10 minutes.";
+
+    sendSecurityEmail($admin['email'], $admin['name'], $subject, $htmlBody, $altBody);
+}
+
+// --- Main Script Execution ---
+
+$ip_address = $_SERVER['REMOTE_ADDR'];
+// Browser Fingerprinting
+$user_agent = $_SERVER['HTTP_USER_AGENT'] ?? 'unknown';
+$ua_hash = hash('sha256', $user_agent);
+
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+if (!isset($data->email) || !isset($data->password)) {
+    sendResponse(false, null, 'Email and password are required.', 400, 'INVALID_INPUT');
+}
+
+$email = trim($data->email);
+$password = trim($data->password);
+
+// --- 1. Security Pre-Flight Check ---
+$guard = new SecurityGuard($conn, $ip_address);
+$securityStatus = $guard->checkIpStatus();
+
+if (!$securityStatus['allowed']) {
+    sendResponse(false, null, $securityStatus['message'], 403, $securityStatus['code']);
+}
+
+try {
+    // --- 2. Find Admin User ---
+    $sql = "SELECT id, name, email, password, role FROM admins WHERE email = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("s", $email);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    $admin = null;
+    $isValidLogin = false;
+
+    if ($result->num_rows === 1) {
+        $admin = $result->fetch_assoc();
+        
+        if (password_verify($password, $admin['password'])) {
+            $isValidLogin = true;
+        }
+    }
+
+    // --- 3. Handle Login Logic ---
+    if ($isValidLogin) {
+        // --- A. Login Success ---
+        
+        // Clear previous failure logs for this IP
+        $conn->query("DELETE FROM login_attempts WHERE ip_address = '{$ip_address}'");
+        $conn->query("DELETE FROM admin_login_failures WHERE ip_address = '{$ip_address}'");
+
+        // Fetch 2FA Settings
+        $settings_sql = "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('security_2fa_enabled', 'security_2fa_frequency')";
+        $settings_result = $conn->query($settings_sql);
+        $settings = [];
+        while ($row = $settings_result->fetch_assoc()) {
+            $settings[$row['setting_key']] = $row['setting_value'];
+        }
+        
+        $is_2fa_enabled = ($settings['security_2fa_enabled'] ?? 'true') === 'true';
+        $frequency = $settings['security_2fa_frequency'] ?? 'daily';
+        $require_otp = false;
+
+        if ($is_2fa_enabled) {
+            if ($frequency === 'always') {
+                $require_otp = true;
+            } else {
+                // --- CORRECTED QUERY: Use admin_trusted_devices ---
+                // Checks for a valid trust record within the last 24 hours
+                $check_sql = "
+                    SELECT id 
+                    FROM admin_trusted_devices 
+                    WHERE admin_id = ? 
+                    AND ip_address = ? 
+                    AND user_agent_hash = ?
+                    AND last_verified_at > NOW() - INTERVAL 24 HOUR
+                ";
+                
+                $trust_stmt = $conn->prepare($check_sql);
+                $trust_stmt->bind_param("iss", $admin['id'], $ip_address, $ua_hash);
+                $trust_stmt->execute();
+                
+                if ($trust_stmt->get_result()->num_rows === 0) {
+                    $require_otp = true;
+                }
+                $trust_stmt->close();
+            }
+        }
+
+        if ($require_otp) {
+            generateAndSendOtp($conn, $admin, $ip_address);
+            sendResponse(true, ['otp_required' => true], 'Verification code sent to your email.');
+        } else {
+            // Direct Login (Refresh the trust timestamp)
+            if ($is_2fa_enabled && $frequency === 'daily') {
+                 // --- CORRECTED QUERY: Use admin_trusted_devices ---
+                 $refresh_trust = $conn->prepare("UPDATE admin_trusted_devices SET last_verified_at = NOW() WHERE admin_id = ? AND ip_address = ? AND user_agent_hash = ?");
+                 $refresh_trust->bind_param("iss", $admin['id'], $ip_address, $ua_hash);
+                 $refresh_trust->execute();
+                 $refresh_trust->close();
+            }
+
+            $jwtSecretKey = $_ENV['JWT_SECRET'];
+            $payload = [
+                'iat' => time(), 
+                'iss' => $_SERVER['SERVER_NAME'], 
+                'exp' => time() + 86400, // 24 Hours
+                'data' => ['adminId' => $admin['id'], 'adminRole' => $admin['role']]
+            ];
+            $jwt = JWT::encode($payload, $jwtSecretKey, 'HS256');
+            
+            $conn->query("UPDATE admins SET last_login = NOW() WHERE id = {$admin['id']}");
+            
+            $conn->query("DELETE FROM admin_otp_verifications WHERE admin_id = {$admin['id']}");
+            
+            $responseData = ['user' => ['id' => $admin['id'], 'name' => $admin['name'], 'email' => $admin['email'], 'role' => $admin['role']], 'token' => $jwt];
+            sendResponse(true, $responseData, 'Login successful!', 200);
+        }
+
+    } else {
+        // --- B. Login Failed ---
+        if ($admin) {
+            $guard->logFailure($email, $admin['id'], 'password');
+        } else {
+            $guard->logFailure($email, null, 'email');
+        }
+
+        $newStatus = $guard->checkIpStatus();
+
+        if (!$newStatus['allowed']) {
+            if ($admin) {
+                $unblock_token = bin2hex(random_bytes(32));
+                $unblock_token_hash = hash('sha256', $unblock_token);
+                $unblock_expiry = date('Y-m-d H:i:s', time() + 3600);
+
+                $insert_token_stmt = $conn->prepare("INSERT INTO admin_unblock_tokens (admin_id, ip_address_blocked, token_hash, expires_at) VALUES (?, ?, ?, ?)");
+                $insert_token_stmt->bind_param("isss", $admin['id'], $ip_address, $unblock_token_hash, $unblock_expiry);
+                
+                if ($insert_token_stmt->execute()) {
+                    $unlock_link = rtrim($_ENV['ADMIN_FRONTEND_URL'], '/') . "/#/admin/unlock-account/" . $unblock_token;
+                    $subject = 'Account Access Alert & Recovery Link';
+                    $htmlBody = "<p>Hello {$admin['name']},</p><p>Multiple failed login attempts were detected from your IP address: <strong>{$ip_address}</strong>.</p><p>As a security measure, this IP has been temporarily blocked.</p><p>If this was you, click the link below to verify your identity and unblock your IP immediately:</p><p><a href='{$unlock_link}'>Unblock My IP Address</a></p>";
+                    $altBody = "Unlock Link: {$unlock_link}";
+                    
+                    sendSecurityEmail($admin['email'], $admin['name'], $subject, $htmlBody, $altBody);
+                }
+                $insert_token_stmt->close();
+            }
+            sendResponse(false, null, $newStatus['message'], 429, $newStatus['code']);
+        }
+        sendResponse(false, null, 'Invalid email or password.', 401, 'AUTH_FAILED');
+    }
+    
+    $stmt->close();
+
+} catch (Exception $e) {
+    error_log("Error in admin_login.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

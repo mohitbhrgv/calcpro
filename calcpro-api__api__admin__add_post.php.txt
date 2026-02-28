@@ -1,0 +1,192 @@
+<?php
+// File: calcpro-api/api/admin/add_post.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Basic Validation ---
+    if (!isset($data->title) || empty(trim($data->title))) {
+        sendResponse(false, null, 'Post title is required.', 400, 'INVALID_INPUT');
+    }
+    
+    // --- 3. Sanitize and Prepare Data ---
+    $adminId = $admin_data->adminId; 
+    $title = trim($data->title);
+    
+    // Auto-generate slug if empty
+    $slug = !empty($data->slug) 
+        ? trim($data->slug) 
+        : strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $title)));
+
+    $content = $data->content ?? '';
+    $excerpt = isset($data->excerpt) ? trim($data->excerpt) : null;
+    $status = in_array($data->status, ['published', 'draft']) ? $data->status : 'draft';
+    
+    // Calculate Reading Time
+    $read_time = function_exists('calculate_reading_time') ? calculate_reading_time($content) : 1;
+    
+    $featuredImageId = (isset($data->featuredImageId) && is_numeric($data->featuredImageId)) ? (int)$data->featuredImageId : null;
+
+    // Relations
+    $categoryIds = isset($data->categories) && is_array($data->categories) ? $data->categories : [];
+    $tagIds = isset($data->tags) && is_array($data->tags) ? $data->tags : [];
+
+    // Primary Category ID
+    $primary_category_id = (isset($data->primary_category_id) && is_numeric($data->primary_category_id) && $data->primary_category_id > 0)
+                            ? (int)$data->primary_category_id
+                            : null;
+
+    // Standard SEO Fields
+    $metaTitle = isset($data->metaTitle) ? trim($data->metaTitle) : null;
+    $metaDescription = isset($data->metaDescription) ? trim($data->metaDescription) : null;
+    $focusKeywords = isset($data->focusKeywords) ? trim($data->focusKeywords) : null;
+    $canonicalUrl = isset($data->canonical_url) ? trim($data->canonical_url) : null;
+
+    // Robots Meta
+    $noIndex = (isset($data->no_index) && $data->no_index !== null) ? (int)$data->no_index : null;
+    $noFollow = (isset($data->no_follow) && $data->no_follow !== null) ? (int)$data->no_follow : null;
+    $noArchive = (isset($data->no_archive) && $data->no_archive !== null) ? (int)$data->no_archive : null;
+    $noImageIndex = (isset($data->no_image_index) && $data->no_image_index !== null) ? (int)$data->no_image_index : null;
+    $noSnippet = (isset($data->no_snippet) && $data->no_snippet !== null) ? (int)$data->no_snippet : null;
+
+    // Advanced Robot Meta
+    $maxSnippet = isset($data->max_snippet) && $data->max_snippet !== null ? (int)$data->max_snippet : null;
+    $maxVideoPreview = isset($data->max_video_preview) && $data->max_video_preview !== null ? (int)$data->max_video_preview : null;
+    $maxImagePreview = isset($data->max_image_preview) ? trim($data->max_image_preview) : null;
+
+    // Social SEO (Facebook)
+    $ogTitle = isset($data->ogTitle) ? trim($data->ogTitle) : null;
+    $ogDescription = isset($data->ogDescription) ? trim($data->ogDescription) : null;
+    $og_image = isset($data->og_image) ? trim($data->og_image) : null;
+
+    // Social SEO (Twitter) - NEW
+    $twitterTitle = isset($data->twitterTitle) ? trim($data->twitterTitle) : null;
+    $twitterDescription = isset($data->twitterDescription) ? trim($data->twitterDescription) : null;
+    $twitterImage = isset($data->twitterImage) ? trim($data->twitterImage) : null;
+
+    // Schema JSON
+    $schemaJson = (isset($data->schema_json) && (is_array($data->schema_json) || is_object($data->schema_json)))
+        ? json_encode($data->schema_json)
+        : '[]';
+
+    // --- 4. Check for Duplicate Slug ---
+    $sql_check = "SELECT id FROM posts WHERE slug = ?";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->bind_param("s", $slug);
+    $stmt_check->execute();
+    if ($stmt_check->get_result()->num_rows > 0) {
+        $stmt_check->close();
+        sendResponse(false, null, 'A post with this slug already exists.', 409, 'DUPLICATE_SLUG');
+    }
+    $stmt_check->close();
+
+    // --- 5. Start Transaction ---
+    $conn->begin_transaction();
+
+    // --- 6. Insert Query ---
+    $sql = "
+        INSERT INTO posts (
+            title, slug, content, excerpt, status, author_id, 
+            featured_image_id, read_time, 
+            meta_title, meta_description, focus_keywords, canonical_url,
+            no_index, no_follow, no_archive, no_image_index, no_snippet,
+            max_snippet, max_video_preview, max_image_preview,
+            og_title, og_description, og_image,
+            twitter_title, twitter_description, twitter_image,
+            schema_json,
+            primary_category_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ";
+
+    $stmt = $conn->prepare($sql);
+    
+    if (!$stmt) {
+        throw new Exception("Prepare failed: " . $conn->error);
+    }
+
+    // Bind Params Breakdown:
+    // 5 strings (title...status) -> sssss
+    // 3 ints (author_id, featured_image_id, read_time) -> iii
+    // 4 strings (metaTitle...canonical) -> ssss
+    // 5 ints (robots basic) -> iiiii
+    // 2 ints (max_snippet, max_video) -> ii
+    // 1 string (max_image) -> s
+    // 3 strings (og) -> sss
+    // 3 strings (twitter) -> sss  <-- ADDED
+    // 1 string (schema) -> s
+    // 1 int (primary_category) -> i
+    // Total Type String: "sssssiiissssiiiiiississssi" (28 chars)
+    
+    $stmt->bind_param("sssssiiissssiiiiiiissssssi", 
+        $title, $slug, $content, $excerpt, $status, $adminId,
+        $featuredImageId, $read_time,
+        $metaTitle, $metaDescription, $focusKeywords, $canonicalUrl,
+        $noIndex, $noFollow, $noArchive, $noImageIndex, $noSnippet,
+        $maxSnippet, $maxVideoPreview, $maxImagePreview,
+        $ogTitle, $ogDescription, $og_image,
+        $twitterTitle, $twitterDescription, $twitterImage,
+        $schemaJson,
+        $primary_category_id
+    );
+
+    if (!$stmt->execute()) {
+        $conn->rollback();
+        throw new Exception("Database insert failed: " . $stmt->error);
+    }
+    
+    $newPostId = $conn->insert_id;
+    $stmt->close();
+    
+    // --- 7. Insert Categories ---
+    if (!empty($categoryIds)) {
+        $insertCatSql = "INSERT INTO post_categories (post_id, category_id) VALUES (?, ?)";
+        $stmtCat = $conn->prepare($insertCatSql);
+        foreach ($categoryIds as $categoryId) {
+            $cId = (int)$categoryId;
+            $stmtCat->bind_param("ii", $newPostId, $cId);
+            if (!$stmtCat->execute()) {
+                $conn->rollback();
+                throw new Exception("Failed to insert category association.");
+            }
+        }
+        $stmtCat->close();
+    }
+
+    // --- 8. Insert Tags ---
+    if (!empty($tagIds)) {
+        $insertTagSql = "INSERT INTO post_tags (post_id, tag_id) VALUES (?, ?)";
+        $stmtTag = $conn->prepare($insertTagSql);
+        foreach ($tagIds as $tagId) {
+            $tId = (int)$tagId;
+            $stmtTag->bind_param("ii", $newPostId, $tId);
+            if (!$stmtTag->execute()) {
+                $conn->rollback();
+                throw new Exception("Failed to insert tag association.");
+            }
+        }
+        $stmtTag->close();
+    }
+    
+    // --- 9. Commit ---
+    $conn->commit();
+    
+    sendResponse(true, ['id' => $newPostId], 'Post created successfully!', 201);
+
+} catch (Exception $e) {
+    $conn->rollback();
+    error_log("Error in add_post.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

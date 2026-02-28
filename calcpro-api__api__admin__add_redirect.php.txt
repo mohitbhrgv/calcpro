@@ -1,0 +1,66 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Input Validation ---
+    if (!isset($data->source_path) || empty(trim($data->source_path))) {
+        sendResponse(false, null, 'Source path is required.', 400, 'INVALID_INPUT');
+    }
+    
+    $source_path = trim($data->source_path, '/'); 
+
+    $valid_codes = [301, 302, 307, 308, 410, 451];
+    $status_code = (isset($data->status_code) && in_array((int)$data->status_code, $valid_codes)) 
+        ? (int)$data->status_code 
+        : 301;
+
+    $target_url = isset($data->target_url) ? trim($data->target_url) : '';
+
+    if (in_array($status_code, [301, 302, 307, 308]) && empty($target_url)) {
+        sendResponse(false, null, 'Target URL is required for redirection status codes.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Database Operation (Updated for 'status') ---
+    // We use INSERT ... ON DUPLICATE KEY UPDATE to handle collisions.
+    // We default the status to 'active'.
+    
+    $sql = "INSERT INTO redirects (source_path, target_url, status_code, status) 
+            VALUES (?, ?, ?, 'active')
+            ON DUPLICATE KEY UPDATE 
+            target_url = VALUES(target_url), 
+            status_code = VALUES(status_code),
+            status = 'active'";
+
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        throw new Exception('Database prepare failed: ' . $conn->error);
+    }
+
+    $stmt->bind_param("ssi", $source_path, $target_url, $status_code);
+
+    if ($stmt->execute()) {
+        sendResponse(true, null, 'Redirect rule saved successfully.', 200);
+    } else {
+        throw new Exception("Database execution failed: " . $stmt->error);
+    }
+
+    $stmt->close();
+
+} catch (Exception $e) {
+    error_log("Error in add_redirect.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

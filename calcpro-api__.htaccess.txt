@@ -1,0 +1,55 @@
+# ------------------------------------------------------------------
+# SECURITY HARDENING
+# ------------------------------------------------------------------
+Options -Indexes
+
+<FilesMatch "^\.env|^\.git">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# ------------------------------------------------------------------
+# CORS CONFIGURATION (THE FIX)
+# ------------------------------------------------------------------
+<IfModule mod_headers.c>
+    # Set the Origin based on what is requesting (Next.js or Vite)
+    SetEnvIf Origin "^http(s)?://(localhost|127\.0\.0\.1)(:(3000|5173|5174))?$" CORS_ORIGIN=$0
+    
+    # Always set these headers
+    Header always set Access-Control-Allow-Origin %{CORS_ORIGIN}e env=CORS_ORIGIN
+    Header always set Access-Control-Allow-Credentials "true"
+    Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+    Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
+</IfModule>
+
+# ------------------------------------------------------------------
+# URL REWRITING & ROUTING
+# ------------------------------------------------------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # Handle Authorization Header (Crucial for JWT)
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    # --- CORS PREFLIGHT OPTIMIZATION ---
+    # If request is OPTIONS, return 200 OK immediately and stop.
+    # This prevents the request from hitting PHP and failing there.
+    RewriteCond %{REQUEST_METHOD} OPTIONS
+    RewriteRule ^(.*)$ - [R=200,L]
+
+    # --- SEO DYNAMIC ROUTING ---
+    # 1. Robots.txt
+    RewriteRule ^robots\.txt$ api/public/robots.php [L,NC]
+
+    # 2. Main Sitemap Index
+    RewriteRule ^sitemap\.xml$ api/public/sitemap.php?type=index [L,QSA,NC]
+
+    # 3. Stylesheet
+    RewriteRule ^main-sitemap\.xsl$ api/public/main-sitemap.xsl [L,NC]
+
+    # 4. Sub-Sitemaps
+    RewriteRule ^page-sitemap\.xml$ api/public/sitemap.php?type=page [L,QSA,NC]
+    RewriteRule ^post-sitemap\.xml$ api/public/sitemap.php?type=post [L,QSA,NC]
+    RewriteRule ^category-sitemap\.xml$ api/public/sitemap.php?type=category [L,QSA,NC]
+</IfModule>

@@ -1,0 +1,208 @@
+<?php
+// File: calcpro-api/api/admin/add_calculator.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->name) || empty(trim($data->name))) {
+        sendResponse(false, null, 'Calculator name is required.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->slug) || empty(trim($data->slug))) {
+        sendResponse(false, null, 'Calculator slug is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize and Prepare Data ---
+    $name = trim($data->name);
+    $slug = trim($data->slug);
+    $content = $data->content ?? null;
+    
+    // JSON Fields
+    $faq_json = (isset($data->faq_json) && (is_object($data->faq_json) || is_array($data->faq_json))) 
+                ? json_encode($data->faq_json) 
+                : '[]';
+
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new Exception('Invalid FAQ JSON provided.');
+    }
+
+    // Standard SEO
+    $meta_title = isset($data->metaTitle) ? trim($data->metaTitle) : null;
+    $meta_description = isset($data->metaDescription) ? trim($data->metaDescription) : null;
+    $focus_keywords = isset($data->focusKeywords) ? trim($data->focusKeywords) : null;
+
+    $og_image = isset($data->og_image) ? trim($data->og_image) : null;
+    $canonical_url = isset($data->canonical_url) ? trim($data->canonical_url) : null;
+    $status = isset($data->status) && in_array($data->status, ['published', 'draft']) ? $data->status : 'draft';
+    
+    $is_featured = (isset($data->is_featured) && $data->is_featured === true) ? 1 : 0;
+
+    // Social SEO (Facebook)
+    $ogTitle = isset($data->ogTitle) ? trim($data->ogTitle) : null;
+    $ogDescription = isset($data->ogDescription) ? trim($data->ogDescription) : null;
+
+    // Social SEO (Twitter) - NEW
+    $twitterTitle = isset($data->twitterTitle) ? trim($data->twitterTitle) : null;
+    $twitterDescription = isset($data->twitterDescription) ? trim($data->twitterDescription) : null;
+    $twitterImage = isset($data->twitterImage) ? trim($data->twitterImage) : null;
+
+    // Robots Meta
+    $no_index = (isset($data->no_index) && $data->no_index !== null) ? (int)$data->no_index : null;
+    $no_follow = (isset($data->no_follow) && $data->no_follow !== null) ? (int)$data->no_follow : null;
+    $no_archive = (isset($data->no_archive) && $data->no_archive !== null) ? (int)$data->no_archive : null;
+    $no_image_index = (isset($data->no_image_index) && $data->no_image_index !== null) ? (int)$data->no_image_index : null;
+    $no_snippet = (isset($data->no_snippet) && $data->no_snippet !== null) ? (int)$data->no_snippet : null;
+
+    // Advanced Robot Meta
+    $maxSnippet = isset($data->max_snippet) && $data->max_snippet !== null ? (int)$data->max_snippet : null;
+    $maxVideoPreview = isset($data->max_video_preview) && $data->max_video_preview !== null ? (int)$data->max_video_preview : null;
+    $maxImagePreview = isset($data->max_image_preview) ? trim($data->max_image_preview) : null;
+
+    // Schema
+    $schema_json = (isset($data->schema_json) && (is_object($data->schema_json) || is_array($data->schema_json))) 
+                    ? json_encode($data->schema_json) 
+                    : '[]';
+
+    // Relations
+    $categoryIds = isset($data->categories) && is_array($data->categories) ? $data->categories : [];
+    $tagIds = isset($data->tags) && is_array($data->tags) ? $data->tags : [];
+
+    $primary_category_id = (isset($data->primary_category_id) && is_numeric($data->primary_category_id) && $data->primary_category_id > 0)
+                            ? (int)$data->primary_category_id
+                            : null;
+
+    // --- 4. Check for Duplicate Slug ---
+    $sql_check = "SELECT id FROM calculators WHERE slug = ?";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->bind_param("s", $slug);
+    $stmt_check->execute();
+    if ($stmt_check->get_result()->num_rows > 0) {
+        $stmt_check->close();
+        sendResponse(false, null, 'A calculator with this slug already exists.', 409, 'DUPLICATE_SLUG');
+    }
+    $stmt_check->close();
+
+    // --- 5. Start Transaction ---
+    $conn->begin_transaction();
+
+    // --- 6. The SQL INSERT Query ---
+    $sql_insert = "
+        INSERT INTO calculators (
+            name, slug, content, faq_json, 
+            meta_title, meta_description, focus_keywords, canonical_url,
+            og_title, og_description, og_image,
+            twitter_title, twitter_description, twitter_image,
+            status, is_featured, 
+            no_index, no_follow, no_archive, no_image_index, no_snippet,
+            max_snippet, max_video_preview, max_image_preview,
+            schema_json, primary_category_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ";
+    
+    $stmt_insert = $conn->prepare($sql_insert);
+    
+    if ($stmt_insert === false) {
+        throw new Exception("Database prepare failed: " . $conn->error);
+    }
+
+    // Bind Params:
+    // 8 strings (name...canonical)
+    // 3 strings (og)
+    // 3 strings (twitter) <-- ADDED
+    // 1 string (status)
+    // 1 int (featured)
+    // 5 ints (robots)
+    // 2 ints (advanced)
+    // 2 strings (image_preview, schema)
+    // 1 int (primary cat)
+    // Total: 14 strings + 1 string + 1 int + 5 ints + 2 ints + 2 strings + 1 int = 17 strings + 9 ints
+    // Type string: "ssssssssssssssiiiiiiiissi" (26 chars)
+    $stmt_insert->bind_param(
+        "ssssssssssssssiiiiiiiissi", 
+        $name, 
+        $slug, 
+        $content, 
+        $faq_json, 
+        $meta_title, 
+        $meta_description,
+        $focus_keywords,
+        $canonical_url,
+        $ogTitle,
+        $ogDescription,
+        $og_image, 
+        $twitterTitle,
+        $twitterDescription,
+        $twitterImage,
+        $status, 
+        $is_featured,
+        $no_index,
+        $no_follow,
+        $no_archive,
+        $no_image_index,
+        $no_snippet,
+        $maxSnippet,
+        $maxVideoPreview,
+        $maxImagePreview,
+        $schema_json,
+        $primary_category_id
+    );
+
+    if (!$stmt_insert->execute()) {
+        $conn->rollback();
+        throw new Exception("Database insert failed: " . $stmt_insert->error);
+    }
+    
+    $newCalcId = $conn->insert_id;
+    $stmt_insert->close();
+
+    // --- 7. Insert Categories ---
+    if (!empty($categoryIds)) {
+        $stmt_cat = $conn->prepare("INSERT INTO calculator_category_assignments (calculator_id, category_id) VALUES (?, ?)");
+        foreach ($categoryIds as $catId) {
+            $cId = (int)$catId;
+            $stmt_cat->bind_param("ii", $newCalcId, $cId);
+            if (!$stmt_cat->execute()) {
+                $conn->rollback();
+                throw new Exception("Failed to assign category.");
+            }
+        }
+        $stmt_cat->close();
+    }
+
+    // --- 8. Insert Tags ---
+    if (!empty($tagIds)) {
+        $stmt_tag = $conn->prepare("INSERT INTO calculator_tags (calculator_id, tag_id) VALUES (?, ?)");
+        foreach ($tagIds as $tagId) {
+            $tId = (int)$tagId;
+            $stmt_tag->bind_param("ii", $newCalcId, $tId);
+            if (!$stmt_tag->execute()) {
+                $conn->rollback();
+                throw new Exception("Failed to assign tag.");
+            }
+        }
+        $stmt_tag->close();
+    }
+
+    // --- 9. Commit Transaction ---
+    $conn->commit();
+
+    sendResponse(true, ['id' => $newCalcId], 'Calculator created successfully!', 201);
+
+} catch (Exception $e) {
+    $conn->rollback();
+    error_log("Error in add_calculator.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

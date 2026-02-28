@@ -1,0 +1,52 @@
+<?php
+// Include the core configuration and response helper files
+require '../../core/config.php';
+require_once '../../core/response.php';
+
+// Get the data sent from the frontend
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// Basic Validation
+if (!isset($data->id) || !is_numeric($data->id)) {
+    sendResponse(false, null, 'A valid Category ID is required.', 400, 'INVALID_INPUT');
+}
+
+// Sanitize Input
+$id = (int)$data->id;
+
+try {
+    // Prepare and Execute the DELETE Statement
+    $sql = "DELETE FROM categories WHERE id = ?";
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        throw new Exception('Failed to prepare the SQL statement.');
+    }
+
+    $stmt->bind_param("i", $id);
+
+    if ($stmt->execute()) {
+        if ($stmt->affected_rows > 0) {
+            sendResponse(true, null, 'Category deleted successfully.', 200);
+        } else {
+            sendResponse(false, null, 'Category not found or already deleted.', 404, 'NOT_FOUND');
+        }
+    } else {
+        throw new Exception("Database delete failed: " . $stmt->error);
+    }
+
+    $stmt->close();
+
+} catch (Exception $e) {
+    error_log("Error in delete_category.php: " . $e->getMessage());
+    // Check for foreign key constraint error (MySQL error code 1451)
+    if ($conn->errno == 1451) {
+        sendResponse(false, null, 'Cannot delete this category because it is currently in use by one or more posts.', 409, 'CONFLICT_IN_USE');
+    } else {
+        sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+    }
+}
+
+$conn->close();
+?>

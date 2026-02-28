@@ -1,0 +1,746 @@
+
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import DataTable from "../../components/common/DataTable";
+import SafeIcon from "../../../common/SafeIcon";
+import Modal from "../../components/common/Modal";
+import * as BiIcons from "react-icons/bi";
+import * as HiIcons from "react-icons/hi";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+import { authenticatedFetch } from "../../utils/apiService";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+const {
+  FiPlus,
+  FiAlertTriangle,
+  FiCopy,
+  FiCornerUpRight,
+  FiArrowRight,
+  FiInfo,
+  FiSearch,
+  FiTrash2,
+  FiRefreshCw,
+  FiCheckCircle,
+  FiFileText,
+  FiLayout,
+  FiEdit2,
+  FiEye,
+} = FiIcons;
+const { HiOutlineTrash } = HiIcons;
+
+// Reusable Toggle for Featured Column
+const ToggleSwitch = ({ checked, onChange }) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    onClick={(e) => {
+      e.stopPropagation();
+      onChange();
+    }}
+    className={`relative inline-flex items-center h-5 w-9 rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 ${checked ? "bg-indigo-600" : "bg-gray-200 dark:bg-gray-600"}`}
+  >
+    <span
+      className={`inline-block w-3 h-3 transform bg-white rounded-full transition-transform duration-200 ease-in-out ${checked ? "translate-x-5" : "translate-x-1"}`}
+    />
+  </button>
+);
+
+const Calculators = () => {
+  const navigate = useNavigate();
+  const { getCache, setCacheData, invalidateCache, isInitialLoadComplete } =
+    useAdminCache();
+
+  // --- State ---
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedIds, setSelectedIds] = useState([]);
+
+  const cacheKey = `calculators_${filterStatus}`;
+  const cachedData = getCache(cacheKey);
+
+  const [allCalculators, setAllCalculators] = useState(cachedData?.data || []);
+  const [counts, setCounts] = useState(
+    cachedData?.counts || { all: 0, published: 0, draft: 0, trash: 0 }
+  );
+
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(!cachedData);
+
+  // Modal State
+  const [seoModal, setSeoModal] = useState({
+    isOpen: false,
+    calculator: null,
+    action: null,
+  });
+  const [confirmDeleteInput, setConfirmDeleteInput] = useState("");
+
+  // --- Fetch Logic ---
+  const fetchCalculators = useCallback(
+    async (forceRefresh = false) => {
+      const currentKey = `calculators_${filterStatus}`;
+
+      if (!forceRefresh) {
+        const cached = getCache(currentKey);
+        if (cached) {
+          if (JSON.stringify(cached.data) !== JSON.stringify(allCalculators)) {
+            setAllCalculators(cached.data);
+            setCounts(cached.counts);
+          }
+          setInitialLoading(false);
+          return;
+        }
+      }
+
+      setIsUpdating(true);
+
+      const url = `http://localhost/calcpro-api/api/admin/get_calculators.php?status=${filterStatus}`;
+      try {
+        const result = await authenticatedFetch(url);
+        if (result.success) {
+          setAllCalculators(result.data.calculators);
+          setCounts(result.data.counts);
+          setCacheData(currentKey, {
+            data: result.data.calculators,
+            counts: result.data.counts,
+          });
+        } else {
+          toast.error(result.message || "Failed to fetch calculator content.");
+        }
+      } catch (error) {
+        if (error.message !== "Unauthorized") {
+          toast.error("Could not connect to the server.");
+        }
+      } finally {
+        setIsUpdating(false);
+        setInitialLoading(false);
+      }
+    },
+    [filterStatus, getCache, setCacheData, allCalculators]
+  );
+
+  useEffect(() => {
+    fetchCalculators();
+    setSelectedIds([]); // Clear selection on tab change
+  }, [filterStatus]);
+
+  const filteredCalculators = useMemo(() => {
+    if (!searchTerm) return allCalculators;
+    return allCalculators.filter(
+      (calc) =>
+        calc.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        calc.slug.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [allCalculators, searchTerm]);
+
+  // --- Handlers ---
+
+  const handleSelectRow = (id) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      setSelectedIds(filteredCalculators.map((c) => c.id));
+    } else {
+      setSelectedIds([]);
+    }
+  };
+
+  const handleToggleFeatured = useCallback(
+    async (calculator) => {
+      const updatedCalcs = allCalculators.map((c) =>
+        c.id === calculator.id ? { ...c, is_featured: !c.is_featured } : c
+      );
+      setAllCalculators(updatedCalcs);
+
+      try {
+        const result = await authenticatedFetch(
+          "http://localhost/calcpro-api/api/admin/toggle_featured_calculator.php",
+          { method: "POST", body: JSON.stringify({ id: calculator.id }) }
+        );
+        if (result.success) {
+          toast.success(
+            `'${calculator.name}' is now ${result.data.is_featured ? "featured" : "not featured"}.`
+          );
+          setCacheData(cacheKey, { data: updatedCalcs, counts });
+        } else {
+          toast.error(result.message || "Failed to update status.");
+          setAllCalculators(allCalculators); // Revert
+        }
+      } catch (error) {
+        toast.error("Could not connect to server.");
+        setAllCalculators(allCalculators);
+      }
+    },
+    [allCalculators, counts, cacheKey, setCacheData]
+  );
+
+  const handleEdit = (calculator) => {
+    navigate(`/admin/content/calculators/edit/${calculator.id}`);
+  };
+
+  const handleView = (calculator) => {
+    window.open(
+      `http://localhost:5174/#/calculator/${calculator.slug}`,
+      "_blank"
+    );
+  };
+
+  // Generic API Action Handler
+  const handleApiAction = useCallback(
+    async (url, body, successMessage, errorMessage) => {
+      try {
+        setIsUpdating(true);
+        const result = await authenticatedFetch(url, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+
+        if (result.success) {
+          toast.success(successMessage);
+          invalidateCache("calculators_");
+          setSelectedIds([]);
+          await fetchCalculators(true);
+        } else {
+          toast.error(result.message || errorMessage);
+        }
+      } catch (error) {
+        toast.error("Action failed.");
+      } finally {
+        setIsUpdating(false);
+      }
+    },
+    [fetchCalculators, invalidateCache]
+  );
+
+  // --- Action Triggers ---
+  const initiateTrash = (calculator) => {
+    setSeoModal({
+      isOpen: true,
+      calculator,
+      action: calculator.status === "published" ? "trash" : "trash_draft",
+    });
+  };
+  const initiateDeletePermanent = (calculator) => {
+    setConfirmDeleteInput("");
+    setSeoModal({ isOpen: true, calculator, action: "delete_permanent" });
+  };
+  const initiateBulkAction = (actionType) => {
+    if (selectedIds.length === 0) return;
+    if (actionType === "delete_permanent") setConfirmDeleteInput("");
+    setSeoModal({
+      isOpen: true,
+      calculator: null,
+      action: `bulk_${actionType}`,
+    });
+  };
+
+  const handleConfirmAction = () => {
+    const { calculator, action } = seoModal;
+    setSeoModal({ ...seoModal, isOpen: false });
+
+    if (action === "trash" || action === "trash_draft") {
+      handleApiAction(
+        "http://localhost/calcpro-api/api/admin/delete_calculator.php",
+        { id: calculator.id },
+        "Calculator moved to trash.",
+        "Failed to move calculator."
+      );
+    } else if (action === "delete_permanent") {
+      handleApiAction(
+        "http://localhost/calcpro-api/api/admin/delete_permanent_calculator.php",
+        { id: calculator.id },
+        "Calculator permanently deleted.",
+        "Failed to delete."
+      );
+    } else if (action.startsWith("bulk_")) {
+      const bulkAction = action.replace("bulk_", "");
+      handleApiAction(
+        "http://localhost/calcpro-api/api/admin/manage_calculators_bulk.php",
+        { ids: selectedIds, action: bulkAction },
+        "Bulk action completed successfully.",
+        "Failed to perform bulk action."
+      );
+    }
+  };
+
+  const handleRestore = (calculator) => {
+    handleApiAction(
+      "http://localhost/calcpro-api/api/admin/restore_calculator.php",
+      { id: calculator.id },
+      "Calculator restored.",
+      "Failed to restore."
+    );
+  };
+
+  const handleCopyPath = () => {
+    if (seoModal.calculator) {
+      navigator.clipboard.writeText(`calculator/${seoModal.calculator.slug}`);
+      toast.success("Path copied!");
+    }
+  };
+
+  // --- Modal Content Logic ---
+  const getModalContent = () => {
+    const { calculator, action } = seoModal;
+    const count = selectedIds.length;
+
+    if (action === "bulk_trash")
+      return {
+        title: `Trash ${count} Calculators?`,
+        type: "warning",
+        icon: FiTrash2,
+        colorClass: "text-amber-600",
+        bgClass:
+          "bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800",
+        heading: "Bulk Trash Action",
+        message: `Are you sure you want to move ${count} calculators to the trash? They will stop being visible publically.`,
+        buttonText: "Move to Trash",
+        btnClass: "bg-amber-600 hover:bg-amber-700",
+      };
+    if (action === "bulk_restore")
+      return {
+        title: `Restore ${count} Calculators?`,
+        type: "default",
+        icon: FiRefreshCw,
+        colorClass: "text-blue-600",
+        bgClass:
+          "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800",
+        heading: "Bulk Restore",
+        message: `Restore ${count} calculators to their previous status?`,
+        buttonText: "Restore All",
+        btnClass: "bg-blue-600 hover:bg-blue-700",
+      };
+    if (action === "bulk_delete_permanent")
+      return {
+        title: `Delete ${count} Calculators Forever?`,
+        type: "danger",
+        icon: FiAlertTriangle,
+        colorClass: "text-red-600",
+        bgClass:
+          "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800",
+        heading: "Permanent Data Loss",
+        message: `You are about to PERMANENTLY delete ${count} calculators. This cannot be undone.`,
+        buttonText: "Delete Forever",
+        btnClass: "bg-red-600 hover:bg-red-700",
+        requireInput: true,
+      };
+
+    if (!calculator) return {};
+
+    if (action === "delete_permanent")
+      return {
+        title: "Permanent Deletion",
+        type: "danger",
+        icon: FiAlertTriangle,
+        colorClass: "text-red-600",
+        bgClass:
+          "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800",
+        heading: "Permanent URL Loss",
+        message: (
+          <>
+            You are removing <strong>"{calculator.name}"</strong> forever. This
+            action cannot be undone.
+          </>
+        ),
+        buttonText: "Delete Forever",
+        btnClass: "bg-red-600 hover:bg-red-700",
+        showRedirect: true,
+        requireInput: true,
+      };
+    if (action === "trash")
+      return {
+        title: "Unpublish Calculator?",
+        type: "warning",
+        icon: FiAlertTriangle,
+        colorClass: "text-amber-600",
+        bgClass:
+          "bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800",
+        heading: "Potential 404 Error",
+        message: (
+          <>
+            You are moving a <strong>Published</strong> calculator to Trash. The
+            URL will become inaccessible.
+          </>
+        ),
+        buttonText: "Move to Trash",
+        btnClass: "bg-amber-600 hover:bg-amber-700",
+        showRedirect: true,
+      };
+
+    return {
+      title: "Move to Trash?",
+      type: "default",
+      icon: FiInfo,
+      colorClass: "text-blue-600",
+      bgClass:
+        "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800",
+      heading: "Confirm Action",
+      message: (
+        <>
+          Move <strong>"{calculator.name}"</strong> to trash? You can restore it
+          later.
+        </>
+      ),
+      buttonText: "Move to Trash",
+      btnClass: "bg-blue-600 hover:bg-blue-700",
+    };
+  };
+  const modalContent = getModalContent();
+
+  const columns = [
+    {
+      key: "name",
+      label: "Calculator Name",
+      wrap: true,
+      render: (val) => (
+        <span className="font-semibold text-gray-900 dark:text-white">
+          {val}
+        </span>
+      ),
+    },
+    {
+      key: "slug",
+      label: "Slug",
+      render: (val) => (
+        <span className="font-mono text-xs text-gray-500">{val}</span>
+      ),
+    },
+    {
+      key: "active_redirect",
+      label: "Redirection",
+      render: (redirectTarget) => {
+        if (redirectTarget) {
+          return (
+            <div className="flex flex-col items-start max-w-[150px]">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-800 uppercase tracking-wide">
+                <SafeIcon icon={FiCornerUpRight} className="w-3 h-3" /> Redirect
+                Active
+              </span>
+              <span
+                className="text-[10px] text-gray-400 mt-1 truncate w-full"
+                title={redirectTarget}
+              >
+                <SafeIcon icon={FiArrowRight} className="w-2 h-2 inline mr-1" />{" "}
+                {redirectTarget}
+              </span>
+            </div>
+          );
+        }
+        return (
+          <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400 border border-gray-200 dark:border-gray-700 uppercase tracking-wide">
+            Not Set
+          </span>
+        );
+      },
+    },
+    {
+      key: "is_featured",
+      label: "Featured",
+      render: (isFeatured, calculator) => (
+        <div
+          className="flex justify-center"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <ToggleSwitch
+            checked={isFeatured}
+            onChange={() => handleToggleFeatured(calculator)}
+          />
+        </div>
+      ),
+    },
+    {
+      key: "updated_at",
+      label: "Modified",
+      render: (val) => (
+        <span className="text-xs text-gray-500">
+          {new Date(val).toLocaleDateString()}
+        </span>
+      ),
+    },
+    {
+      key: "status",
+      label: "Status",
+      render: (status) => (
+        <span
+          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold capitalize shadow-sm border ${
+            status === "published"
+              ? "bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-800"
+              : status === "trash"
+                ? "bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-800"
+                : "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/20 dark:text-amber-400 dark:border-amber-800"
+          }`}
+        >
+          {status === "published" && <FiCheckCircle className="w-3 h-3 mr-1" />}
+          {status === "draft" && <FiFileText className="w-3 h-3 mr-1" />}
+          {status === "trash" && <FiTrash2 className="w-3 h-3 mr-1" />}
+          {status}
+        </span>
+      ),
+    },
+  ];
+
+  if (!isInitialLoadComplete || initialLoading)
+    return (
+      <div className="h-96 flex items-center justify-center">
+        <LoadingSpinner size="xl" />
+      </div>
+    );
+
+  return (
+    <div className="space-y-6">
+      {/* --- CONFIRMATION MODAL --- */}
+      <Modal
+        isOpen={seoModal.isOpen}
+        onClose={() => setSeoModal({ ...seoModal, isOpen: false })}
+        title={modalContent.title}
+        type={modalContent.type}
+        size="md"
+        disableAnimation={true} // --- INSTANT POPUP ---
+      >
+        <div className="space-y-5">
+          <div
+            className={`${modalContent.bgClass} p-4 rounded-lg border flex gap-3 items-start`}
+          >
+            <SafeIcon
+              icon={modalContent.icon}
+              className={`w-5 h-5 ${modalContent.colorClass} shrink-0 mt-0.5`}
+            />
+            <div>
+              <h4
+                className={`text-sm font-bold ${modalContent.colorClass === "text-amber-600" ? "text-amber-900 dark:text-amber-100" : modalContent.colorClass === "text-red-600" ? "text-red-900 dark:text-red-100" : "text-blue-900 dark:text-blue-100"}`}
+              >
+                {modalContent.heading}
+              </h4>
+              <p
+                className={`text-xs mt-1 leading-relaxed ${modalContent.colorClass === "text-amber-600" ? "text-amber-800 dark:text-amber-200/80" : modalContent.colorClass === "text-red-600" ? "text-red-800 dark:text-red-200/80" : "text-blue-800 dark:text-blue-200/80"}`}
+              >
+                {modalContent.message}
+              </p>
+            </div>
+          </div>
+
+          {modalContent.showRedirect && (
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                Source Path
+              </label>
+              <div className="flex rounded-md shadow-sm">
+                <input
+                  type="text"
+                  value={`calculator/${seoModal.calculator?.slug}`}
+                  readOnly
+                  className="flex-1 px-3 py-2 rounded-l-md border border-gray-300 bg-gray-100 text-gray-600 text-sm font-mono focus:outline-none"
+                />
+                <button
+                  onClick={handleCopyPath}
+                  className="px-4 border border-l-0 border-gray-300 rounded-r-md bg-white hover:bg-gray-50 text-gray-500"
+                >
+                  <SafeIcon icon={FiCopy} className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {modalContent.requireInput && (
+            <div className="mt-3">
+              <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">
+                Type <strong>DELETE</strong> to confirm:
+              </label>
+              <input
+                type="text"
+                value={confirmDeleteInput}
+                onChange={(e) => setConfirmDeleteInput(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg outline-none text-sm focus:ring-2 focus:ring-red-500"
+                placeholder="DELETE"
+              />
+            </div>
+          )}
+
+          <div className="flex flex-col sm:flex-row gap-3 pt-2">
+            {modalContent.showRedirect && (
+              <button
+                onClick={() => window.open("/#/admin/seo/redirects", "_blank")}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 border border-indigo-600 text-indigo-600 dark:text-indigo-400 rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-900/20 font-medium transition-colors text-sm"
+              >
+                <SafeIcon icon={FiCornerUpRight} className="w-4 h-4" /> Set
+                Redirect
+              </button>
+            )}
+            <button
+              onClick={handleConfirmAction}
+              disabled={
+                modalContent.requireInput && confirmDeleteInput !== "DELETE"
+              }
+              className={`flex-1 px-4 py-2.5 text-white rounded-lg font-bold shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm ${modalContent.btnClass}`}
+            >
+              {modalContent.buttonText}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* --- HEADER CARD --- */}
+      <div className="flex items-start gap-4 p-4 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={BiIcons.BiCalculator} className="w-5 h-5" />
+        </div>
+        <div className="flex-1">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h4 className="font-bold text-gray-900 dark:text-white">
+                Calculator Content
+              </h4>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                Manage descriptive content, FAQs, and SEO for each calculator.
+              </p>
+            </div>
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => navigate("/admin/content/calculators/new")}
+              className="flex items-center justify-center space-x-2 bg-indigo-600 text-white px-5 py-2.5 rounded-lg shadow-sm hover:bg-indigo-700 transition-colors font-medium text-sm whitespace-nowrap"
+            >
+              <SafeIcon icon={FiPlus} className="w-4 h-4" />
+              <span>New Calculator</span>
+            </motion.button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden relative min-h-[400px]">
+        {/* Loading Overlay */}
+        <AnimatePresence>
+          {isUpdating && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-white/60 dark:bg-gray-900/60 backdrop-blur-[1px] z-10 flex items-center justify-center"
+            >
+              <LoadingSpinner size="lg" />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="px-6 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 flex flex-col sm:flex-row justify-between items-center gap-4">
+          {/* Left: TABS */}
+          <div className="flex items-center gap-1 bg-white dark:bg-gray-800 p-1 rounded-lg border border-gray-200 dark:border-gray-600">
+            {["all", "published", "draft", "trash"].map((status) => (
+              <button
+                key={status}
+                onClick={() => {
+                  setFilterStatus(status);
+                  setSearchTerm("");
+                  setSelectedIds([]);
+                }}
+                className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1.5 ${
+                  filterStatus === status
+                    ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 shadow-sm ring-1 ring-black/5"
+                    : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+                }`}
+              >
+                {status.charAt(0).toUpperCase() + status.slice(1)}
+                <span
+                  className={`px-1.5 py-0.5 rounded-full text-[10px] ${filterStatus === status ? "bg-indigo-200 text-indigo-800 dark:bg-indigo-800 dark:text-indigo-200" : "bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"}`}
+                >
+                  {counts[status]}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {/* Right: BULK ACTIONS & SEARCH */}
+          <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+            <AnimatePresence>
+              {selectedIds.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, x: 10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 10 }}
+                  className="flex items-center gap-2 pr-3 border-r border-gray-300 dark:border-gray-600"
+                >
+                  <span className="text-xs font-bold text-gray-500 hidden md:block">
+                    {selectedIds.length} Selected
+                  </span>
+                  {filterStatus !== "trash" ? (
+                    <button
+                      onClick={() => initiateBulkAction("trash")}
+                      className="flex items-center gap-1 px-2 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 rounded text-xs font-bold transition-colors"
+                    >
+                      <SafeIcon icon={FiTrash2} className="w-3.5 h-3.5" /> Trash
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => initiateBulkAction("restore")}
+                        className="flex items-center gap-1 px-2 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-xs font-bold transition-colors"
+                      >
+                        <SafeIcon icon={FiRefreshCw} className="w-3.5 h-3.5" />{" "}
+                        Restore
+                      </button>
+                      <button
+                        onClick={() => initiateBulkAction("delete_permanent")}
+                        className="flex items-center gap-1 px-2 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 rounded text-xs font-bold transition-colors"
+                      >
+                        <SafeIcon
+                          icon={FiAlertTriangle}
+                          className="w-3.5 h-3.5"
+                        />{" "}
+                        Delete
+                      </button>
+                    </>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="relative w-full sm:w-64">
+              <SafeIcon
+                icon={FiSearch}
+                className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4"
+              />
+              <input
+                type="text"
+                placeholder="Search calculators..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-4 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm bg-white dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow"
+              />
+            </div>
+          </div>
+        </div>
+
+        <DataTable
+          columns={columns}
+          data={filteredCalculators}
+          loading={false}
+          pagination={false}
+          selectable={true}
+          selectedIds={selectedIds}
+          onSelectRow={handleSelectRow}
+          onSelectAll={handleSelectAll}
+          onEdit={filterStatus !== "trash" ? handleEdit : null}
+          onView={filterStatus === "published" ? handleView : null}
+          onDelete={
+            filterStatus === "trash" ? initiateDeletePermanent : initiateTrash
+          }
+          onRestore={filterStatus === "trash" ? handleRestore : null}
+          deleteIcon={filterStatus === "trash" ? FiTrash2 : HiOutlineTrash}
+          deleteTooltip={
+            filterStatus === "trash" ? "Delete Forever" : "Move to Trash"
+          }
+          searchable={false} // Disable internal search
+        />
+      </div>
+    </div>
+  );
+};
+
+export default Calculators;

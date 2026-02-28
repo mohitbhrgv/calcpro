@@ -1,0 +1,580 @@
+
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import DataTable from "../../components/common/DataTable";
+import Modal from "../../components/common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+import { authenticatedFetch } from "../../utils/apiService";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+const { FiPlus, FiSearch, FiAlertTriangle, FiTrash2, FiTag, FiHash, FiList } =
+  FiIcons;
+
+const Tags = () => {
+  const { getCache, setCacheData, invalidateCache, isInitialLoadComplete } =
+    useAdminCache();
+
+  const [searchParams] = useSearchParams();
+  const context = searchParams.get("context") || "post";
+  const isCalculatorContext = context === "calculator";
+  const pageTitle = isCalculatorContext ? "Calculator Tags" : "Post Tags";
+
+  const cacheKey = `content_tags_${context}`;
+  const cachedData = getCache(cacheKey);
+
+  // --- State ---
+  const [allTags, setAllTags] = useState(cachedData || []);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedIds, setSelectedIds] = useState([]);
+
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(!cachedData);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Modals
+  const [showModal, setShowModal] = useState(false);
+  const [editingTag, setEditingTag] = useState(null);
+  const [formData, setFormData] = useState({ name: "", slug: "" });
+
+  // Delete States
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [tagToDelete, setTagToDelete] = useState(null);
+  const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
+  const [confirmInput, setConfirmInput] = useState("");
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+
+  // --- Fetch Logic ---
+  const fetchTags = useCallback(
+    async (forceRefresh = false) => {
+      if (!forceRefresh) {
+        const cached = getCache(cacheKey);
+        if (cached) {
+          if (JSON.stringify(cached) !== JSON.stringify(allTags)) {
+            setAllTags(cached);
+          }
+          setInitialLoading(false);
+          return;
+        }
+      }
+
+      setIsUpdating(true);
+
+      try {
+        const result = await authenticatedFetch(
+          `http://localhost/calcpro-api/api/admin/get_tags.php?context=${context}`
+        );
+        if (result.success) {
+          setAllTags(result.data);
+          setCacheData(cacheKey, result.data);
+        } else {
+          toast.error(result.message || "Failed to fetch tags.");
+        }
+      } catch (error) {
+        if (error.message !== "Unauthorized") {
+          toast.error("Could not connect to the server.");
+        }
+      } finally {
+        setIsUpdating(false);
+        setInitialLoading(false);
+      }
+    },
+    [getCache, setCacheData, cacheKey, allTags, context]
+  );
+
+  useEffect(() => {
+    fetchTags();
+    setSelectedIds([]); // Clear selection when switching contexts
+  }, [fetchTags, context]);
+
+  const filteredTags = useMemo(() => {
+    if (!searchTerm) return allTags;
+    return allTags.filter(
+      (tag) =>
+        tag.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        tag.slug.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [allTags, searchTerm]);
+
+  // --- Handlers ---
+
+  const handleSelectRow = (id) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAll = (e) => {
+    setSelectedIds(e.target.checked ? filteredTags.map((t) => t.id) : []);
+  };
+
+  const handleEdit = (tag) => {
+    setEditingTag(tag);
+    setFormData({ name: tag.name, slug: tag.slug });
+    setShowModal(true);
+  };
+
+  const handleCloseModal = () => {
+    setShowModal(false);
+    setEditingTag(null);
+    setFormData({ name: "", slug: "" });
+  };
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({
+      ...prev,
+      [name]: value,
+      ...(name === "name" && !editingTag
+        ? {
+            slug: value
+              .toLowerCase()
+              .replace(/\s+/g, "-")
+              .replace(/[^a-z0-9-]/g, ""),
+          }
+        : {}),
+    }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+
+    const isEditing = editingTag !== null;
+    const url = isEditing
+      ? "http://localhost/calcpro-api/api/admin/update_tag.php"
+      : "http://localhost/calcpro-api/api/admin/add_tag.php";
+
+    const body = isEditing ? { ...formData, id: editingTag.id } : formData;
+
+    try {
+      const result = await authenticatedFetch(url, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+
+      if (result.success) {
+        toast.success(result.message);
+        handleCloseModal();
+        invalidateCache("content_tags_"); // Invalidate all tag caches
+        await fetchTags(true);
+      } else {
+        toast.error(result.message || "An error occurred.");
+      }
+    } catch (error) {
+      toast.error("Action failed.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // --- Delete Logic ---
+
+  const initiateDelete = (tag) => {
+    setTagToDelete(tag);
+    setConfirmInput("");
+    setIsDeleteModalOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!tagToDelete || confirmInput !== "DELETE") return;
+
+    try {
+      const result = await authenticatedFetch(
+        "http://localhost/calcpro-api/api/admin/delete_tag.php",
+        {
+          method: "POST",
+          body: JSON.stringify({ id: tagToDelete.id }),
+        }
+      );
+
+      if (result.success) {
+        toast.success(result.message);
+        invalidateCache("content_tags_");
+        await fetchTags(true);
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      toast.error("Delete failed.");
+    } finally {
+      setIsDeleteModalOpen(false);
+      setTagToDelete(null);
+    }
+  };
+
+  const initiateBulkDelete = () => {
+    if (selectedIds.length === 0) return;
+    setConfirmInput("");
+    setIsBulkDeleteModalOpen(true);
+  };
+
+  const confirmBulkDelete = async () => {
+    if (confirmInput !== "DELETE") return;
+
+    setIsBulkDeleting(true);
+    try {
+      const result = await authenticatedFetch(
+        "http://localhost/calcpro-api/api/admin/delete_tags_bulk.php",
+        {
+          method: "POST",
+          body: JSON.stringify({ ids: selectedIds }),
+        }
+      );
+
+      if (result.success) {
+        toast.success(result.message);
+        setSelectedIds([]);
+        invalidateCache("content_tags_");
+        await fetchTags(true);
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      toast.error("Bulk delete failed.");
+    } finally {
+      setIsBulkDeleting(false);
+      setIsBulkDeleteModalOpen(false);
+    }
+  };
+
+  // --- Renderers ---
+  const columns = [
+    {
+      key: "name",
+      label: "Name",
+      render: (val) => (
+        <span className="font-semibold text-gray-900 dark:text-white">
+          {val}
+        </span>
+      ),
+    },
+    {
+      key: "slug",
+      label: "Slug",
+      render: (val) => (
+        <span className="font-mono text-xs text-gray-500">{val}</span>
+      ),
+    },
+    {
+      key: "post_count",
+      label: "Usage",
+      render: (val) => (
+        <span className="inline-flex px-2.5 py-0.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+          {val} {isCalculatorContext ? "Calculators" : "Posts"}
+        </span>
+      ),
+    },
+  ];
+
+  if (!isInitialLoadComplete || initialLoading)
+    return (
+      <div className="h-96 flex items-center justify-center">
+        <LoadingSpinner size="xl" />
+      </div>
+    );
+
+  return (
+    <div className="space-y-6">
+      {/* --- HEADER CARD --- */}
+      <div className="flex items-start gap-4 p-4 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={FiHash} className="w-5 h-5" />
+        </div>
+        <div className="flex-1">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h4 className="font-bold text-gray-900 dark:text-white">
+                {pageTitle}
+              </h4>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                Organize your{" "}
+                {isCalculatorContext ? "calculators" : "blog posts"} with
+                specific keywords to improve searchability and SEO.
+              </p>
+            </div>
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => setShowModal(true)}
+              className="flex items-center justify-center space-x-2 bg-indigo-600 text-white px-5 py-2.5 rounded-lg shadow-sm hover:bg-indigo-700 transition-colors font-medium text-sm whitespace-nowrap"
+            >
+              <SafeIcon icon={FiPlus} className="w-4 h-4" />
+              <span>New Tag</span>
+            </motion.button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden relative min-h-[400px]">
+        {/* Loading Overlay */}
+        <AnimatePresence>
+          {isUpdating && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-white/60 dark:bg-gray-900/60 backdrop-blur-[1px] z-10 flex items-center justify-center"
+            >
+              <LoadingSpinner size="lg" />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Unified Toolbar */}
+        <div className="px-6 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 flex flex-col sm:flex-row justify-between items-center gap-4">
+          {/* Left: Total Count Badge */}
+          <div className="flex items-center gap-2">
+            <div className="bg-white dark:bg-gray-800 px-3 py-1.5 rounded-md border border-gray-200 dark:border-gray-600 text-xs font-bold text-gray-600 dark:text-gray-300 shadow-sm flex items-center gap-2">
+              <SafeIcon icon={FiList} className="w-3 h-3 text-indigo-500" />
+              {filteredTags.length} Tags
+            </div>
+          </div>
+
+          {/* Right: Actions & Search */}
+          <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+            <AnimatePresence>
+              {selectedIds.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, x: 10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 10 }}
+                  className="flex items-center gap-2 pr-3 border-r border-gray-300 dark:border-gray-600"
+                >
+                  <span className="text-xs font-bold text-gray-500 hidden md:block">
+                    {selectedIds.length} Selected
+                  </span>
+                  <button
+                    onClick={initiateBulkDelete}
+                    className="text-xs font-bold flex items-center gap-1.5 text-red-600 hover:text-red-800 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 px-2 py-1.5 rounded-md transition-colors shadow-sm"
+                  >
+                    <SafeIcon icon={FiAlertTriangle} className="w-3.5 h-3.5" />
+                    Delete
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="relative w-full sm:w-64">
+              <SafeIcon
+                icon={FiSearch}
+                className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4"
+              />
+              <input
+                type="text"
+                placeholder="Search tags..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-4 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm bg-white dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow"
+              />
+            </div>
+          </div>
+        </div>
+
+        <DataTable
+          columns={columns}
+          data={filteredTags}
+          loading={false}
+          onEdit={handleEdit}
+          onDelete={initiateDelete}
+          pagination={false}
+          searchable={false}
+          selectable={true}
+          selectedIds={selectedIds}
+          onSelectRow={handleSelectRow}
+          onSelectAll={handleSelectAll}
+        />
+      </div>
+
+      {/* --- ADD/EDIT MODAL --- */}
+      <Modal
+        isOpen={showModal}
+        onClose={handleCloseModal}
+        title={editingTag ? "Edit Tag" : "New Tag"}
+        size="md"
+        disableAnimation={true} // --- INSTANT POPUP ---
+      >
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+              Name <span className="text-red-500">*</span>
+            </label>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                <SafeIcon icon={FiTag} className="w-4 h-4" />
+              </div>
+              <input
+                type="text"
+                name="name"
+                value={formData.name}
+                onChange={handleChange}
+                required
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-gray-700 dark:text-white"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+              Slug <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              name="slug"
+              value={formData.slug}
+              onChange={handleChange}
+              required
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-gray-700 dark:text-white"
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-700">
+            <button
+              type="button"
+              onClick={handleCloseModal}
+              className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="flex items-center gap-2 px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold rounded-lg shadow-sm transition-all disabled:opacity-50"
+            >
+              {isSubmitting ? (
+                <>
+                  <LoadingSpinner size="xs" color="white" />
+                  <span>Saving...</span>
+                </>
+              ) : (
+                <span>{editingTag ? "Update Tag" : "Create Tag"}</span>
+              )}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* --- DELETE CONFIRMATION MODAL --- */}
+      <Modal
+        isOpen={isDeleteModalOpen}
+        onClose={() => setIsDeleteModalOpen(false)}
+        title="Confirm Deletion"
+        type="danger"
+        size="md"
+        disableAnimation={true} // --- INSTANT POPUP ---
+      >
+        <div className="space-y-4">
+          <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-200 dark:border-red-800 flex items-start gap-3">
+            <SafeIcon
+              icon={FiAlertTriangle}
+              className="w-6 h-6 text-red-600 shrink-0 mt-0.5"
+            />
+            <div>
+              <h4 className="text-sm font-bold text-red-900 dark:text-red-100">
+                Permanent Action
+              </h4>
+              <p className="text-xs text-red-800 dark:text-red-200/80 mt-1">
+                You are about to permanently delete the tag:{" "}
+                <strong>{tagToDelete?.name}</strong>. This will remove it from
+                all connected content.
+              </p>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Type <strong>DELETE</strong> to confirm:
+            </label>
+            <input
+              type="text"
+              value={confirmInput}
+              onChange={(e) => setConfirmInput(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-red-500 dark:bg-gray-700 dark:text-white"
+              placeholder="DELETE"
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              onClick={() => setIsDeleteModalOpen(false)}
+              className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmDelete}
+              disabled={confirmInput !== "DELETE"}
+              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium shadow-sm"
+            >
+              Delete Forever
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* --- BULK DELETE CONFIRMATION MODAL --- */}
+      <Modal
+        isOpen={isBulkDeleteModalOpen}
+        onClose={() => setIsBulkDeleteModalOpen(false)}
+        title={`Confirm Bulk Deletion`}
+        type="danger"
+        size="md"
+        disableAnimation={true} // --- INSTANT POPUP ---
+      >
+        <div className="space-y-4">
+          <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-200 dark:border-red-800 flex items-start gap-3">
+            <SafeIcon
+              icon={FiAlertTriangle}
+              className="w-6 h-6 text-red-600 shrink-0 mt-0.5"
+            />
+            <div>
+              <h4 className="text-sm font-bold text-red-900 dark:text-red-100">
+                Permanent Action
+              </h4>
+              <p className="text-xs text-red-800 dark:text-red-200/80 mt-1">
+                You are about to permanently delete{" "}
+                <strong>{selectedIds.length} tags</strong>. This cannot be
+                undone.
+              </p>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Type <strong>DELETE</strong> to confirm:
+            </label>
+            <input
+              type="text"
+              value={confirmInput}
+              onChange={(e) => setConfirmInput(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-red-500 dark:bg-gray-700 dark:text-white"
+              placeholder="DELETE"
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              onClick={() => setIsBulkDeleteModalOpen(false)}
+              className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmBulkDelete}
+              disabled={isBulkDeleting || confirmInput !== "DELETE"}
+              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium shadow-sm flex items-center gap-2"
+            >
+              {isBulkDeleting ? (
+                <>
+                  <LoadingSpinner size="xs" color="white" />
+                  <span>Deleting...</span>
+                </>
+              ) : (
+                "Delete All"
+              )}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+};
+
+export default Tags;

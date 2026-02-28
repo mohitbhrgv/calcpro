@@ -1,0 +1,60 @@
+// A function to get the current token from Local Storage
+const getToken = () => localStorage.getItem("calcpro-admin-token");
+
+// A function to handle the automatic logout process
+const handleUnauthorized = () => {
+    // Clear the stored user and token
+    localStorage.removeItem("calcpro-admin-user");
+    localStorage.removeItem("calcpro-admin-token");
+    // Redirect to the login page and reload the application
+    window.location.hash = '/admin/login';
+    window.location.reload();
+};
+
+/**
+ * A centralized function for making authenticated API calls.
+ * It automatically adds the JWT header and handles 401 errors by logging the user out.
+ *
+ * @param {string} url The API endpoint URL to call.
+ * @param {object} options The options for the fetch request (e.g., method, body).
+ * @returns {Promise<object>} The JSON response from the API.
+ */
+export const authenticatedFetch = async (url, options = {}) => {
+    const token = getToken();
+
+    // Prepare the headers, merging any custom headers with our standard ones
+    const headers = {
+        "Content-Type": "application/json",
+        ...options.headers, // Allow custom headers to be passed in
+    };
+
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    try {
+        const response = await fetch(url, { ...options, headers });
+
+        // If the server responds with 401 Unauthorized, the token is invalid or expired.
+        if (response.status === 401) {
+            // Use toast to inform the user before logging them out
+            // toast.error("Your session has expired. Please log in again.");
+            handleUnauthorized();
+            // We throw an error to stop further processing in the calling component
+            throw new Error("Unauthorized");
+        }
+        
+        if (!response.ok) {
+            // For other non-successful responses, try to parse the error message
+            const errorResult = await response.json();
+            throw new Error(errorResult.message || `HTTP error! status: ${response.status}`);
+        }
+
+        return await response.json();
+
+    } catch (error) {
+        // Re-throw the error so the calling component can handle it if needed
+        console.error("API call failed:", error.message);
+        throw error;
+    }
+};

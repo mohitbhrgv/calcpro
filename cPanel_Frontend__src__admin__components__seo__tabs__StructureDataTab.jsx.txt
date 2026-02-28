@@ -1,0 +1,136 @@
+import React from "react";
+import SafeIcon from "../../../../common/SafeIcon";
+import Toggle from "../common/Toggle";
+import * as FiIcons from "react-icons/fi";
+
+const { FiLayout, FiSearch, FiInfo, FiFileText } = FiIcons;
+
+const StructureDataTab = ({ settings, handleCustomChange, pagesList }) => {
+  return (
+    <div className="animate-fade-in max-w-4xl">
+      {/* --- Header Card --- */}
+      <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={FiLayout} className="w-5 h-5" />
+        </div>
+        <div>
+          <h4 className="font-bold text-gray-900 dark:text-white">Site Structure & Special Pages</h4>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            Map specific pages to Semantic Schema types (AboutPage, ContactPage) and configure Google Sitelinks features.
+            This helps search engines understand the structure and intent of your core pages.
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-8">
+        
+        {/* --- Section 1: Semantic Page Mapping --- */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm">
+            <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                    <SafeIcon icon={FiFileText} className="text-blue-500" />
+                    <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wide">Semantic Page Mapping</h3>
+                </div>
+            </div>
+            
+            <div className="p-6 space-y-6">
+                {/* About Page */}
+                <div className="flex flex-col md:flex-row md:gap-8">
+                    <div className="w-full md:w-1/3">
+                        <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-1">
+                            Select About Page
+                        </label>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                            Adds <code>@type: AboutPage</code> schema.
+                        </p>
+                    </div>
+                    <div className="w-full md:w-2/3">
+                        <select 
+                            value={settings.seo_page_for_about || ''}
+                            onChange={(e) => handleCustomChange('seo_page_for_about', e.target.value)}
+                            className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                        >
+                            <option value="">-- None --</option>
+                            {pagesList.map(page => (
+                                <option key={page.id} value={page.slug}>{page.title} (/{page.slug})</option>
+                            ))}
+                        </select>
+                    </div>
+                </div>
+
+                <hr className="border-gray-100 dark:border-gray-700" />
+
+                {/* Contact Page */}
+                <div className="flex flex-col md:flex-row md:gap-8">
+                    <div className="w-full md:w-1/3">
+                        <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200 mb-1">
+                            Select Contact Page
+                        </label>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                            Adds <code>@type: ContactPage</code> schema.
+                        </p>
+                    </div>
+                    <div className="w-full md:w-2/3">
+                        <select 
+                            value={settings.seo_page_for_contact || ''}
+                            onChange={(e) => handleCustomChange('seo_page_for_contact', e.target.value)}
+                            className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                        >
+                            <option value="">-- None --</option>
+                            {pagesList.map(page => (
+                                <option key={page.id} value={page.slug}>{page.title} (/{page.slug})</option>
+                            ))}
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {/* --- Section 2: Sitelinks Search Box --- */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm">
+            <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                    <SafeIcon icon={FiSearch} className="text-purple-500" />
+                    <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wide">Google Sitelinks</h3>
+                </div>
+            </div>
+
+            <div className="p-6">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                    <div className="flex-1">
+                        <label className="block text-sm font-bold text-gray-900 dark:text-white mb-1">
+                            Enable Sitelinks Search Box
+                        </label>
+                        <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+                            If enabled, Google may display a dedicated search box specific to your website within the search results page.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <span className={`text-xs font-bold uppercase tracking-wider ${settings.seo_enable_sitelinks_search ? 'text-green-600' : 'text-gray-400'}`}>
+                            {settings.seo_enable_sitelinks_search ? 'Enabled' : 'Disabled'}
+                        </span>
+                        <Toggle 
+                            checked={settings.seo_enable_sitelinks_search || false} 
+                            onChange={(val) => handleCustomChange('seo_enable_sitelinks_search', val)} 
+                        />
+                    </div>
+                </div>
+                
+                {/* Info Box */}
+                {settings.seo_enable_sitelinks_search && (
+                    <div className="mt-6 p-4 bg-purple-50 dark:bg-purple-900/10 border border-purple-100 dark:border-purple-800/30 rounded-lg flex gap-3 items-start">
+                        <SafeIcon icon={FiInfo} className="w-5 h-5 text-purple-600 shrink-0 mt-0.5" />
+                        <div className="text-xs text-purple-800 dark:text-purple-200">
+                            <strong>Technical Note:</strong> This feature injects a <code>WebSite</code> schema with a <code>potentialAction</code> property pointing to your site's search query parameter. Google ultimately decides whether to display the box based on site authority.
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
+export default StructureDataTab;

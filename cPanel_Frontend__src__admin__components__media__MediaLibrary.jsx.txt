@@ -1,0 +1,842 @@
+// (Update) cPanel_Frontend/src/admin/components/media/MediaLibrary.jsx
+
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import Modal from "../common/Modal";
+import SafeIcon from "@/common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+import LoadingSpinner from "../common/LoadingSpinner";
+import { authenticatedFetch } from "@/admin/utils/apiService";
+import MediaDetailsModal from "./MediaDetailsModal";
+import ConfirmModal from "../common/ConfirmModal";
+
+const {
+  FiUploadCloud,
+  FiCheckCircle,
+  FiAlertCircle,
+  FiImage,
+  FiEdit2,
+  FiCheck,
+  FiFileText,
+  FiSearch
+} = FiIcons;
+
+// --- INTERNAL COMPONENT: Progressive Grid Image ---
+const GridImage = ({ src, alt }) => {
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  return (
+    <div className="w-full h-full relative bg-gray-100 dark:bg-gray-800 flex items-center justify-center overflow-hidden">
+      {!isLoaded && (
+        <div className="absolute inset-0 flex items-center justify-center">
+           <SafeIcon icon={FiImage} className="w-8 h-8 text-gray-300 dark:text-gray-600 animate-pulse" />
+        </div>
+      )}
+      <img
+        src={src}
+        alt={alt}
+        loading="lazy"
+        onLoad={() => setIsLoaded(true)}
+        className={`w-full h-full object-cover transition-opacity duration-300 ease-in-out ${
+          isLoaded ? "opacity-100" : "opacity-0"
+        }`}
+      />
+    </div>
+  );
+};
+
+const MediaLibrary = ({
+  isOpen,
+  onClose,
+  onSelectMedia,
+  zIndexClass = "z-50",
+  disableAnimation = false,
+  initialSelectedUrl = null
+}) => {
+  const [activeTab, setActiveTab] = useState("library");
+  const [mediaItems, setMediaItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  // Search State
+  const [searchTerm, setSearchTerm] = useState("");
+
+  // Pagination & Infinite Scroll State
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const observerTarget = useRef(null);
+
+  // Selection State
+  const [selectedMedia, setSelectedMedia] = useState(null);
+  const hasInitializedSelection = useRef(false); 
+
+  // Premium Upload State
+  const [uploadState, setUploadState] = useState("idle"); 
+  const [overallProgress, setOverallProgress] = useState(0);
+  const [uploadError, setUploadError] = useState(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [batchStatus, setBatchStatus] = useState({ current: 0, total: 0, filename: "" });
+
+  // View/Edit State
+  const [viewingMediaItem, setViewingMediaItem] = useState(null);
+  const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
+
+  // Premium Process State 
+  const [isProcessing, setIsProcessing] = useState(false);
+  
+  // Confirmation Modal State
+  const [confirmDialog, setConfirmDialog] = useState({
+    isOpen: false,
+    title: "",
+    message: "",
+    confirmText: "",
+    type: "danger",
+    onConfirm: () => {}
+  });
+
+  const handleSafeClose = useCallback(() => {
+    if (uploadState === "uploading" || isProcessing) {
+        toast.error("Process in progress. Please wait.");
+        return;
+    }
+    setSearchTerm("");
+    onClose();
+  }, [uploadState, isProcessing, onClose]);
+
+  const fetchMedia = useCallback(async (pageNum = 1) => {
+    if (!isOpen) return;
+    
+    if (pageNum === 1) {
+        setLoading(true);
+    } else {
+        setIsLoadingMore(true);
+    }
+    
+    try {
+      const result = await authenticatedFetch(
+        `http://localhost/calcpro-api/api/admin/get_media.php?status=active&page=${pageNum}&limit=50`
+      );
+
+      if (result.success) {
+        const newMedia = result.data.media;
+        const totalPages = result.data.pagination.totalPages;
+        
+        if (pageNum === 1) {
+            setMediaItems(newMedia);
+        } else {
+            setMediaItems((prev) => [...prev, ...newMedia]);
+        }
+        
+        setHasMore(pageNum < totalPages);
+        setPage(pageNum);
+      } else {
+        toast.error(result.message || "Failed to load media library.");
+      }
+    } catch (error) {
+      if (error.message !== "Unauthorized") {
+        toast.error("Could not connect to the server to load media.");
+      }
+    } finally {
+      setLoading(false);
+      setIsLoadingMore(false);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (isOpen) {
+        setPage(1);
+        setHasMore(true);
+        setUploadState("idle");
+        fetchMedia(1);
+    } else {
+        hasInitializedSelection.current = false;
+    }
+  }, [isOpen, fetchMedia]);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !isLoadingMore && !loading && activeTab === 'library' && searchTerm === "") {
+          fetchMedia(page + 1);
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    if (observerTarget.current) {
+      observer.observe(observerTarget.current);
+    }
+
+    return () => observer.disconnect();
+  }, [hasMore, isLoadingMore, loading, page, fetchMedia, activeTab, searchTerm]);
+
+  // Auto-Selection 
+  useEffect(() => {
+    if (isOpen && !loading && !hasInitializedSelection.current) {
+      if (initialSelectedUrl) {
+        const match = mediaItems.find(item => item.full_url === initialSelectedUrl);
+        setSelectedMedia(match || {
+            id: 'initial-reference-item',
+            full_url: initialSelectedUrl,
+            file_name: 'Current Image',
+            isPlaceholder: true // Denotes it's a proxy lacking full DB metadata
+        });
+      } else {
+        setSelectedMedia(null);
+      }
+      hasInitializedSelection.current = true; 
+    }
+  }, [isOpen, loading, mediaItems, initialSelectedUrl]);
+
+  const filteredMedia = useMemo(() => {
+    if (!searchTerm) return mediaItems;
+    const lower = searchTerm.toLowerCase();
+    return mediaItems.filter(
+      (item) =>
+        item.file_name.toLowerCase().includes(lower) ||
+        (item.alt_text && item.alt_text.toLowerCase().includes(lower))
+    );
+  }, [mediaItems, searchTerm]);
+
+  // Dynamic Grid Rendering 
+  const gridItems = useMemo(() => {
+      let items = [...filteredMedia];
+      
+      if (initialSelectedUrl && !searchTerm && activeTab === 'library') {
+          const existingIndex = items.findIndex(item => item.full_url === initialSelectedUrl);
+          
+          if (existingIndex > -1) {
+              const [existingItem] = items.splice(existingIndex, 1);
+              items.unshift(existingItem);
+          } else {
+              items.unshift({
+                  id: 'initial-reference-item',
+                  full_url: initialSelectedUrl,
+                  file_name: 'Current Image',
+                  isPlaceholder: true
+              });
+          }
+      }
+      
+      return items;
+  }, [filteredMedia, initialSelectedUrl, searchTerm, activeTab]);
+
+
+  const handleFileSelect = (files) => {
+    if (files && files.length > 0) {
+      handleBatchUpload(Array.from(files));
+    }
+  };
+
+  const handleDrag = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFileSelect(e.dataTransfer.files);
+    }
+  };
+
+  const uploadSingleFile = (file, onProgress) => {
+    return new Promise((resolve, reject) => {
+      const formData = new FormData();
+      formData.append("mediaFile", file);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "http://localhost/calcpro-api/api/admin/upload_media.php", true);
+
+      const token = localStorage.getItem("calcpro-admin-token");
+      if (token) {
+        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      }
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          if (onProgress) onProgress(percentComplete);
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status === 201) {
+          const result = JSON.parse(xhr.responseText);
+          resolve(result);
+        } else {
+          try {
+            const errorResult = JSON.parse(xhr.responseText);
+            reject({ status: xhr.status, message: errorResult.message || `Upload failed: ${xhr.status}` });
+          } catch (e) {
+            reject({ status: xhr.status, message: `Upload failed: ${xhr.status}` });
+          }
+        }
+      };
+
+      xhr.onerror = () => {
+        reject({ status: 0, message: "Network error during upload." });
+      };
+
+      xhr.send(formData);
+    });
+  };
+
+  const handleBatchUpload = async (files) => {
+    setUploadState("uploading");
+    setOverallProgress(0);
+    setUploadError(null);
+    setSearchTerm(""); 
+    let successCount = 0;
+    let duplicateCount = 0;
+    let errors = [];
+    const totalFiles = files.length;
+
+    for (let i = 0; i < totalFiles; i++) {
+      const file = files[i];
+      setBatchStatus({ current: i + 1, total: totalFiles, filename: file.name });
+      
+      try {
+        await uploadSingleFile(file, (fileProgress) => {
+            const baseProgress = (i / totalFiles) * 100;
+            const currentFraction = (fileProgress / 100) * (100 / totalFiles);
+            const total = Math.min(Math.round(baseProgress + currentFraction), 100);
+            setOverallProgress(total);
+        });
+        successCount++;
+      } catch (err) {
+        console.error(`Failed to upload ${file.name}:`, err);
+        if (err.status === 409 || (err.message && err.message.includes("already exists"))) {
+            duplicateCount++;
+        }
+        errors.push(`${file.name}: ${err.message || 'Error'}`);
+      }
+    }
+
+    if (errors.length === 0) {
+      setOverallProgress(100);
+      setUploadState("success");
+      
+      setTimeout(() => {
+          toast.success(`Successfully uploaded ${successCount} file(s).`);
+          setPage(1);
+          fetchMedia(1);
+          setActiveTab("library");
+          setUploadState("idle");
+          setOverallProgress(0);
+      }, 1800);
+      
+    } else {
+      setUploadState("idle");
+      setOverallProgress(0);
+      
+      if (duplicateCount === errors.length) {
+          const msg = successCount === 0 
+              ? "These images already exist in the Media Library and were not uploaded again."
+              : `Uploaded ${successCount} file(s). The remaining ${duplicateCount} image(s) already exist and were skipped.`;
+          
+          toast.error(msg, { duration: 5000 });
+          setUploadError(msg);
+      } else {
+          const duplicateMsg = duplicateCount > 0 ? ` (${duplicateCount} already existed)` : "";
+          const msg = `Uploaded ${successCount} file(s). ${errors.length} failed${duplicateMsg}.`;
+          
+          toast.error(msg, { duration: 5000 });
+          setUploadError("Some files failed to upload. Please ensure they are valid images under 256MB.");
+      }
+
+      if (successCount > 0) {
+          setPage(1);
+          fetchMedia(1);
+      }
+    }
+  };
+
+  const handleConfirmSelection = () => {
+    if (selectedMedia) {
+      onSelectMedia(selectedMedia);
+      handleSafeClose();
+    }
+  };
+
+  const handleSelectClick = (item, e) => {
+      e.stopPropagation();
+      setSelectedMedia(item);
+  };
+
+  // --- SMART PROXY RESOLUTION LOGIC ---
+  const handleViewDetails = async (item, e) => {
+      e.stopPropagation(); 
+      
+      // If the item is a proxy/placeholder, resolve it to the real DB record first
+      if (item.isPlaceholder) {
+          setIsProcessing(true);
+          try {
+              // Fetch a large limit to guarantee we find the deeply paginated item
+              const result = await authenticatedFetch(`http://localhost/calcpro-api/api/admin/get_media.php?status=active&limit=5000`);
+              
+              if (result.success) {
+                  const realItem = result.data.media.find(m => m.full_url === item.full_url);
+                  if (realItem) {
+                      // Inject the real item into the local state so it permanently replaces the proxy
+                      setMediaItems(prev => {
+                          if (!prev.find(m => m.id === realItem.id)) {
+                              return [realItem, ...prev];
+                          }
+                          return prev;
+                      });
+                      
+                      // Update selection to the real item
+                      if (selectedMedia?.id === item.id) {
+                          setSelectedMedia(realItem);
+                      }
+                      
+                      // Open the details modal with the real item (allows saving Alt Text)
+                      setViewingMediaItem(realItem);
+                      setIsDetailsModalOpen(true);
+                  } else {
+                      toast.error("Original database record not found. It may have been permanently deleted.");
+                  }
+              } else {
+                  toast.error("Failed to connect to the media library.");
+              }
+          } catch (err) {
+              toast.error("Network error while resolving image details.");
+          } finally {
+              setIsProcessing(false);
+          }
+      } else {
+          // Normal item: Open details immediately
+          setViewingMediaItem(item);
+          setIsDetailsModalOpen(true);
+      }
+  };
+
+  const handleMediaUpdate = (updatedItem) => {
+      if (updatedItem.needs_refresh) {
+          setPage(1);
+          fetchMedia(1);
+      } else {
+          setMediaItems((prev) => prev.map((item) => (item.id === updatedItem.id ? updatedItem : item)));
+          if (selectedMedia?.id === updatedItem.id) {
+              setSelectedMedia(updatedItem);
+          }
+      }
+  };
+
+  const requestMediaDelete = (id) => {
+    setConfirmDialog({
+        isOpen: true,
+        title: "Move to Trash",
+        message: "Are you sure you want to move this item to the Trash? You can restore it from the main Media page later.",
+        confirmText: "Move to Trash",
+        type: "danger",
+        onConfirm: () => executeMediaDelete(id)
+    });
+  };
+
+  const executeMediaDelete = async (id) => {
+      setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+      setIsProcessing(true); 
+      
+      try {
+        const [result] = await Promise.all([
+            authenticatedFetch(
+                "http://localhost/calcpro-api/api/admin/manage_media_bulk.php",
+                {
+                method: "POST",
+                body: JSON.stringify({ ids: [id], action: 'trash' }),
+                }
+            ),
+            new Promise(res => setTimeout(res, 800)) 
+        ]);
+
+        if (result.success) {
+            toast.success("Item moved to Trash.");
+            setMediaItems(prev => prev.filter(i => i.id !== id));
+            setIsDetailsModalOpen(false);
+            if (selectedMedia?.id === id) setSelectedMedia(null);
+        } else {
+            toast.error(result.message);
+        }
+      } catch(e) {
+          toast.error("Delete failed.");
+      } finally {
+          setIsProcessing(false);
+      }
+  };
+
+  return (
+    <>
+      <ConfirmModal
+        isOpen={confirmDialog.isOpen}
+        onClose={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={confirmDialog.onConfirm}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        confirmText={confirmDialog.confirmText}
+        type={confirmDialog.type}
+      />
+
+      {isDetailsModalOpen && viewingMediaItem && (
+        <MediaDetailsModal
+            isOpen={isDetailsModalOpen}
+            onClose={() => setIsDetailsModalOpen(false)}
+            mediaItem={viewingMediaItem}
+            onUpdate={handleMediaUpdate}
+            onDelete={requestMediaDelete} 
+            disableAnimation={true}
+            zIndexClass="z-[10000]"
+        />
+      )}
+
+      <Modal
+        isOpen={isOpen}
+        onClose={handleSafeClose} 
+        title="Media Library"
+        size="xl"
+        zIndexClass={zIndexClass}
+        disableAnimation={disableAnimation} 
+      >
+        <div className="flex flex-col h-[70vh] bg-white dark:bg-gray-900">
+          
+          <div className="shrink-0 border-b border-gray-200 dark:border-gray-700 px-6 flex flex-col sm:flex-row justify-between sm:items-end gap-2 sm:gap-4 relative z-20">
+            <nav className="flex space-x-6 pt-2">
+              <button
+                onClick={() => setActiveTab("library")}
+                disabled={uploadState === "uploading" || isProcessing} 
+                className={`py-3 text-sm font-medium border-b-2 transition-colors focus:outline-none ${
+                  activeTab === "library"
+                    ? "border-calcpro-primary text-calcpro-primary"
+                    : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                } ${(uploadState === "uploading" || isProcessing) ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                Library
+              </button>
+              
+              <button
+                onClick={() => setActiveTab("upload")}
+                disabled={uploadState === "uploading" || isProcessing}
+                className={`py-3 text-sm font-medium border-b-2 transition-colors focus:outline-none ${
+                  activeTab === "upload"
+                    ? "border-calcpro-primary text-calcpro-primary"
+                    : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                } ${(uploadState === "uploading" || isProcessing) ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                Upload New
+              </button>
+            </nav>
+
+            <AnimatePresence>
+                {activeTab === "library" && (
+                    <motion.div 
+                        initial={{ opacity: 0, x: 10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: 10 }}
+                        transition={{ duration: 0.2 }}
+                        className="relative w-full sm:w-64 pb-2 sm:pb-2.5"
+                    >
+                        <SafeIcon icon={FiSearch} className="absolute left-3 top-1/2 -translate-y-[60%] sm:-translate-y-[80%] text-gray-400 dark:text-gray-500 w-4 h-4" />
+                        <input 
+                            type="text" 
+                            placeholder="Search images..." 
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="w-full pl-9 pr-4 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-400 focus:ring-2 focus:ring-calcpro-primary outline-none transition-shadow shadow-sm"
+                        />
+                    </motion.div>
+                )}
+            </AnimatePresence>
+          </div>
+          
+          <div className="flex-grow overflow-hidden relative bg-gray-50 dark:bg-gray-900/50">
+            
+            <AnimatePresence>
+                {isProcessing && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="absolute inset-0 bg-white/60 dark:bg-gray-900/60 backdrop-blur-[2px] z-30 flex flex-col items-center justify-center"
+                    >
+                        <LoadingSpinner size="lg" />
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {activeTab === "library" ? (
+              <div className="p-4 h-full relative z-10">
+                {loading && page === 1 ? (
+                  <LoadingSpinner />
+                ) : (
+                  <div className="flex flex-col h-full overflow-y-auto custom-scrollbar p-1">
+                      
+                      {gridItems.length === 0 ? (
+                          <div className="flex flex-col items-center justify-center h-full opacity-70">
+                              <SafeIcon icon={searchTerm ? FiSearch : FiImage} className="w-12 h-12 text-gray-400 mb-3" />
+                              <h3 className="text-lg font-medium text-gray-900 dark:text-white">
+                                  {searchTerm ? "No images found" : "Library is empty"}
+                              </h3>
+                              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                                  {searchTerm ? `No results for "${searchTerm}"` : "Upload images to get started."}
+                              </p>
+                          </div>
+                      ) : (
+                          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4 mb-4">
+                            {gridItems.map((item) => (
+                              <div
+                                key={`modal-media-${item.id}`}
+                                className={`group relative rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${
+                                    selectedMedia?.id === item.id
+                                    ? "border-calcpro-primary ring-2 ring-calcpro-primary/30"
+                                    : "border-transparent hover:border-gray-300 dark:hover:border-gray-600"
+                                }`}
+                                onClick={() => setSelectedMedia(item)}
+                              >
+                                {item.full_url === initialSelectedUrl && (
+                                    <div className="absolute top-0 right-0 bg-indigo-500 text-white text-[9px] uppercase tracking-wider font-bold px-2 py-1 rounded-bl-lg z-30 shadow-sm border-b border-l border-indigo-600">
+                                        Current
+                                    </div>
+                                )}
+
+                                <div className="aspect-square bg-gray-100 dark:bg-gray-800 relative">
+                                    <GridImage src={item.full_url} alt={item.alt_text || item.file_name} />
+                                </div>
+                                
+                                {selectedMedia?.id === item.id && (
+                                  <div className="absolute inset-0 bg-calcpro-primary/10 border-4 border-calcpro-primary/50 pointer-events-none z-0">
+                                     <div className="absolute top-1 left-1 bg-calcpro-primary text-white rounded-full p-0.5 shadow-sm">
+                                        <SafeIcon icon={FiCheckCircle} className="w-4 h-4" />
+                                     </div>
+                                  </div>
+                                )}
+
+                                <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 z-20">
+                                    <button
+                                        onClick={(e) => handleSelectClick(item, e)}
+                                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold shadow-md transition-transform transform active:scale-95 focus:outline-none ${
+                                            selectedMedia?.id === item.id
+                                                ? "bg-green-500 text-white cursor-default"
+                                                : "bg-indigo-600 text-white hover:bg-indigo-700"
+                                        }`}
+                                    >
+                                        <SafeIcon icon={FiCheck} className="w-3.5 h-3.5" />
+                                        {selectedMedia?.id === item.id ? "Selected" : "Select"}
+                                    </button>
+
+                                    {/* Edit Button is now safely exposed for all images, including unresolved proxies */}
+                                    <button
+                                        onClick={(e) => handleViewDetails(item, e)}
+                                        className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-gray-800 rounded-lg text-xs font-bold shadow-md hover:bg-gray-100 transition-transform transform active:scale-95 focus:outline-none"
+                                    >
+                                        <SafeIcon icon={FiEdit2} className="w-3.5 h-3.5 text-gray-600" />
+                                        Edit
+                                    </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                      )}
+
+                      {hasMore && searchTerm === "" && (
+                          <div ref={observerTarget} className="flex justify-center items-center py-4 w-full mt-auto">
+                              {isLoadingMore ? (
+                                  <div className="flex flex-col items-center">
+                                      <LoadingSpinner size="md" />
+                                      <span className="text-xs text-gray-500 mt-2">Loading more files...</span>
+                                  </div>
+                              ) : (
+                                  <span className="text-transparent">Scroll target</span>
+                              )}
+                          </div>
+                      )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="p-6 h-full flex flex-col items-center justify-center overflow-y-auto relative z-10">
+                <AnimatePresence mode="wait">
+                    
+                    {uploadState === "idle" && (
+                        <motion.div
+                            key="idle"
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -10 }}
+                            transition={{ duration: 0.2 }}
+                            className="w-full max-w-2xl"
+                            onDragEnter={handleDrag}
+                        >
+                            <input
+                              id="file-upload-media-library"
+                              type="file"
+                              multiple
+                              className="hidden"
+                              onChange={(e) => {
+                                  handleFileSelect(e.target.files);
+                                  e.target.value = ''; 
+                              }}
+                              accept="image/png, image/jpeg, image/gif, image/webp"
+                            />
+                            <label
+                              htmlFor="file-upload-media-library"
+                              className={`relative block w-full border-2 border-dashed rounded-xl p-16 text-center transition-all duration-300 cursor-pointer ${
+                                dragActive
+                                  ? "border-calcpro-primary bg-indigo-50/50 dark:bg-indigo-900/20 shadow-inner"
+                                  : "border-gray-300 dark:border-gray-600 hover:border-calcpro-primary dark:hover:border-calcpro-primary hover:bg-gray-50 dark:hover:bg-gray-800"
+                              }`}
+                            >
+                              <div className="flex flex-col items-center">
+                                <div className={`p-4 rounded-full transition-colors duration-300 ${dragActive ? 'bg-indigo-100 dark:bg-indigo-800' : 'bg-gray-100 dark:bg-gray-800'}`}>
+                                    <SafeIcon icon={FiUploadCloud} className={`w-10 h-10 ${dragActive ? 'text-calcpro-primary dark:text-indigo-400' : 'text-gray-400 dark:text-gray-500'}`} />
+                                </div>
+                                <h3 className="mt-6 text-lg font-bold text-gray-900 dark:text-white">
+                                  Drag & drop your files here
+                                </h3>
+                                <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                                  or click to browse from your computer
+                                </p>
+                                <div className="mt-6 flex items-center justify-center gap-4 text-xs font-medium text-gray-400 dark:text-gray-500">
+                                    <span className="bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-full">PNG, JPG, WEBP, GIF</span>
+                                    <span className="bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-full">Max 256MB</span>
+                                </div>
+                              </div>
+                              {dragActive && (
+                                <div
+                                  className="absolute inset-0 w-full h-full z-10"
+                                  onDragLeave={handleDrag}
+                                  onDragOver={handleDrag}
+                                  onDrop={handleDrop}
+                                ></div>
+                              )}
+                            </label>
+
+                            {uploadError && (
+                              <div className="mt-6 flex items-center justify-center text-red-600 bg-red-50 dark:bg-red-900/20 p-4 rounded-xl border border-red-100 dark:border-red-800/50">
+                                <SafeIcon icon={FiAlertCircle} className="mr-3 w-5 h-5 flex-shrink-0" />
+                                <span className="text-sm font-medium">{uploadError}</span>
+                              </div>
+                            )}
+                        </motion.div>
+                    )}
+
+                    {uploadState === "uploading" && (
+                        <motion.div
+                            key="uploading"
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 1.05 }}
+                            transition={{ duration: 0.3 }}
+                            className="w-full max-w-lg bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-100 dark:border-gray-700 p-8 text-center"
+                        >
+                            <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">Uploading Files...</h3>
+                            <p className="text-sm text-gray-500 dark:text-gray-400 mb-8">
+                                Processing file {batchStatus.current} of {batchStatus.total}
+                            </p>
+
+                            <div className="relative pt-1">
+                                <div className="flex mb-4 items-center justify-between">
+                                    <div>
+                                        <span className="text-xs font-semibold inline-block py-1 px-3 uppercase rounded-full text-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 dark:text-indigo-400">
+                                            In Progress
+                                        </span>
+                                    </div>
+                                    <div className="text-right">
+                                        <span className="text-3xl font-light text-gray-900 dark:text-white">
+                                            {overallProgress}%
+                                        </span>
+                                    </div>
+                                </div>
+                                <div className="overflow-hidden h-3 mb-4 text-xs flex rounded-full bg-gray-100 dark:bg-gray-700 shadow-inner">
+                                    <div
+                                        style={{ width: `${overallProgress}%` }}
+                                        className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-gradient-to-r from-indigo-500 to-blue-500 transition-all duration-300 ease-out"
+                                    ></div>
+                                </div>
+                            </div>
+                            
+                            <div className="flex items-center justify-center mt-6 p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-100 dark:border-gray-700">
+                                <SafeIcon icon={FiFileText} className="w-4 h-4 text-gray-400 mr-2" />
+                                <span className="text-xs font-medium text-gray-600 dark:text-gray-300 truncate max-w-[250px]">
+                                    {batchStatus.filename}
+                                </span>
+                            </div>
+                        </motion.div>
+                    )}
+
+                    {uploadState === "success" && (
+                        <motion.div
+                            key="success"
+                            initial={{ opacity: 0, scale: 0.8 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.9 }}
+                            transition={{ duration: 0.4, type: "spring", bounce: 0.4 }}
+                            className="flex flex-col items-center justify-center text-center p-8"
+                        >
+                            <motion.div 
+                                initial={{ scale: 0 }}
+                                animate={{ scale: 1 }}
+                                transition={{ delay: 0.1, type: "spring", stiffness: 200 }}
+                                className="w-20 h-20 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mb-6"
+                            >
+                                <SafeIcon icon={FiCheck} className="w-10 h-10 text-green-600 dark:text-green-400" />
+                            </motion.div>
+                            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Upload Complete!</h2>
+                            <p className="text-gray-500 dark:text-gray-400">All files have been securely processed and added to your library.</p>
+                            
+                            <motion.div 
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: 0.5 }}
+                                className="mt-8 text-xs font-medium text-indigo-500 bg-indigo-50 dark:bg-indigo-900/30 px-4 py-2 rounded-full"
+                            >
+                                Transitioning to Library...
+                            </motion.div>
+                        </motion.div>
+                    )}
+
+                </AnimatePresence>
+              </div>
+            )}
+          </div>
+          
+          <div className="shrink-0 p-4 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex justify-between items-center z-20">
+            <div className="text-sm text-gray-500 dark:text-gray-400">
+              {selectedMedia ? (
+                <span>Selected: <strong className="text-gray-900 dark:text-white">{selectedMedia.file_name}</strong></span>
+              ) : (
+                <span>Select an image to insert</span>
+              )}
+            </div>
+            <div className="flex space-x-3">
+              <button
+                onClick={handleSafeClose}
+                disabled={uploadState === "uploading" || isProcessing}
+                className={`px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors focus:outline-none ${(uploadState === "uploading" || isProcessing) ? "opacity-50 cursor-not-allowed" : ""}`}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmSelection}
+                disabled={!selectedMedia || uploadState === "uploading" || isProcessing}
+                className="px-6 py-2 text-sm font-bold bg-calcpro-primary text-white rounded-lg hover:bg-calcpro-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm focus:outline-none"
+              >
+                Insert Image
+              </button>
+            </div>
+          </div>
+        </div>
+      </Modal>
+    </>
+  );
+};
+
+export default MediaLibrary;

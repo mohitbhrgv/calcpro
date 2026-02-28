@@ -1,0 +1,174 @@
+
+import React, { useState, useEffect } from "react";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+import { authenticatedFetch } from "../../../utils/apiService";
+
+const { FiClock, FiMail, FiLock } = FiIcons;
+
+const AddTempBlockModal = ({ isOpen, onClose, onSuccess, disableAnimation = false }) => {
+  const [ipAddress, setIpAddress] = useState("");
+  // --- NEW: State for selected block type ---
+  const [blockType, setBlockType] = useState("failed_email");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!isOpen) {
+      setIpAddress("");
+      setBlockType("failed_email"); // Reset to default on close
+      setError("");
+      setIsSubmitting(false);
+    }
+  }, [isOpen]);
+
+  const isValidIpAddress = (ip) => {
+    const ipRegex =
+      /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$|^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$/;
+    return ipRegex.test(ip);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+
+    if (!ipAddress.trim()) {
+      setError("IP address is required.");
+      return;
+    }
+    if (!isValidIpAddress(ipAddress.trim())) {
+      setError("Please enter a valid IPv4 or IPv6 address.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const result = await authenticatedFetch(
+        "http://localhost/calcpro-api/api/admin/manage_blacklist.php",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            action: "add_temporary",
+            ip_address: ipAddress.trim(),
+            block_type: blockType, // Send the selected block type
+          }),
+        }
+      );
+
+      if (result.success) {
+        toast.success(result.message);
+        onSuccess();
+        onClose();
+      } else {
+        toast.error(result.message || "Failed to add temporary block.");
+      }
+    } catch (error) {
+      toast.error(error.message || "An unknown error occurred.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal 
+      isOpen={isOpen} 
+      onClose={onClose} 
+      title="Add Temporary IP Block"
+      disableAnimation={disableAnimation} // --- PROP PASSED ---
+    >
+      <form onSubmit={handleSubmit} className="space-y-6">
+        <div>
+          <label
+            htmlFor="ipAddressTemp"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
+          >
+            IP Address
+          </label>
+          <input
+            type="text"
+            id="ipAddressTemp"
+            value={ipAddress}
+            onChange={(e) => setIpAddress(e.target.value)}
+            className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:border-transparent dark:bg-gray-700 dark:text-white ${error ? "border-red-500 focus:ring-red-500" : "border-gray-300 dark:border-gray-600 focus:ring-calcpro-primary"}`}
+            placeholder="e.g., 192.168.1.1"
+          />
+          {error && <p className="mt-1 text-sm text-red-500">{error}</p>}
+        </div>
+
+        {/* --- Radio button selection for block type --- */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+            Reason for Block
+          </label>
+          <fieldset className="space-y-3">
+            <div
+              onClick={() => setBlockType("failed_email")}
+              className={`p-3 border rounded-lg cursor-pointer flex items-center space-x-3 transition-all ${
+                blockType === "failed_email"
+                  ? "border-calcpro-primary bg-blue-50 dark:bg-blue-900/20 ring-2 ring-calcpro-primary"
+                  : "border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500"
+              }`}
+            >
+              <SafeIcon
+                icon={FiMail}
+                className="w-5 h-5 text-gray-500 dark:text-gray-400"
+              />
+              <div>
+                <p className="font-medium text-gray-800 dark:text-gray-200">
+                  Failed Email / Username
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Block due to suspicious email or username attempts.
+                </p>
+              </div>
+            </div>
+
+            <div
+              onClick={() => setBlockType("failed_password")}
+              className={`p-3 border rounded-lg cursor-pointer flex items-center space-x-3 transition-all ${
+                blockType === "failed_password"
+                  ? "border-calcpro-primary bg-blue-50 dark:bg-blue-900/20 ring-2 ring-calcpro-primary"
+                  : "border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500"
+              }`}
+            >
+              <SafeIcon
+                icon={FiLock}
+                className="w-5 h-5 text-gray-500 dark:text-gray-400"
+              />
+              <div>
+                <p className="font-medium text-gray-800 dark:text-gray-200">
+                  Failed Password
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Block due to suspicious password attempts.
+                </p>
+              </div>
+            </div>
+          </fieldset>
+        </div>
+
+        <div className="flex justify-end space-x-3 pt-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-60 flex items-center space-x-2"
+          >
+            <SafeIcon icon={FiClock} />
+            <span>{isSubmitting ? "Adding..." : "Add Temporary Block"}</span>
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+export default AddTempBlockModal;

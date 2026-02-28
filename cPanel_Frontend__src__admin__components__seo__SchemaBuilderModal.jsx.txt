@@ -1,0 +1,362 @@
+import React, { useState, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import SafeIcon from "@/common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+
+// Icons
+const { 
+  FiX, FiCode, FiFileText, FiEdit3, FiGlobe, 
+  FiCheckCircle, FiInfo, FiAlertTriangle, FiLayers,
+  FiCopy, FiExternalLink 
+} = FiIcons;
+
+const SchemaBuilderModal = ({ isOpen, onClose, schemaData, onChange, postType = "Article" }) => {
+  const [activeTab, setActiveTab] = useState("edit");
+  
+  // Default State
+  const [localSchema, setLocalSchema] = useState({
+    headline: "%seo_title%",
+    description: "%seo_description%",
+    keywords: "%keywords%",
+    type: "BlogPosting" 
+  });
+
+  // Initialize State
+  useEffect(() => {
+    if (isOpen) {
+      setLocalSchema(prev => ({
+        ...prev,
+        ...schemaData,
+        headline: schemaData?.headline || "%seo_title%",
+        description: schemaData?.description || "%seo_description%",
+        keywords: schemaData?.keywords || "%keywords%",
+        type: schemaData?.type || (postType === 'post' ? 'BlogPosting' : 'Article')
+      }));
+    }
+  }, [isOpen, schemaData, postType]);
+
+  const handleInputChange = (field, value) => {
+    setLocalSchema(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleSave = () => {
+    onChange(localSchema);
+    onClose();
+  };
+
+  // Helper to check if a value is a variable
+  const isVariable = (val) => val && val.toString().startsWith('%') && val.toString().endsWith('%');
+
+  // Options for Article Type
+  const typeOptions = [
+    { id: 'Article', label: 'Article', icon: FiFileText, desc: 'General content or reports.' },
+    { id: 'BlogPosting', label: 'Blog Post', icon: FiEdit3, desc: 'Standard blog entries.' },
+    { id: 'NewsArticle', label: 'News Article', icon: FiGlobe, desc: 'Time-sensitive news.' },
+  ];
+
+  // Generate Comprehensive JSON-LD for Preview
+  const getJsonLdPreview = () => {
+    const now = new Date().toISOString();
+    
+    // --- FIXED: Use ImageObject structure for the main image ---
+    // This resolves the "Invalid object type" error in Google Rich Results Test.
+    return JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": localSchema.type,
+      "mainEntityOfPage": {
+        "@type": "WebPage",
+        "@id": "%url%" 
+      },
+      "headline": localSchema.headline,
+      "description": localSchema.description,
+      "image": {
+        "@type": "ImageObject",
+        "url": "%featured_image_url%",
+        "width": 1200, // Recommended default width
+        "height": 630  // Recommended default height
+      },  
+      "keywords": localSchema.keywords, 
+      "datePublished": now,
+      "dateModified": now,
+      "author": {
+        "@type": "Organization",
+        "name": "CalcPro",
+        "url": "https://calcpro.com" 
+      },
+      "publisher": {
+        "@type": "Organization",
+        "name": "CalcPro",
+        "logo": {
+          "@type": "ImageObject",
+          "url": "https://calcpro.com/logo.png"
+        }
+      }
+    }, null, 2);
+  };
+
+  // --- Utility Handlers ---
+
+  const handleCopyCode = () => {
+    const code = getJsonLdPreview();
+    navigator.clipboard.writeText(code).then(() => {
+        toast.success("Schema code copied to clipboard!");
+    }).catch(() => {
+        toast.error("Failed to copy code.");
+    });
+  };
+
+  const handleTestWithGoogle = () => {
+    // Open Google Rich Results Test
+    window.open("https://search.google.com/test/rich-results", "_blank");
+    // Automatically copy code for convenience
+    handleCopyCode();
+    toast("Code copied! Paste it into the tool.", { icon: '📋' });
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+          {/* Backdrop */}
+          <motion.div 
+            initial={{ opacity: 0 }} 
+            animate={{ opacity: 1 }} 
+            exit={{ opacity: 0 }} 
+            onClick={onClose}
+            className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm"
+          />
+
+          {/* Modal Window */}
+          <motion.div 
+            initial={{ scale: 0.95, opacity: 0, y: 20 }} 
+            animate={{ scale: 1, opacity: 1, y: 0 }} 
+            exit={{ scale: 0.95, opacity: 0, y: 20 }} 
+            className="bg-white dark:bg-gray-800 w-full max-w-3xl rounded-xl shadow-2xl flex flex-col max-h-[85vh] relative z-10 overflow-hidden font-sans"
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-8 py-6 border-b border-gray-100 dark:border-gray-700">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                  <SafeIcon icon={FiLayers} className="text-blue-600 dark:text-blue-400" />
+                  Schema Configuration
+                </h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                  Configure how search engines understand this content.
+                </p>
+              </div>
+              <div className="flex items-center gap-4">
+                {/* Tabs as a Segmented Control */}
+                <div className="bg-gray-100 dark:bg-gray-700 p-1 rounded-lg flex text-sm font-medium">
+                    <button 
+                        onClick={() => setActiveTab('edit')}
+                        className={`px-4 py-1.5 rounded-md transition-all ${activeTab === 'edit' ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'}`}
+                    >
+                        Settings
+                    </button>
+                    <button 
+                        onClick={() => setActiveTab('validation')}
+                        className={`px-4 py-1.5 rounded-md transition-all ${activeTab === 'validation' ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'}`}
+                    >
+                        Code Preview
+                    </button>
+                </div>
+                <button 
+                    onClick={onClose} 
+                    className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700"
+                >
+                    <SafeIcon icon={FiX} className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Scrollable Content */}
+            <div className="flex-1 overflow-y-auto p-8 bg-gray-50 dark:bg-gray-900/50">
+              
+              {activeTab === 'edit' ? (
+                  <div className="space-y-8">
+                    
+                    {/* 1. Article Type Selector (Visual Cards) */}
+                    <section>
+                        <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-4">
+                            Content Type
+                        </label>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            {typeOptions.map((opt) => (
+                                <div 
+                                    key={opt.id}
+                                    onClick={() => handleInputChange('type', opt.id)}
+                                    className={`relative cursor-pointer rounded-xl border-2 p-4 transition-all duration-200 group ${
+                                        localSchema.type === opt.id 
+                                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' 
+                                        : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-blue-300'
+                                    }`}
+                                >
+                                    {localSchema.type === opt.id && (
+                                        <div className="absolute top-3 right-3 text-blue-600 dark:text-blue-400">
+                                            <SafeIcon icon={FiCheckCircle} className="w-5 h-5" />
+                                        </div>
+                                    )}
+                                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center mb-3 ${
+                                        localSchema.type === opt.id ? 'bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 group-hover:bg-blue-50 group-hover:text-blue-500'
+                                    }`}>
+                                        <SafeIcon icon={opt.icon} className="w-5 h-5" />
+                                    </div>
+                                    <h4 className={`font-bold text-sm ${localSchema.type === opt.id ? 'text-blue-900 dark:text-blue-100' : 'text-gray-900 dark:text-white'}`}>
+                                        {opt.label}
+                                    </h4>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                        {opt.desc}
+                                    </p>
+                                </div>
+                            ))}
+                        </div>
+                    </section>
+
+                    {/* 2. Dynamic Inputs */}
+                    <section className="space-y-5">
+                        <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                            Structured Data Fields
+                        </label>
+                        
+                        {/* Headline Input */}
+                        <div className="group">
+                            <div className="flex justify-between mb-1.5">
+                                <label className="text-sm font-semibold text-gray-700 dark:text-gray-300">Headline</label>
+                                {isVariable(localSchema.headline) && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 font-medium">
+                                        Dynamic Value
+                                    </span>
+                                )}
+                            </div>
+                            <div className="relative">
+                                <input 
+                                    type="text" 
+                                    value={localSchema.headline}
+                                    onChange={(e) => handleInputChange('headline', e.target.value)}
+                                    className="w-full pl-4 pr-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow"
+                                />
+                            </div>
+                            <p className="text-xs text-gray-500 mt-1.5">The title of the article as shown in search results.</p>
+                        </div>
+
+                        {/* Description Input */}
+                        <div className="group">
+                             <div className="flex justify-between mb-1.5">
+                                <label className="text-sm font-semibold text-gray-700 dark:text-gray-300">Description</label>
+                                {isVariable(localSchema.description) && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 font-medium">
+                                        Dynamic Value
+                                    </span>
+                                )}
+                            </div>
+                            <textarea 
+                                rows={3}
+                                value={localSchema.description}
+                                onChange={(e) => handleInputChange('description', e.target.value)}
+                                className="w-full pl-4 pr-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow resize-none"
+                            />
+                             <p className="text-xs text-gray-500 mt-1.5">A short summary. Defaults to your meta description.</p>
+                        </div>
+
+                        {/* Keywords Input */}
+                        <div className="group">
+                             <div className="flex justify-between mb-1.5">
+                                <label className="text-sm font-semibold text-gray-700 dark:text-gray-300">Keywords</label>
+                                {isVariable(localSchema.keywords) && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 font-medium">
+                                        Dynamic Value
+                                    </span>
+                                )}
+                            </div>
+                            <input 
+                                type="text" 
+                                value={localSchema.keywords}
+                                onChange={(e) => handleInputChange('keywords', e.target.value)}
+                                className="w-full pl-4 pr-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow"
+                            />
+                        </div>
+                    </section>
+
+                    {/* 3. Professional Notice */}
+                    <div className="flex gap-4 p-4 bg-blue-50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-800/30 rounded-lg items-start">
+                        <div className="p-2 bg-blue-100 dark:bg-blue-800 rounded-full text-blue-600 dark:text-blue-200 shrink-0">
+                            <SafeIcon icon={FiInfo} className="w-4 h-4" />
+                        </div>
+                        <div>
+                            <h5 className="text-sm font-bold text-blue-900 dark:text-blue-100 mb-0.5">Publisher Information</h5>
+                            <p className="text-sm text-blue-700 dark:text-blue-300/80 leading-relaxed">
+                                Following Google's guidelines, the Publisher is automatically set to <strong>Organization</strong> (CalcPro) instead of the individual author to ensure valid rich results.
+                            </p>
+                        </div>
+                    </div>
+
+                  </div>
+              ) : (
+                  <div className="space-y-4 h-full flex flex-col">
+                      <div className="flex items-center justify-between">
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                                Generated JSON-LD
+                            </label>
+                            <span className="text-xs text-green-600 dark:text-green-400 font-medium mt-1 flex items-center gap-1">
+                                <SafeIcon icon={FiCheckCircle} className="w-3 h-3" /> Valid Structure
+                            </span>
+                        </div>
+                        
+                        {/* Utility Buttons */}
+                        <div className="flex items-center gap-2">
+                            <button 
+                                onClick={handleCopyCode}
+                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+                                title="Copy to clipboard"
+                            >
+                                <SafeIcon icon={FiCopy} className="w-3.5 h-3.5" /> Copy
+                            </button>
+                            <button 
+                                onClick={handleTestWithGoogle}
+                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 rounded-md hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors"
+                                title="Validate in Google Rich Results Test"
+                            >
+                                <SafeIcon icon={FiExternalLink} className="w-3.5 h-3.5" /> Test with Google
+                            </button>
+                        </div>
+                      </div>
+                      
+                      <div className="flex-1 bg-gray-900 rounded-lg p-4 overflow-auto border border-gray-700 shadow-inner relative group">
+                          <pre className="text-sm font-mono text-green-400">
+                              {getJsonLdPreview()}
+                          </pre>
+                      </div>
+                      <p className="text-xs text-gray-500 text-center">
+                          This is a preview. Actual values (dates, URLs) are dynamically generated at runtime.
+                      </p>
+                  </div>
+              )}
+              
+            </div>
+
+            {/* Footer */}
+            <div className="px-8 py-5 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex justify-end gap-3">
+              <button
+                onClick={onClose}
+                className="px-5 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSave}
+                className="flex items-center gap-2 px-6 py-2.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-md hover:shadow-lg transition-all transform active:scale-95"
+              >
+                <SafeIcon icon={FiCheckCircle} className="w-4 h-4" />
+                <span>Apply Schema</span>
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+};
+
+export default SchemaBuilderModal;

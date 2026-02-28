@@ -1,0 +1,218 @@
+import React from "react";
+import SmartInput from "../common/SmartInput";
+import RobotsRow from "../common/RobotsRow";
+import AdvancedRobotsRow from "../common/AdvancedRobotsRow";
+import InheritanceControl from "../common/InheritanceControl";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiFileText, FiSettings } = FiIcons;
+
+const PostTypeTab = ({ type, settings, handleChange, handleCustomChange }) => {
+  // Map the UI tab ID to the database prefix key
+  const typeMap = {
+    posts: { prefix: "post", label: "Post", icon: FiFileText },
+    pages: { prefix: "page", label: "Page", icon: FiFileText },
+    calculators: { prefix: "calc", label: "Calculator", icon: FiSettings },
+  };
+
+  const currentType = typeMap[type] || { prefix: type, label: type, icon: FiFileText };
+  const dbPrefix = `seo_${currentType.prefix}`;
+  
+  // Master switch logic
+  const customEnabledKey = `${dbPrefix}_robots_custom_enabled`;
+  const isCustomEnabled = settings[customEnabledKey] === true;
+
+  const vars = [
+    { label: "Title", value: "%title%" },
+    { label: "Separator", value: "%sep%" },
+    { label: "Site Name", value: "%sitename%" },
+    { label: "Excerpt", value: "%excerpt%" },
+    { label: "Current Year", value: "%currentyear%" },
+  ];
+
+  const getSchemaOptions = () => {
+    switch (type) {
+      case 'posts':
+        return (
+          <>
+            <option value="BlogPosting">Blog Post (Recommended)</option>
+            <option value="Article">Article (General)</option>
+            <option value="NewsArticle">News Article (Time-sensitive)</option>
+            <option value="ScholarlyArticle">Scholarly Article</option>
+            <option value="TechArticle">Tech Article</option>
+            <option value="None">None</option>
+          </>
+        );
+      case 'pages':
+        return (
+          <>
+            <option value="WebPage">Web Page (General)</option>
+            <option value="ContactPage">Contact Page</option>
+            <option value="AboutPage">About Page</option>
+            <option value="FAQPage">FAQ Page (Rich Results)</option>
+            <option value="Service">Service Page</option>
+            <option value="CollectionPage">Collection/Archive Page</option>
+            <option value="MedicalWebPage">Medical Web Page</option>
+            <option value="RealEstateListing">Real Estate Listing</option>
+            <option value="None">None</option>
+          </>
+        );
+      case 'calculators':
+        return (
+          <>
+            <option value="WebApplication">Web Application (Recommended)</option>
+            <option value="SoftwareApplication">Software Application</option>
+            <option value="FinanceApplication">Finance Application</option>
+            <option value="HealthApplication">Health Application (BMR/BMI)</option>
+            <option value="WebPage">Web Page (Fallback)</option>
+            <option value="None">None</option>
+          </>
+        );
+      default:
+        return <option value="WebPage">Web Page</option>;
+    }
+  };
+
+  const handleToggleInheritance = (shouldEnable) => {
+      handleCustomChange(customEnabledKey, shouldEnable);
+      if (shouldEnable) {
+          const keysToCopy = [
+              'index', 'noindex', 'nofollow', 'noarchive', 'noimageindex', 'nosnippet',
+              'max_snippet', 'max_video_preview', 'max_image_preview'
+          ];
+          keysToCopy.forEach(key => {
+             const globalValue = settings[`seo_robots_global_${key}`];
+             handleCustomChange(`${dbPrefix}_robots_${key}`, globalValue);
+          });
+      }
+  };
+
+  return (
+    <div className="animate-fade-in">
+      {/* --- Standardized Header Card --- */}
+      <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={currentType.icon} className="w-5 h-5" />
+        </div>
+        <div>
+          <h4 className="font-bold text-gray-900 dark:text-white">{currentType.label} Defaults</h4>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            Set the default SEO title, description, and schema templates for all single {type}. These can be overridden individually in the editor.
+          </p>
+        </div>
+      </div>
+
+      {/* --- General Meta Settings --- */}
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+        Single {currentType.label} Settings
+      </h3>
+
+      <SmartInput
+        label={`Single ${currentType.label} Title`}
+        value={settings[`${dbPrefix}_title_template`]}
+        onChange={(e) =>
+          handleCustomChange(`${dbPrefix}_title_template`, e.target.value)
+        }
+        helpText={`Default title tag for single ${type}.`}
+        variables={vars}
+      />
+
+      <SmartInput
+        label={`Single ${currentType.label} Description`}
+        value={settings[`${dbPrefix}_desc_template`]}
+        onChange={(e) =>
+          handleCustomChange(`${dbPrefix}_desc_template`, e.target.value)
+        }
+        helpText={`Default description for single ${type}.`}
+        variables={vars}
+      />
+
+      <div className="py-4">
+        <hr className="border-gray-100 dark:border-gray-700" />
+      </div>
+
+      {/* --- Robots Meta with Inheritance Control --- */}
+      <InheritanceControl 
+        isCustom={isCustomEnabled} 
+        onToggle={handleToggleInheritance} 
+        label={`${currentType.label} Robots Meta`} 
+      />
+
+      <RobotsRow
+        label={`${currentType.label} Robots Meta`}
+        prefix={`${dbPrefix}_robots_`}
+        settings={settings}
+        onChange={handleChange}
+        disabled={!isCustomEnabled}
+      />
+
+      <AdvancedRobotsRow
+        prefix={`${dbPrefix}_robots_`}
+        settings={settings}
+        onChange={handleChange}
+        disabled={!isCustomEnabled}
+      />
+
+      <div className="py-4">
+        <hr className="border-gray-100 dark:border-gray-700" />
+      </div>
+
+      {/* --- Schema Markup Section --- */}
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+        Schema Markup
+      </h3>
+
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+        <div className="w-full md:w-1/4 pt-2">
+            <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">Schema Type</label>
+            <p className="text-xs text-gray-500 mt-1">The default JSON-LD structure for this post type.</p>
+        </div>
+        <div className="w-full md:w-3/4">
+            <select 
+                value={settings[`${dbPrefix}_schema_type`] || ''}
+                onChange={(e) => handleCustomChange(`${dbPrefix}_schema_type`, e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md dark:bg-gray-800 dark:text-white focus:ring-blue-500 focus:border-blue-500"
+            >
+                {getSchemaOptions()}
+            </select>
+        </div>
+      </div>
+
+      <SmartInput
+        label="Headline Template"
+        value={settings[`${dbPrefix}_schema_headline`] || "%title%"}
+        onChange={(e) =>
+          handleCustomChange(`${dbPrefix}_schema_headline`, e.target.value)
+        }
+        helpText="The text used for the Schema 'headline' property."
+        variables={vars}
+      />
+
+      {type === 'posts' && (
+          <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+            <div className="w-full md:w-1/4 pt-2">
+                <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">Author Type</label>
+            </div>
+            <div className="w-full md:w-3/4">
+                <select 
+                    value={settings[`${dbPrefix}_schema_author_type`] || 'Person'}
+                    onChange={(e) => handleCustomChange(`${dbPrefix}_schema_author_type`, e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md dark:bg-gray-800 dark:text-white focus:ring-blue-500 focus:border-blue-500"
+                >
+                    <option value="Person">Person (Current User)</option>
+                    <option value="Organization">Organization (Company)</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">Who should be credited as the author in the Schema?</p>
+            </div>
+          </div>
+      )}
+      
+      <div className="p-4 mt-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-sm rounded border border-blue-100 dark:border-blue-800">
+        <strong>Note:</strong> These are the <em>default</em> settings. You can override these for individual {type} in the editor.
+      </div>
+    </div>
+  );
+};
+
+export default PostTypeTab;

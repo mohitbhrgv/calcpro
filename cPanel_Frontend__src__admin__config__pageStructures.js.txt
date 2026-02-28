@@ -1,0 +1,318 @@
+// (Update) cPanel_Frontend/src/admin/config/pageStructures.js
+
+export const pageStructures = {
+  "contact": {
+    name: "Contact Us Page",
+    fields: [
+      { 
+        key: "pageHeading", 
+        label: "Page Heading", 
+        type: "text", 
+        placeholder: "Get in Touch" 
+      },
+      { 
+        key: "contactIntro1", 
+        label: "Intro Paragraph 1", 
+        type: "textarea", 
+        placeholder: "For support, email us at [email]. We reply within 24 hours." 
+      },
+      {
+        key: "contactIntro2",
+        label: "Intro Paragraph 2 (Technical Questions)",
+        type: "textarea",
+        placeholder: "If you have a technical question, please include as many details as possible."
+      },
+      { 
+        key: "formHeading", 
+        label: "Form Heading", 
+        type: "text", 
+        placeholder: "Send Us a Message" 
+      },
+      { 
+        key: "formSubheading", 
+        label: "Form Subheading", 
+        type: "text", 
+        placeholder: "We'll get back to you as soon as possible" 
+      },
+      { 
+        key: "emailAddress", 
+        label: "Direct Email Address", 
+        type: "text", 
+        placeholder: "support@calculox.com" 
+      },
+      { 
+        key: "faqCtaHeading", 
+        label: "FAQ CTA Heading", 
+        type: "text", 
+        placeholder: "Looking for Quick Answers?" 
+      },
+      {
+        key: "faqCtaSubheading",
+        label: "FAQ CTA Subheading",
+        type: "textarea",
+        placeholder: "Check our FAQ section for instant answers to common questions about using our calculators and features."
+      },
+    ],
+  },
+  "privacy-policy": {
+    name: "Privacy Policy Page",
+    fields: [
+      { 
+        key: "badgeText", 
+        label: "Header Badge Text", 
+        type: "text", 
+        placeholder: "Legal Documentation" 
+      },
+      { 
+        key: "pageHeading", 
+        label: "Page Heading", 
+        type: "text", 
+        placeholder: "Privacy Policy" 
+      },
+      { 
+        key: "lastUpdated", 
+        label: "Last Updated Date", 
+        type: "text", 
+        placeholder: "May 31, 2025" 
+      },
+      { 
+        key: "mainContent", 
+        label: "Main Policy Content", 
+        type: "richtext", 
+        placeholder: "Enter your privacy policy details here..." 
+      },
+      { 
+        key: "regulatoryHeading", 
+        label: "Regulatory Docs Heading", 
+        type: "text", 
+        placeholder: "Regulatory Docs:" 
+      },
+      { 
+        key: "regLink1Label", 
+        label: "Link 1 Label", 
+        type: "text", 
+        placeholder: "Terms of Service" 
+      },
+      { 
+        key: "regLink1Target", 
+        label: "Link 1 Target Page", 
+        type: "page-selector", 
+      },
+      { 
+        key: "regLink2Label", 
+        label: "Link 2 Label", 
+        type: "text", 
+        placeholder: "Cookie Policy" 
+      },
+      { 
+        key: "regLink2Target", 
+        label: "Link 2 Target Page", 
+        type: "page-selector", 
+      },
+      { 
+        key: "bottomCtaText", 
+        label: "Bottom Notice (Use [Email] or [Link Text])", 
+        type: "textarea", 
+        placeholder: "If you have any questions regarding our [data policies], please reach out to us at [Email]" 
+      },
+      { 
+        key: "bottomEmailAddress", 
+        label: "Email Address for [Email] tag", 
+        type: "text", 
+        placeholder: "privacy@calculox.com" 
+      },
+      { 
+        key: "bottomCtaLinkTarget", 
+        label: "Target Page for [Link Text] tag", 
+        type: "page-selector", 
+      },
+    ],
+  },
+  "terms-of-service": {
+    name: "Terms of Service Page",
+    fields: [
+      { 
+        key: "badgeText", 
+        label: "Header Badge Text", 
+        type: "text", 
+        placeholder: "Legal Documentation" 
+      },
+      { 
+        key: "pageHeading", 
+        label: "Page Heading", 
+        type: "text", 
+        placeholder: "Terms of Service" 
+      },
+      { 
+        key: "lastUpdated", 
+        label: "Last Updated Date", 
+        type: "text", 
+        placeholder: "May 31, 2025" 
+      },
+      { 
+        key: "mainContent", 
+        label: "Main Terms Content", 
+        type: "richtext", 
+        placeholder: "Enter your terms of service details here..." 
+      },
+
+      // Regulatory Links Section
+      { 
+        key: "regulatoryHeading", 
+        label: "Regulatory Docs Heading", 
+        type: "text", 
+        placeholder: "Regulatory Docs:" 
+      },
+      { 
+        key: "regLink1Label", 
+        label: "Link 1 Label", 
+        type: "text", 
+        placeholder: "Privacy Policy" 
+      },
+      { 
+        key: "regLink1Target", 
+        label: "Link 1 Target Page", 
+        type: "page-selector", 
+      },
+      { 
+        key: "regLink2Label", 
+        label: "Link 2 Label", 
+        type: "text", 
+        placeholder: "Cookie Policy" 
+      },
+      { 
+        key: "regLink2Target", 
+        label: "Link 2 Target Page", 
+        type: "page-selector", 
+      },
+
+      // Bottom CTA (Standardized)
+      { 
+        key: "bottomCtaText", 
+        label: "Bottom Notice (Use [Email] or [Link Text])", 
+        type: "textarea", 
+        placeholder: "If you have any questions regarding our [data policies], please reach out to us at [Email]" 
+      },
+      { 
+        key: "bottomEmailAddress", 
+        label: "Email Address for [Email] tag", 
+        type: "text", 
+        placeholder: "legal@calculox.com" 
+      },
+      { 
+        key: "bottomCtaLinkTarget", 
+        label: "Target Page for [Link Text] tag", 
+        type: "page-selector", 
+      },
+    ],
+  },
+  "cookie-policy": {
+    name: "Cookie Policy Page",
+    fields: [
+      { 
+        key: "badgeText", 
+        label: "Header Badge Text", 
+        type: "text", 
+        placeholder: "Legal Documentation" 
+      },
+      { 
+        key: "pageHeading", 
+        label: "Page Heading", 
+        type: "text", 
+        placeholder: "Cookie Policy" 
+      },
+      { 
+        key: "lastUpdated", 
+        label: "Last Updated Date", 
+        type: "text", 
+        placeholder: "May 31, 2025" 
+      },
+      { 
+        key: "mainContent", 
+        label: "Main Policy Content", 
+        type: "richtext", 
+        placeholder: "Enter your cookie policy details here..." 
+      },
+      { 
+        key: "regulatoryHeading", 
+        label: "Regulatory Docs Heading", 
+        type: "text", 
+        placeholder: "Regulatory Docs:" 
+      },
+      { 
+        key: "regLink1Label", 
+        label: "Link 1 Label", 
+        type: "text", 
+        placeholder: "Privacy Policy" 
+      },
+      { 
+        key: "regLink1Target", 
+        label: "Link 1 Target Page", 
+        type: "page-selector", 
+      },
+      { 
+        key: "regLink2Label", 
+        label: "Link 2 Label", 
+        type: "text", 
+        placeholder: "Terms of Service" 
+      },
+      { 
+        key: "regLink2Target", 
+        label: "Link 2 Target Page", 
+        type: "page-selector", 
+      },
+      { 
+        key: "bottomCtaText", 
+        label: "Bottom Notice (Use [Email] or [Link Text])", 
+        type: "textarea", 
+        placeholder: "If you have any questions regarding our [data policies], please reach out to us at [Email]" 
+      },
+      { 
+        key: "bottomEmailAddress", 
+        label: "Email Address for [Email] tag", 
+        type: "text", 
+        placeholder: "privacy@calculox.com" 
+      },
+      { 
+        key: "bottomCtaLinkTarget", 
+        label: "Target Page for [Link Text] tag", 
+        type: "page-selector", 
+      },
+    ],
+  },
+  "blog": {
+    name: "Blog Page",
+    fields: [
+      { 
+        key: "pageHeading", 
+        label: "Page Heading", 
+        type: "text", 
+        placeholder: "Calculox Blog" 
+      },
+      { 
+        key: "pageSubheading", 
+        label: "Page Subheading", 
+        type: "textarea", 
+        placeholder: "Insights, tutorials, and tips for making better decisions with our calculators." 
+      },
+      {
+        key: "newsletterHeading",
+        label: "Newsletter Section Heading",
+        type: "text",
+        placeholder: "Subscribe to Our Newsletter"
+      },
+      {
+        key: "newsletterSubheading",
+        label: "Newsletter Section Subheading",
+        type: "textarea",
+        placeholder: "Stay updated with our latest articles, calculator updates, and financial tips delivered straight to your inbox."
+      },
+      {
+        key: "newsletterPrivacy",
+        label: "Newsletter Privacy Text",
+        type: "text",
+        placeholder: "We respect your privacy. Unsubscribe at any time."
+      },
+    ],
+  },
+};

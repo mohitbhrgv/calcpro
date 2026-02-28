@@ -1,0 +1,124 @@
+// (Update) cPanel_Frontend/src/App.jsx
+
+import React from "react";
+import { HashRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "react-hot-toast";
+import { ThemeProvider } from "./admin/context/ThemeContext";
+import { AuthProvider } from "./admin/context/AuthContext";
+import { LayoutProvider, useLayout } from "./admin/context/LayoutContext";
+import { AdminCacheProvider } from "./admin/context/AdminCacheContext";
+
+import AdminLayout from "./admin/components/layout/AdminLayout";
+import Dashboard from "./admin/pages/Dashboard";
+import ContentPages from "./admin/pages/content/Pages";
+import ContentPosts from "./admin/pages/content/Posts";
+import ContentCategories from "./admin/pages/content/Categories";
+import ContentTags from "./admin/pages/content/Tags";
+import PageEditor from "./admin/pages/content/PageEditor";
+import PostEditor from "./admin/pages/content/PostEditor";
+import ContentCalculators from "./admin/pages/content/Calculators";
+import CalculatorEditor from "./admin/pages/content/CalculatorEditor";
+import CalculatorCategories from "./admin/pages/content/calculators/Categories";
+import Users from "./admin/pages/Users";
+import SeoGeneral from "./admin/pages/seo/SeoGeneral";
+import SeoTitlesMeta from "./admin/pages/seo/SeoTitlesMeta";
+import SeoRedirects from "./admin/pages/seo/SeoRedirects";
+import Seo404Monitor from "./admin/pages/seo/Seo404Monitor";
+import Security from "./admin/pages/Security";
+import TwoFactorAuth from "./admin/pages/security/TwoFactorAuth";
+import InactivityLogout from "./admin/pages/security/InactivityLogout";
+
+import SiteConfig from "./admin/pages/settings/SiteConfig";
+import PermalinksPage from "./admin/pages/settings/PermalinksPage";
+import SystemEnvironment from "./admin/pages/settings/SystemEnvironment";
+import Integrations from "./admin/pages/settings/Integrations";
+
+import Login from "./admin/pages/Login";
+import MediaPage from "./admin/pages/Media";
+import ResetPassword from "./admin/pages/ResetPassword";
+import UnlockAccount from "./admin/pages/UnlockAccount";
+import "./index.css";
+
+const AppWrapper = () => {
+  const { backgroundClass } = useLayout();
+
+  return (
+    <div className={`min-h-screen w-full transition-colors duration-300 ${backgroundClass}`}>
+      {/* --- FIX: Added containerStyle with high zIndex --- */}
+      <Toaster 
+        position="top-right" 
+        containerStyle={{ zIndex: 99999 }} 
+        toastOptions={{ duration: 4000, style: { background: "#333", color: "#fff" } }} 
+      />
+      <Router>
+        <Routes>
+          <Route path="/" element={<Navigate to="/admin/dashboard" replace />} />
+          <Route path="/admin/login" element={<Login />} />
+          <Route path="/admin/reset-password/:token?" element={<ResetPassword />} />
+          <Route path="/admin/unlock-account/:token" element={<UnlockAccount />} />
+
+          <Route path="/admin/*" element={<AdminLayout />}>
+            <Route path="dashboard" element={<Dashboard />} />
+            
+            {/* Content Routes */}
+            <Route path="content/pages" element={<ContentPages />} />
+            <Route path="content/pages/new" element={<PageEditor />} />
+            <Route path="content/pages/edit/:id" element={<PageEditor />} />
+            <Route path="content/posts" element={<ContentPosts />} />
+            <Route path="content/posts/new" element={<PostEditor />} />
+            <Route path="content/posts/edit/:id" element={<PostEditor />} />
+            <Route path="content/categories" element={<ContentCategories />} />
+            <Route path="content/tags" element={<ContentTags />} />
+
+            {/* Calculator Routes */}
+            <Route path="content/calculators" element={<ContentCalculators />} />
+            <Route path="content/calculators/new" element={<CalculatorEditor />} />
+            <Route path="content/calculators/edit/:id" element={<CalculatorEditor />} />
+            <Route path="content/calculators/categories" element={<CalculatorCategories />} />
+
+            {/* Media & Users */}
+            <Route path="media" element={<MediaPage />} />
+            <Route path="users" element={<Users />} />
+            
+            {/* SEO Routes */}
+            <Route path="seo/general" element={<SeoGeneral />} />
+            <Route path="seo/titles-meta" element={<SeoTitlesMeta />} />
+            <Route path="seo/redirects" element={<SeoRedirects />} />
+			      <Route path="seo/404-monitor" element={<Seo404Monitor />} />
+            <Route path="seo-analytics" element={<Navigate to="seo/general" replace />} />
+
+            {/* Security Routes */}
+            <Route path="security" element={<Navigate to="brute-force" replace />} />
+            <Route path="security/brute-force" element={<Security />} />
+            <Route path="security/2fa" element={<TwoFactorAuth />} />
+            <Route path="security/inactivity" element={<InactivityLogout />} />
+            <Route path="security/backup-restore" element={<Security />} />
+
+            {/* Settings Routes */}
+            <Route path="settings" element={<Navigate to="general" replace />} />
+            <Route path="settings/general" element={<SiteConfig />} />
+            <Route path="settings/integrations" element={<Integrations />} />
+            <Route path="settings/permalinks" element={<PermalinksPage />} />
+            <Route path="settings/environment" element={<SystemEnvironment />} />
+          </Route>
+        </Routes>
+      </Router>
+    </div>
+  );
+};
+
+function App() {
+  return (
+    <ThemeProvider>
+      <AuthProvider>
+        <LayoutProvider>
+          <AdminCacheProvider>
+             <AppWrapper />
+          </AdminCacheProvider>
+        </LayoutProvider>
+      </AuthProvider>
+    </ThemeProvider>
+  );
+}
+
+export default App;

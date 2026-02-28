@@ -1,0 +1,296 @@
+import React, { useState, useEffect } from "react";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import { authenticatedFetch } from "../../../utils/apiService";
+import toast from "react-hot-toast";
+
+const { FiSave, FiClock, FiList, FiAlertCircle, FiShield, FiInfo, FiActivity } = FiIcons;
+
+// Internal Tooltip Component
+const Tooltip = ({ children }) => (
+  <div className="absolute bottom-full left-0 mb-2 hidden w-64 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-xl group-hover:block z-50">
+    {children}
+    <div className="absolute top-full left-3 -mt-1 border-4 border-transparent border-t-gray-900"></div>
+  </div>
+);
+
+const SecuritySettingsModal = ({ isOpen, onClose, onSuccess, disableAnimation = false }) => {
+  const [loading, setLoading] = useState(false);
+  const [formData, setFormData] = useState({
+    login_attempt_retention_days: 30,
+    security_log_pagination_limit: 15,
+    security_temp_block_duration_minutes: 1440,
+    // New Fields
+    security_escalation_timeframe_hours: 24,
+    security_escalation_threshold: 2
+  });
+
+  useEffect(() => {
+    if (isOpen) {
+      const fetchSettings = async () => {
+        setLoading(true);
+        try {
+          const result = await authenticatedFetch(
+            "http://localhost/calcpro-api/api/admin/get_settings.php"
+          );
+          if (result.success) {
+            setFormData({
+              login_attempt_retention_days: parseInt(result.data.login_attempt_retention_days) || 30,
+              security_log_pagination_limit: parseInt(result.data.security_log_pagination_limit) || 15,
+              security_temp_block_duration_minutes: parseInt(result.data.security_temp_block_duration_minutes) || 1440,
+              security_escalation_timeframe_hours: parseInt(result.data.security_escalation_timeframe_hours) || 24,
+              security_escalation_threshold: parseInt(result.data.security_escalation_threshold) || 2
+            });
+          }
+        } catch (error) {
+          toast.error("Failed to load current settings.");
+        } finally {
+          setLoading(false);
+        }
+      };
+      fetchSettings();
+    }
+  }, [isOpen]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    const val = value === "" ? "" : parseInt(value);
+    setFormData((prev) => ({
+      ...prev,
+      [name]: val,
+    }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    // Frontend validation
+    if (formData.security_log_pagination_limit < 10 || formData.security_log_pagination_limit > 500) {
+      toast.error("Pagination limit must be between 10 and 500.");
+      return;
+    }
+    if (formData.security_temp_block_duration_minutes < 5 || formData.security_temp_block_duration_minutes > 43200) {
+      toast.error("Temp block duration must be between 5 mins and 30 days.");
+      return;
+    }
+    if (formData.security_escalation_timeframe_hours < 1 || formData.security_escalation_timeframe_hours > 720) {
+        toast.error("Escalation timeframe must be between 1 hour and 30 days.");
+        return;
+    }
+    if (formData.security_escalation_threshold < 2 || formData.security_escalation_threshold > 20) {
+        toast.error("Threshold must be at least 2 attempts.");
+        return;
+    }
+
+    setLoading(true);
+
+    try {
+      const result = await authenticatedFetch(
+        "http://localhost/calcpro-api/api/admin/update_settings.php",
+        { method: "POST", body: JSON.stringify(formData) }
+      );
+
+      if (result.success) {
+        toast.success("Security configuration updated.");
+        onSuccess();
+        onClose();
+      } else {
+        toast.error(result.message || "Update failed.");
+      }
+    } catch (error) {
+      toast.error("Connection failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Modal 
+      isOpen={isOpen} 
+      onClose={onClose} 
+      title="Security Configuration" 
+      size="lg"
+      disableAnimation={disableAnimation} // --- PROP PASSED ---
+    >
+      <form onSubmit={handleSubmit} className="space-y-6 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
+        <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-100 dark:border-blue-800 flex gap-3 items-start">
+          <SafeIcon
+            icon={FiAlertCircle}
+            className="w-5 h-5 text-blue-600 shrink-0 mt-0.5"
+          />
+          <p className="text-sm text-blue-800 dark:text-blue-200">
+            These settings affect how security threats are managed, escalated, and displayed.
+          </p>
+        </div>
+
+        {/* --- SECTION 1: Temporary Blocks --- */}
+        <div className="space-y-4 border-b border-gray-100 dark:border-gray-700 pb-6">
+            <h4 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wider">Temporary Block Settings</h4>
+            <div>
+            <div className="flex items-center gap-2 mb-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                <SafeIcon icon={FiShield} className="w-4 h-4 text-gray-500" />
+                Temporary Block Duration (Minutes)
+                </label>
+                <div className="group relative">
+                <SafeIcon
+                    icon={FiInfo}
+                    className="w-3.5 h-3.5 text-gray-400 cursor-help"
+                />
+                <Tooltip>
+                    <p className="font-bold mb-1 border-b border-gray-700 pb-1">
+                    Common Conversions:
+                    </p>
+                    <ul className="space-y-1">
+                    <li>• 15 mins (Soft Lock)</li>
+                    <li>• 60 mins (1 Hour)</li>
+                    <li>• 1440 mins (24 Hours – Standard)</li>
+                    <li>• 10080 mins (1 Week – Aggressive)</li>
+                    </ul>
+                </Tooltip>
+                </div>
+            </div>
+            <input
+                type="number"
+                name="security_temp_block_duration_minutes"
+                value={formData.security_temp_block_duration_minutes}
+                onChange={handleChange}
+                min="5"
+                max="43200"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+                How long an IP remains blocked after exceeding failure limits (3 failed attempts).
+            </p>
+            </div>
+        </div>
+
+        {/* --- SECTION 2: Permanent Escalation --- */}
+        <div className="space-y-4 border-b border-gray-100 dark:border-gray-700 pb-6">
+            <h4 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                <SafeIcon icon={FiActivity} className="w-4 h-4 text-purple-500" />
+                Permanent Block Logic
+            </h4>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Time Frame (Hours)
+                    </label>
+                    <input
+                        type="number"
+                        name="security_escalation_timeframe_hours"
+                        value={formData.security_escalation_timeframe_hours}
+                        onChange={handleChange}
+                        min="1"
+                        max="720"
+                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-purple-500 outline-none"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                        The window of time to look back for repeat offenses.
+                    </p>
+                </div>
+                
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Max Temporary Blocks
+                    </label>
+                    <input
+                        type="number"
+                        name="security_escalation_threshold"
+                        value={formData.security_escalation_threshold}
+                        onChange={handleChange}
+                        min="2"
+                        max="20"
+                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-purple-500 outline-none"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                        If an IP gets blocked <strong>{formData.security_escalation_threshold} times</strong> within <strong>{formData.security_escalation_timeframe_hours} hours</strong>, it will be permanently banned.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        {/* --- SECTION 3: Logs & View --- */}
+        <div className="space-y-4">
+             <h4 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wider">Display & Retention</h4>
+            <div>
+            <div className="flex items-center gap-2 mb-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                <SafeIcon icon={FiClock} className="w-4 h-4 text-gray-500" />
+                Log Retention (Days)
+                </label>
+                <div className="group relative">
+                <SafeIcon
+                    icon={FiInfo}
+                    className="w-3.5 h-3.5 text-gray-400 cursor-help"
+                />
+                <Tooltip>
+                    Determines how many days failed login attempts are stored before auto-cleanup.
+                </Tooltip>
+                </div>
+            </div>
+            <input
+                type="number"
+                name="login_attempt_retention_days"
+                value={formData.login_attempt_retention_days}
+                onChange={handleChange}
+                min="1"
+                max="365"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+            />
+            </div>
+
+            <div>
+            <div className="flex items-center gap-2 mb-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                <SafeIcon icon={FiList} className="w-4 h-4 text-gray-500" />
+                Pagination Limit
+                </label>
+                <div className="group relative">
+                <SafeIcon
+                    icon={FiInfo}
+                    className="w-3.5 h-3.5 text-gray-400 cursor-help"
+                />
+                <Tooltip>
+                    Controls the number of rows displayed per page. Set between 10 and 500.
+                </Tooltip>
+                </div>
+            </div>
+            <input
+                type="number"
+                name="security_log_pagination_limit"
+                value={formData.security_log_pagination_limit}
+                onChange={handleChange}
+                min="10"
+                max="500"
+                placeholder="e.g. 50"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+            />
+            </div>
+        </div>
+
+        <div className="flex justify-end pt-4 border-t border-gray-100 dark:border-gray-700">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg mr-2"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={loading}
+            className="flex items-center gap-2 px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 font-medium"
+          >
+            <SafeIcon icon={FiSave} className="w-4 h-4" />
+            {loading ? "Saving..." : "Save Settings"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+export default SecuritySettingsModal;

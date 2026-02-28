@@ -1,0 +1,171 @@
+import React from "react";
+import SafeIcon from "../../../../common/SafeIcon";
+import Toggle from "../common/Toggle";
+import * as FiIcons from "react-icons/fi";
+
+const { FiMap, FiCpu, FiInfo, FiLayers } = FiIcons;
+
+const SitemapRobotsTab = ({ settings, handleCustomChange }) => {
+  
+  // Reusable row component for cleaner, consistent UI
+  const ContentTypeRow = ({ title, description, settingKey }) => (
+    <div className="p-4 border-b border-gray-100 dark:border-gray-700 flex flex-col md:flex-row md:items-center justify-between gap-4 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
+        <div className="flex-1">
+            <span className="font-semibold text-gray-700 dark:text-gray-200 block">{title}</span>
+            <p className="text-xs text-gray-500 mt-0.5">{description}</p>
+        </div>
+        <div className="flex items-center gap-3">
+             <span className="text-xs font-bold uppercase tracking-wider text-gray-400">Include</span>
+             <Toggle 
+                checked={settings[settingKey] !== false} 
+                onChange={(val) => handleCustomChange(settingKey, val)} 
+             />
+        </div>
+    </div>
+  );
+
+  return (
+    <div className="animate-fade-in max-w-4xl">
+      
+      {/* --- Header --- */}
+      <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={FiMap} className="w-5 h-5" />
+        </div>
+        <div>
+          <h4 className="font-bold text-gray-900 dark:text-white">Sitemap & Crawling</h4>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            Control exactly what content is included in your XML Sitemap to guide search engine crawlers efficiently.
+          </p>
+        </div>
+      </div>
+
+      {/* --- 1. SITEMAP CONTENT --- */}
+      <div className="mb-10">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+             <SafeIcon icon={FiMap} className="w-5 h-5 text-blue-500" /> XML Sitemap Content
+        </h3>
+        
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm">
+            <ContentTypeRow 
+                title="Blog Posts" 
+                description="Include individual blog articles in the sitemap." 
+                settingKey="seo_sitemap_inc_posts"
+            />
+            <ContentTypeRow 
+                title="Static Pages" 
+                description="Include pages like About, Contact, Privacy Policy." 
+                settingKey="seo_sitemap_inc_pages"
+            />
+            <ContentTypeRow 
+                title="Calculators" 
+                description="Include your core calculator tools." 
+                settingKey="seo_sitemap_inc_calcs"
+            />
+            
+            {/* --- SPLIT CATEGORIES --- */}
+            <ContentTypeRow 
+                title="Blog Categories" 
+                description="Include archive pages for blog topics." 
+                settingKey="seo_sitemap_inc_blog_cats"
+            />
+            <ContentTypeRow 
+                title="Calculator Categories" 
+                description="Include archive pages for calculator groups." 
+                settingKey="seo_sitemap_inc_calc_cats"
+            />
+            
+            {/* Tags Removed per SEO requirements */}
+        </div>
+      </div>
+
+      {/* --- 2. SITEMAP CONFIGURATION (Pagination) --- */}
+      <div className="mb-10">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+             <SafeIcon icon={FiLayers} className="w-5 h-5 text-indigo-500" /> Sitemap Configuration
+        </h3>
+        
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6 shadow-sm">
+            <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
+                <div className="flex-1">
+                    <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-1">
+                        Entries Per File (Pagination)
+                    </label>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                        If a sitemap exceeds this number of URLs, it will automatically split into multiple pages (e.g., <code>post-sitemap.xml?page=2</code>). 
+                        Google allows up to 50,000 URLs per file. Lowering this can help with server performance.
+                    </p>
+                </div>
+                <div className="w-full md:w-48">
+                    <div className="relative">
+                        <input 
+                            type="number" 
+                            min="50"
+                            max="50000"
+                            value={settings.seo_sitemap_pagination_limit || 1000}
+                            onChange={(e) => handleCustomChange("seo_sitemap_pagination_limit", e.target.value)}
+                            className="w-full pl-4 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all font-mono text-sm"
+                        />
+                        <span className="absolute right-8 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">
+                            URLs
+                        </span>
+                    </div>
+                    <div className="flex justify-between mt-1 px-1">
+                        <span className="text-[10px] text-gray-400">Min: 50</span>
+                        <span className="text-[10px] text-gray-400">Max: 50k</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+      </div>
+
+      <hr className="my-10 border-gray-200 dark:border-gray-700" />
+
+      {/* --- 3. ROBOTS.TXT CONFIGURATION --- */}
+      <div>
+         <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+             <SafeIcon icon={FiCpu} className="w-5 h-5 text-purple-500" /> Robots.txt Editor
+        </h3>
+        
+        <div className="space-y-4">
+            <div className="bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-bold text-gray-700 dark:text-gray-300">
+                        Custom Rules
+                    </label>
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500">Enable Custom Rules</span>
+                        <Toggle 
+                            checked={settings.seo_robots_custom_enable || false} 
+                            onChange={(val) => handleCustomChange("seo_robots_custom_enable", val)} 
+                        />
+                    </div>
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                    Add custom directives (e.g., blocking specific bots). These will be appended <strong>after</strong> the default system rules.
+                </p>
+                <textarea 
+                    value={settings.seo_robots_custom_content || ""}
+                    onChange={(e) => handleCustomChange("seo_robots_custom_content", e.target.value)}
+                    disabled={!settings.seo_robots_custom_enable}
+                    rows={6}
+                    placeholder={`User-agent: GPTBot\nDisallow: /`}
+                    className="w-full p-3 font-mono text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                />
+            </div>
+            
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs rounded border border-blue-100 dark:border-blue-800 flex gap-2 items-start">
+                <SafeIcon icon={FiInfo} className="w-4 h-4 shrink-0 mt-0.5" />
+                <p>
+                    <strong>System Note:</strong> The "Sitemap:" link is automatically appended to the end of the file. You do not need to add it manually.
+                </p>
+            </div>
+        </div>
+
+      </div>
+
+    </div>
+  );
+};
+
+export default SitemapRobotsTab;

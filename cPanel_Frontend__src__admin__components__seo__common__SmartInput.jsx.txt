@@ -1,0 +1,114 @@
+import React, { useState, useEffect, useRef } from "react";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiChevronDown } = FiIcons;
+
+const SmartInput = ({ label, value, onChange, helpText, variables = [], placeholder }) => {
+  const [showVars, setShowVars] = useState(false);
+  const [preview, setPreview] = useState("");
+  const dropdownRef = useRef(null);
+  
+  // Only show the dropdown button if variables exist
+  const hasVariables = variables && variables.length > 0;
+
+  useEffect(() => {
+    if(!value) { setPreview(""); return; }
+    // Simple replacement for preview purposes
+    let p = value
+      .replace("%title%", "Sample Post Title")
+      .replace("%sep%", "-")
+      .replace("%sitename%", "CalcPro")
+      .replace("%excerpt%", "This is a sample description showing how it looks on Google...")
+      .replace("%count%", "24")
+      .replace("%currentyear%", new Date().getFullYear());
+    setPreview(p);
+  }, [value]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setShowVars(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const insertVar = (v) => {
+    const newValue = (value || "") + " " + v;
+    onChange({ target: { value: newValue } });
+    setShowVars(false);
+  };
+
+  return (
+    <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700 last:border-0">
+      <div className="w-full md:w-1/4 pt-2">
+        <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">
+          {label}
+        </label>
+      </div>
+
+      <div className="w-full md:w-3/4 relative group" ref={dropdownRef}>
+        <div className="relative flex items-center">
+          <input
+            type="text"
+            value={value || ""}
+            onChange={onChange}
+            placeholder={placeholder}
+            className={`w-full pl-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-white dark:bg-gray-800 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-shadow shadow-sm ${
+              hasVariables ? "pr-10" : "pr-4"
+            }`}
+          />
+          
+          {/* Only render the variable dropdown button if variables are available */}
+          {hasVariables && (
+            <button
+              type="button"
+              onClick={() => setShowVars(!showVars)}
+              className="absolute right-0 top-0 h-full px-3 text-gray-400 hover:text-blue-600 border-l border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 rounded-r-md transition-colors"
+              title="Insert Variable"
+            >
+              <SafeIcon icon={FiChevronDown} className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        {showVars && hasVariables && (
+          <div className="absolute right-0 top-full mt-1 w-64 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-md shadow-xl z-50 max-h-60 overflow-y-auto">
+            <div className="p-2 text-xs font-bold text-gray-400 uppercase bg-gray-50 dark:bg-gray-900/50 border-b border-gray-100 dark:border-gray-700">
+              Insert Variable
+            </div>
+            {variables.map((v) => (
+              <button
+                key={v.value}
+                type="button"
+                onClick={() => insertVar(v.value)}
+                className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 transition-colors"
+              >
+                {v.label} <span className="text-xs text-gray-400 ml-1">({v.value})</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {value && hasVariables && (
+          <div className="mt-3">
+            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Example</span>
+            <p className="text-blue-700 dark:text-blue-400 text-sm font-medium leading-relaxed truncate">
+              {preview}
+            </p>
+          </div>
+        )}
+        
+        {helpText && (
+            <div className="mt-2 text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+            {helpText}
+            </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default SmartInput;

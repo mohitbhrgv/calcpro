@@ -1,0 +1,84 @@
+import React from "react";
+
+/**
+ * RobotsRow
+ * 
+ * Handles the display and toggling of standard Robots Meta tags (Index, Follow, etc.).
+ * Supports "Inheritance Mode":
+ * - If disabled=true: Displays values from "seo_robots_global_" keys (Read-Only).
+ * - If disabled=false: Displays and updates values from the specific `prefix` keys (e.g., "seo_post_robots_").
+ */
+const RobotsRow = ({ label, settings, prefix, onChange, disabled = false }) => {
+  
+  // 1. Determine Read Source
+  // If disabled (Locked), we read from Global defaults to show the user what is currently applied.
+  // If enabled (Unlocked), we read from the specific Local prefix.
+  const readPrefix = disabled ? "seo_robots_global_" : prefix;
+
+  const toggle = (key) => {
+    if (disabled) return; // Prevent changes in locked mode
+
+    const name = `${prefix}${key}`; // Always write to LOCAL prefix
+    const currentVal = settings[name];
+    
+    // Mutually exclusive logic for Index/NoIndex
+    if (key === 'index') {
+       // Setting Index = True forces NoIndex = False
+       onChange({ target: { name: `${prefix}index`, value: true, type: 'checkbox', checked: true } });
+       onChange({ target: { name: `${prefix}noindex`, value: false, type: 'checkbox', checked: false } });
+    } else if (key === 'noindex') {
+       // Setting NoIndex = True forces Index = False
+       onChange({ target: { name: `${prefix}noindex`, value: true, type: 'checkbox', checked: true } });
+       onChange({ target: { name: `${prefix}index`, value: false, type: 'checkbox', checked: false } });
+    } else {
+        // Standard toggle for other fields
+        onChange({ target: { name, value: !currentVal, type: 'checkbox', checked: !currentVal } });
+    }
+  };
+
+  // 2. Read Values based on the determined prefix
+  const isIndex = settings[`${readPrefix}index`] !== false; // Default to true if undefined
+  const isNoIndex = settings[`${readPrefix}noindex`] === true;
+
+  // Helper to render a checkbox item
+  const renderCheckbox = (key, labelText, checkedState) => (
+    <label className={`flex items-center space-x-2 ${disabled ? "cursor-not-allowed" : "cursor-pointer"}`}>
+        <input 
+            type="checkbox" 
+            checked={checkedState} 
+            onChange={() => toggle(key)} 
+            disabled={disabled}
+            className={`rounded border-gray-300 text-blue-600 focus:ring-blue-500 ${disabled ? "bg-gray-100 text-gray-400" : ""}`} 
+        />
+        <span className="text-sm text-gray-700 dark:text-gray-300">{labelText}</span>
+    </label>
+  );
+
+  return (
+    <div className={`flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700 transition-opacity duration-300 ${disabled ? "opacity-60 grayscale" : ""}`}>
+      <div className="w-full md:w-1/4 pt-1">
+        <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">
+          {label}
+        </label>
+        <p className="text-xs text-gray-500 mt-1">
+          {disabled ? "Inheriting from Global Settings." : "Custom settings applied."}
+        </p>
+      </div>
+      <div className="w-full md:w-3/4">
+        <div className="grid grid-cols-2 gap-4">
+            {/* Index / NoIndex Group */}
+            {renderCheckbox('index', 'Index', !isNoIndex)}
+            {renderCheckbox('noindex', 'No Index', isNoIndex)}
+
+            {/* Other Directives */}
+            {renderCheckbox('nofollow', 'No Follow', settings[`${readPrefix}nofollow`] || false)}
+            {renderCheckbox('noarchive', 'No Archive', settings[`${readPrefix}noarchive`] || false)}
+            {renderCheckbox('noimageindex', 'No Image Index', settings[`${readPrefix}noimageindex`] || false)}
+            {renderCheckbox('nosnippet', 'No Snippet', settings[`${readPrefix}nosnippet`] || false)}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default RobotsRow;

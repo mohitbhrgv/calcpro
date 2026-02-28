@@ -1,0 +1,336 @@
+import React, { useState, useEffect, useMemo } from "react";
+import { motion } from "framer-motion";
+import toast from "react-hot-toast";
+import SafeIcon from "../../../common/SafeIcon";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import { authenticatedFetch } from "../../utils/apiService";
+import * as FiIcons from "react-icons/fi";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+const {
+  FiCheckCircle,
+  FiAlertTriangle,
+  FiSmartphone,
+  FiClock,
+  FiSave,
+  FiKey,
+} = FiIcons;
+
+const TwoFactorAuth = () => {
+  const { getCache, setCacheData, isInitialLoadComplete } = useAdminCache();
+  const cacheKey = "settings_general";
+  const cachedData = getCache(cacheKey);
+
+  const [loading, setLoading] = useState(!cachedData);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Parse helper to ensure consistent data structure
+  const parseSettings = (data) => ({
+    security_2fa_enabled: data?.security_2fa_enabled ?? true,
+    security_2fa_frequency: data?.security_2fa_frequency || "daily",
+  });
+
+  // Current State
+  const [settings, setSettings] = useState(
+    cachedData ? parseSettings(cachedData) : { security_2fa_enabled: true, security_2fa_frequency: "daily" }
+  );
+
+  // Initial State (for comparison)
+  const [initialSettings, setInitialSettings] = useState(
+    cachedData ? parseSettings(cachedData) : {}
+  );
+
+  // Check for changes
+  const hasChanges = useMemo(() => {
+    return JSON.stringify(settings) !== JSON.stringify(initialSettings);
+  }, [settings, initialSettings]);
+
+  useEffect(() => {
+    if (cachedData) {
+      setLoading(false);
+      return;
+    }
+    const fetchSettings = async () => {
+      try {
+        const result = await authenticatedFetch(
+          "http://localhost/calcpro-api/api/admin/get_settings.php"
+        );
+        if (result.success) {
+          const parsed = parseSettings(result.data);
+          setSettings(parsed);
+          setInitialSettings(parsed); // Set baseline
+          setCacheData(cacheKey, result.data);
+        } else {
+          toast.error("Failed to load settings.");
+        }
+      } catch (error) {
+        toast.error("Could not connect to server.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchSettings();
+  }, [cachedData, setCacheData]);
+
+  const handleToggle = () => {
+    setSettings((prev) => ({
+      ...prev,
+      security_2fa_enabled: !prev.security_2fa_enabled,
+    }));
+  };
+
+  const handleFrequencyChange = (freq) => {
+    setSettings((prev) => ({ ...prev, security_2fa_frequency: freq }));
+  };
+
+  const handleSave = async () => {
+    if (!hasChanges) return;
+
+    if (!settings.security_2fa_enabled) {
+      if (
+        !window.confirm(
+          "Are you sure you want to disable Two-Factor Authentication? This significantly lowers your account security."
+        )
+      ) {
+        return;
+      }
+    }
+
+    setIsSubmitting(true);
+    const toastId = "save-2fa-toast"; 
+    toast.loading("Updating security settings...", { id: toastId });
+
+    const minDelay = new Promise((resolve) => setTimeout(resolve, 1000));
+    
+    const apiCall = authenticatedFetch(
+      "http://localhost/calcpro-api/api/admin/update_settings.php",
+      {
+        method: "POST",
+        body: JSON.stringify(settings),
+      }
+    );
+
+    try {
+      const [result] = await Promise.all([apiCall, minDelay]);
+
+      if (result.success) {
+        toast.success("Security settings updated!", { id: toastId });
+        
+        // Update baseline to match new settings
+        setInitialSettings(settings);
+        
+        const currentCache = getCache(cacheKey) || {};
+        setCacheData(cacheKey, { ...currentCache, ...settings });
+      } else {
+        toast.error(result.message || "Update failed.", { id: toastId });
+      }
+    } catch (error) {
+      toast.error(error.message || "Connection error.", { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (!isInitialLoadComplete) return null;
+  if (loading) return <LoadingSpinner size="xl" className="h-64" />;
+
+  return (
+    <div className="space-y-6">
+      {/* --- Standardized Header Card --- */}
+      <div className="flex items-start gap-4 p-4 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={FiKey} className="w-5 h-5" />
+        </div>
+        <div>
+          <h4 className="font-bold text-gray-900 dark:text-white">Two-Factor Authentication</h4>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            Configure how and when administrators are asked for One-Time Password (OTP) verification codes during login.
+          </p>
+        </div>
+      </div>
+      
+      {/* Main Status Card */}
+      <div
+        className={`rounded-xl border p-6 flex flex-col md:flex-row items-center justify-between gap-6 transition-colors ${
+          settings.security_2fa_enabled
+            ? "bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800"
+            : "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800"
+        }`}
+      >
+        <div className="flex items-center gap-4">
+          <div
+            className={`p-4 rounded-full ${
+              settings.security_2fa_enabled
+                ? "bg-green-100 text-green-600"
+                : "bg-red-100 text-red-600"
+            }`}
+          >
+            <SafeIcon
+              icon={
+                settings.security_2fa_enabled ? FiCheckCircle : FiAlertTriangle
+              }
+              className="w-8 h-8"
+            />
+          </div>
+          <div>
+            <h3
+              className={`text-lg font-bold ${
+                settings.security_2fa_enabled
+                  ? "text-green-900 dark:text-green-100"
+                  : "text-red-900 dark:text-red-100"
+              }`}
+            >
+              2FA is {settings.security_2fa_enabled ? "Active" : "Disabled"}
+            </h3>
+            <p
+              className={`text-sm ${
+                settings.security_2fa_enabled
+                  ? "text-green-700 dark:text-green-300"
+                  : "text-red-700 dark:text-red-300"
+              }`}
+            >
+              {settings.security_2fa_enabled
+                ? "Your admin panel is protected by OTP verification."
+                : "Your account is vulnerable to password theft. Enable 2FA immediately."}
+            </p>
+          </div>
+        </div>
+
+        {/* Toggle Switch */}
+        <button
+          onClick={handleToggle}
+          className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+            settings.security_2fa_enabled
+              ? "bg-green-600 focus:ring-green-500"
+              : "bg-gray-400 focus:ring-gray-400"
+          }`}
+        >
+          <span
+            className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${
+              settings.security_2fa_enabled ? "translate-x-7" : "translate-x-1"
+            }`}
+          />
+        </button>
+      </div>
+
+      {/* Configuration Options */}
+      {settings.security_2fa_enabled && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden"
+        >
+          <div className="p-6 border-b border-gray-200 dark:border-gray-700">
+            <h3 className="font-bold text-gray-900 dark:text-white">
+              Verification Frequency
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+              Choose how often admins must verify their identity on the same
+              device.
+            </p>
+          </div>
+
+          <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Daily Option */}
+            <div
+              onClick={() => handleFrequencyChange("daily")}
+              className={`cursor-pointer p-4 rounded-lg border-2 transition-all flex items-start gap-4 ${
+                settings.security_2fa_frequency === "daily"
+                  ? "border-green-500 bg-green-50 dark:bg-green-900/10"
+                  : "border-gray-200 dark:border-gray-700 hover:border-green-300"
+              }`}
+            >
+              <div
+                className={`mt-1 p-2 rounded-lg ${settings.security_2fa_frequency === "daily" ? "bg-green-200 text-green-700" : "bg-gray-100 text-gray-500"}`}
+              >
+                <SafeIcon icon={FiSmartphone} className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-bold text-gray-900 dark:text-white">
+                  Trust Device (24 Hours)
+                </h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
+                  Admins only verify once per day on the same IP address.{" "}
+                  <span className="font-semibold text-green-600">
+                    Recommended for convenience.
+                  </span>
+                </p>
+              </div>
+              <div
+                className={`ml-auto w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                  settings.security_2fa_frequency === "daily"
+                    ? "border-green-600"
+                    : "border-gray-400"
+                }`}
+              >
+                {settings.security_2fa_frequency === "daily" && (
+                  <div className="w-2.5 h-2.5 rounded-full bg-green-600" />
+                )}
+              </div>
+            </div>
+
+            {/* Always Option */}
+            <div
+              onClick={() => handleFrequencyChange("always")}
+              className={`cursor-pointer p-4 rounded-lg border-2 transition-all flex items-start gap-4 ${
+                settings.security_2fa_frequency === "always"
+                  ? "border-green-500 bg-green-50 dark:bg-green-900/10"
+                  : "border-gray-200 dark:border-gray-700 hover:border-green-300"
+              }`}
+            >
+              <div
+                className={`mt-1 p-2 rounded-lg ${settings.security_2fa_frequency === "always" ? "bg-green-200 text-green-700" : "bg-gray-100 text-gray-500"}`}
+              >
+                <SafeIcon icon={FiClock} className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-bold text-gray-900 dark:text-white">
+                  Strict Mode (Every Login)
+                </h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
+                  Admins must enter an OTP every single time they log in.{" "}
+                  <span className="font-semibold text-amber-600">
+                    Best for shared computers.
+                  </span>
+                </p>
+              </div>
+              <div
+                className={`ml-auto w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                  settings.security_2fa_frequency === "always"
+                    ? "border-green-600"
+                    : "border-gray-400"
+                }`}
+              >
+                {settings.security_2fa_frequency === "always" && (
+                  <div className="w-2.5 h-2.5 rounded-full bg-green-600" />
+                )}
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Save Button */}
+      <div className="flex justify-end pt-4">
+        <button
+          onClick={handleSave}
+          disabled={isSubmitting || !hasChanges} 
+          className={`flex items-center space-x-2 px-6 py-3 rounded-lg shadow-md font-medium transition-all ${
+            hasChanges 
+              ? "bg-indigo-600 text-white hover:bg-indigo-700" // --- UPDATED TO INDIGO ---
+              : "bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-not-allowed"
+          }`}
+        >
+          {isSubmitting ? (
+            <LoadingSpinner size="sm" color="white" />
+          ) : (
+            <SafeIcon icon={FiSave} className="w-5 h-5" />
+          )}
+          <span>{isSubmitting ? "Saving..." : "Save Configuration"}</span>
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default TwoFactorAuth;

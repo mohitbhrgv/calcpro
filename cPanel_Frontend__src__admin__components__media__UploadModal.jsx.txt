@@ -1,0 +1,300 @@
+// (Update) cPanel_Frontend/src/admin/components/media/UploadModal.jsx
+
+import React, { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import Modal from "../common/Modal";
+import SafeIcon from "@/common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+
+const { FiUploadCloud, FiAlertCircle, FiCheck, FiFileText } = FiIcons;
+
+const UploadModal = ({ isOpen, onClose, onUploadComplete, disableAnimation = false }) => {
+  const [dragActive, setDragActive] = useState(false);
+  const [uploadState, setUploadState] = useState("idle"); // 'idle' | 'uploading' | 'success' | 'error'
+  const [overallProgress, setOverallProgress] = useState(0);
+  const [uploadError, setUploadError] = useState(null);
+  const [batchStatus, setBatchStatus] = useState({ current: 0, total: 0, filename: "" });
+
+  const handleFileSelect = (files) => {
+    if (files && files.length > 0) {
+      handleBatchUpload(Array.from(files));
+    }
+  };
+
+  const handleDrag = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFileSelect(e.dataTransfer.files);
+    }
+  };
+
+  const uploadSingleFile = (file, onProgress) => {
+    return new Promise((resolve, reject) => {
+      const formData = new FormData();
+      formData.append("mediaFile", file);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "http://localhost/calcpro-api/api/admin/upload_media.php", true);
+
+      const token = localStorage.getItem("calcpro-admin-token");
+      if (token) {
+        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      }
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          if (onProgress) onProgress(percentComplete);
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status === 201) {
+          const result = JSON.parse(xhr.responseText);
+          resolve(result);
+        } else {
+          try {
+            const errorResult = JSON.parse(xhr.responseText);
+            reject({ status: xhr.status, message: errorResult.message || `Upload failed: ${xhr.status}` });
+          } catch (e) {
+            reject({ status: xhr.status, message: `Upload failed: ${xhr.status}` });
+          }
+        }
+      };
+
+      xhr.onerror = () => {
+        reject({ status: 0, message: "Network error during upload." });
+      };
+
+      xhr.send(formData);
+    });
+  };
+
+  const handleBatchUpload = async (files) => {
+    setUploadState("uploading");
+    setOverallProgress(0);
+    setUploadError(null);
+    let successCount = 0;
+    let duplicateCount = 0;
+    let errors = [];
+    const totalFiles = files.length;
+
+    for (let i = 0; i < totalFiles; i++) {
+      const file = files[i];
+      setBatchStatus({ current: i + 1, total: totalFiles, filename: file.name });
+      
+      try {
+        await uploadSingleFile(file, (fileProgress) => {
+            const baseProgress = (i / totalFiles) * 100;
+            const currentFraction = (fileProgress / 100) * (100 / totalFiles);
+            const total = Math.min(Math.round(baseProgress + currentFraction), 100);
+            setOverallProgress(total);
+        });
+        successCount++;
+      } catch (err) {
+        console.error(`Failed to upload ${file.name}:`, err);
+        if (err.status === 409 || (err.message && err.message.includes("already exists"))) {
+            duplicateCount++;
+        }
+        errors.push(`${file.name}: ${err.message || 'Error'}`);
+      }
+    }
+
+    if (errors.length === 0) {
+      setOverallProgress(100);
+      setUploadState("success");
+      
+      setTimeout(() => {
+          toast.success(`Successfully uploaded ${successCount} file(s).`);
+          setUploadState("idle");
+          setOverallProgress(0);
+          onUploadComplete();
+      }, 1800);
+      
+    } else {
+      setUploadState("idle");
+      setOverallProgress(0);
+      
+      if (duplicateCount === errors.length) {
+          const msg = successCount === 0 
+              ? "These images already exist in the Media Library and were not uploaded again."
+              : `Uploaded ${successCount} file(s). The remaining ${duplicateCount} image(s) already exist and were skipped.`;
+          
+          toast.error(msg, { duration: 5000 });
+          setUploadError(msg);
+      } else {
+          const duplicateMsg = duplicateCount > 0 ? ` (${duplicateCount} already existed)` : "";
+          const msg = `Uploaded ${successCount} file(s). ${errors.length} failed${duplicateMsg}.`;
+          
+          toast.error(msg, { duration: 5000 });
+          setUploadError("Some files failed to upload. Please ensure they are valid images under 256MB.");
+      }
+
+      if (successCount > 0) {
+          onUploadComplete(); // Refresh grid even if partial success
+      }
+    }
+  };
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={() => {
+          if (uploadState === "uploading") {
+              toast.error("Upload in progress. Please wait.");
+              return;
+          }
+          onClose();
+      }}
+      title="Upload Media"
+      size="md"
+      disableAnimation={disableAnimation}
+    >
+      <div className="p-8 min-h-[400px] flex flex-col items-center justify-center relative bg-white dark:bg-gray-900">
+        <AnimatePresence mode="wait">
+            
+            {uploadState === "idle" && (
+                <motion.div
+                    key="idle"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="w-full"
+                    onDragEnter={handleDrag}
+                >
+                    <input
+                      id="standalone-file-upload"
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                          handleFileSelect(e.target.files);
+                          e.target.value = ''; // --- FILE INPUT RESET FIX ---
+                      }}
+                      accept="image/png, image/jpeg, image/gif, image/webp"
+                    />
+                    <label
+                      htmlFor="standalone-file-upload"
+                      className={`relative block w-full border-2 border-dashed rounded-xl p-16 text-center transition-all duration-300 cursor-pointer ${
+                        dragActive
+                          ? "border-calcpro-primary bg-indigo-50/50 dark:bg-indigo-900/20 shadow-inner"
+                          : "border-gray-300 dark:border-gray-600 hover:border-calcpro-primary dark:hover:border-calcpro-primary hover:bg-gray-50 dark:hover:bg-gray-800"
+                      }`}
+                    >
+                      <div className="flex flex-col items-center">
+                        <div className={`p-4 rounded-full transition-colors duration-300 ${dragActive ? 'bg-indigo-100 dark:bg-indigo-800' : 'bg-gray-100 dark:bg-gray-800'}`}>
+                            <SafeIcon icon={FiUploadCloud} className={`w-10 h-10 ${dragActive ? 'text-calcpro-primary dark:text-indigo-400' : 'text-gray-400 dark:text-gray-500'}`} />
+                        </div>
+                        <h3 className="mt-6 text-lg font-bold text-gray-900 dark:text-white">
+                          Drag & drop files here
+                        </h3>
+                        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                          or click to browse from your computer
+                        </p>
+                      </div>
+                      {dragActive && (
+                        <div
+                          className="absolute inset-0 w-full h-full z-10"
+                          onDragLeave={handleDrag}
+                          onDragOver={handleDrag}
+                          onDrop={handleDrop}
+                        ></div>
+                      )}
+                    </label>
+
+                    {uploadError && (
+                      <div className="mt-6 flex items-center justify-center text-red-600 bg-red-50 dark:bg-red-900/20 p-4 rounded-xl border border-red-100 dark:border-red-800/50">
+                        <SafeIcon icon={FiAlertCircle} className="mr-3 w-5 h-5 flex-shrink-0" />
+                        <span className="text-sm font-medium">{uploadError}</span>
+                      </div>
+                    )}
+                </motion.div>
+            )}
+
+            {uploadState === "uploading" && (
+                <motion.div
+                    key="uploading"
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 1.05 }}
+                    transition={{ duration: 0.3 }}
+                    className="w-full text-center"
+                >
+                    <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">Uploading Files...</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-8">
+                        Processing file {batchStatus.current} of {batchStatus.total}
+                    </p>
+
+                    <div className="relative pt-1">
+                        <div className="flex mb-4 items-center justify-between">
+                            <div>
+                                <span className="text-xs font-semibold inline-block py-1 px-3 uppercase rounded-full text-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 dark:text-indigo-400">
+                                    In Progress
+                                </span>
+                            </div>
+                            <div className="text-right">
+                                <span className="text-3xl font-light text-gray-900 dark:text-white">
+                                    {overallProgress}%
+                                </span>
+                            </div>
+                        </div>
+                        <div className="overflow-hidden h-3 mb-4 text-xs flex rounded-full bg-gray-100 dark:bg-gray-700 shadow-inner">
+                            <div
+                                style={{ width: `${overallProgress}%` }}
+                                className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-gradient-to-r from-indigo-500 to-blue-500 transition-all duration-300 ease-out"
+                            ></div>
+                        </div>
+                    </div>
+                    
+                    <div className="flex items-center justify-center mt-6 p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-100 dark:border-gray-700">
+                        <SafeIcon icon={FiFileText} className="w-4 h-4 text-gray-400 mr-2" />
+                        <span className="text-xs font-medium text-gray-600 dark:text-gray-300 truncate max-w-[250px]">
+                            {batchStatus.filename}
+                        </span>
+                    </div>
+                </motion.div>
+            )}
+
+            {uploadState === "success" && (
+                <motion.div
+                    key="success"
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.9 }}
+                    transition={{ duration: 0.4, type: "spring", bounce: 0.4 }}
+                    className="flex flex-col items-center justify-center text-center p-4 w-full"
+                >
+                    <motion.div 
+                        initial={{ scale: 0 }}
+                        animate={{ scale: 1 }}
+                        transition={{ delay: 0.1, type: "spring", stiffness: 200 }}
+                        className="w-20 h-20 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mb-6"
+                    >
+                        <SafeIcon icon={FiCheck} className="w-10 h-10 text-green-600 dark:text-green-400" />
+                    </motion.div>
+                    <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Upload Complete!</h2>
+                    <p className="text-gray-500 dark:text-gray-400">Successfully processed {batchStatus.total} files.</p>
+                </motion.div>
+            )}
+
+        </AnimatePresence>
+      </div>
+    </Modal>
+  );
+};
+
+export default UploadModal;

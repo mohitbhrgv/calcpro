@@ -1,0 +1,308 @@
+import React, { useState, useEffect } from "react";
+import toast from "react-hot-toast";
+import SafeIcon from "../../common/SafeIcon";
+import LoadingSpinner from "../components/common/LoadingSpinner";
+import MediaLibrary from "../components/media/MediaLibrary";
+import { authenticatedFetch } from "../utils/apiService";
+import * as FiIcons from "react-icons/fi";
+
+// --- Import Modular Tabs ---
+import GlobalTab from "../components/seo/tabs/GlobalTab";
+import LocalSeoTab from "../components/seo/tabs/LocalSeoTab";
+import SocialTab from "../components/seo/tabs/SocialTab";
+import HomepageTab from "../components/seo/tabs/HomepageTab";
+import PostTypeTab from "../components/seo/tabs/PostTypeTab";
+import TaxonomyTab from "../components/seo/tabs/TaxonomyTab";
+import MiscTab from "../components/seo/tabs/MiscTab";
+import BreadcrumbsTab from "../components/seo/tabs/BreadcrumbsTab";
+import SitemapRobotsTab from "../components/seo/tabs/SitemapRobotsTab"; // --- NEW IMPORT ---
+
+// --- Icons ---
+const { 
+  FiGlobe, FiLayout, FiShare2, FiFileText, FiFolder, 
+  FiTag, FiSettings, FiArchive, FiHome, FiSave, 
+  FiList, FiGrid, FiMap 
+} = FiIcons;
+
+const SeoAnalytics = () => {
+  const [activeTab, setActiveTab] = useState("breadcrumbs"); 
+  const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [settings, setSettings] = useState({});
+  
+  // --- State for Pages List (for dropdowns) ---
+  const [pagesList, setPagesList] = useState([]);
+  
+  // Media Library State
+  const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
+  const [mediaTarget, setMediaTarget] = useState(null);
+
+  // Fetch Settings AND Pages on Load
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        // 1. Fetch Settings
+        const settingsResult = await authenticatedFetch("http://localhost/calcpro-api/api/admin/get_settings.php");
+        if (settingsResult.success) {
+            const defaults = {
+                // --- Global Defaults ---
+                seo_robots_global_index: true,
+                seo_robots_global_max_snippet: -1,
+                seo_robots_global_max_video_preview: -1,
+                seo_robots_global_max_image_preview: 'large',
+                seo_separator: '-',
+                seo_social_twitter_card_type: 'summary_large_image',
+                
+                // --- Local SEO Defaults ---
+                seo_person_or_org: 'organization',
+                seo_local_business_type: 'Organization',
+                seo_local_opening_hours_type: 'none',
+
+                // --- Breadcrumbs Defaults ---
+                seo_breadcrumbs_enable: true,
+                seo_breadcrumbs_separator: '»',
+                seo_breadcrumbs_show_home: true,
+                seo_breadcrumbs_home_label: 'Home',
+                seo_breadcrumbs_archive_format: 'Archives for %s',
+                seo_breadcrumbs_search_format: 'Results for %s',
+                seo_breadcrumbs_404_label: '404 Error: Page not found',
+                seo_breadcrumbs_show_category: true,
+                // Visibility Defaults
+                seo_breadcrumbs_show_blog_categories: true,
+                seo_breadcrumbs_show_calc_categories: true,
+                seo_breadcrumbs_show_pages: true,
+                seo_breadcrumbs_show_posts: true,
+                seo_breadcrumbs_show_calculators: true,
+                // Toggle Defaults
+                seo_breadcrumbs_show_prefix: true,
+                seo_breadcrumbs_archive_format_enable: true,
+
+                // --- Sitemap Defaults (Updated) ---
+                seo_sitemap_inc_posts: true,
+                seo_sitemap_inc_pages: true,
+                seo_sitemap_inc_calcs: true,
+                seo_sitemap_inc_blog_cats: true, 
+                seo_sitemap_inc_calc_cats: true, 
+                seo_sitemap_pagination_limit: 1000, // NEW: Pagination Default
+                // seo_sitemap_inc_tags removed per SEO requirement
+
+                // --- Robots Defaults ---
+                seo_robots_custom_enable: false,
+                seo_robots_custom_content: '',
+
+                // --- Taxonomy Defaults ---
+                // Blog Categories
+                seo_tax_blog_category_robots_index: true, 
+                seo_tax_blog_category_robots_noindex: false,
+                // Calculator Categories
+                seo_tax_calc_category_robots_index: true,
+                seo_tax_calc_category_robots_noindex: false,
+                
+                seo_tax_tag_robots_index: false,
+                seo_tax_tag_robots_noindex: true,
+
+                // --- Misc Defaults ---
+                seo_archive_date_robots_noindex: true,
+                seo_archive_author_robots_noindex: true
+            };
+            setSettings({ ...defaults, ...settingsResult.data });
+        }
+
+        // 2. Fetch Pages (for Local SEO dropdowns)
+        const pagesResult = await authenticatedFetch("http://localhost/calcpro-api/api/admin/get_pages.php?status=published");
+        if (pagesResult.success) {
+            setPagesList(pagesResult.data.pages || []);
+        }
+
+      } catch (e) {
+        toast.error("Failed to load configuration data.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadData();
+  }, []);
+
+  // Handle Native Inputs
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setSettings(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
+  };
+
+  // Handle Custom Components
+  const handleCustomChange = (name, value) => {
+    setSettings(prev => ({ ...prev, [name]: value }));
+  };
+
+  // Media Library Handlers
+  const handleOpenMediaLibrary = (targetField) => {
+    setMediaTarget(targetField);
+    setIsMediaLibraryOpen(true);
+  };
+
+  const handleMediaSelect = (media) => {
+      if(mediaTarget) {
+          handleCustomChange(mediaTarget, media.full_url);
+      }
+      setIsMediaLibraryOpen(false);
+  };
+
+  // Save Settings
+  const handleSave = async () => {
+    setIsSubmitting(true);
+    const toastId = toast.loading("Saving settings...");
+    try {
+      await authenticatedFetch("http://localhost/calcpro-api/api/admin/update_settings.php", {
+        method: "POST",
+        body: JSON.stringify(settings),
+      });
+      toast.success("Settings saved successfully!", { id: toastId });
+    } catch (e) {
+      toast.error("Failed to save settings.", { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Render Tab Content
+  const renderTabContent = () => {
+    const commonProps = { settings, handleChange, handleCustomChange };
+
+    switch (activeTab) {
+      case 'breadcrumbs':
+        return <BreadcrumbsTab {...commonProps} />;
+      case 'sitemap_robots': // --- NEW CASE ---
+        return <SitemapRobotsTab {...commonProps} />;
+      case 'global':
+        return <GlobalTab {...commonProps} onOpenMediaLibrary={handleOpenMediaLibrary} />;
+      case 'local':
+        return <LocalSeoTab {...commonProps} pagesList={pagesList} onOpenMediaLibrary={handleOpenMediaLibrary} />;
+      case 'social':
+        return <SocialTab {...commonProps} />;
+      case 'homepage':
+        return <HomepageTab />;
+      case 'posts':
+      case 'pages':
+      case 'calculators':
+        return <PostTypeTab type={activeTab} {...commonProps} />;
+      case 'blog_categories':
+      case 'calc_categories':
+      case 'tags':
+        return <TaxonomyTab type={activeTab} {...commonProps} />;
+      case 'misc':
+        return <MiscTab {...commonProps} />;
+      default:
+        return <div>Select a tab</div>;
+    }
+  };
+
+  if (loading) return <LoadingSpinner size="xl" className="h-64" />;
+
+  return (
+    <div className="flex min-h-screen bg-gray-100 dark:bg-gray-900 font-sans text-gray-900 dark:text-gray-100">
+       <MediaLibrary 
+         isOpen={isMediaLibraryOpen} 
+         onClose={() => setIsMediaLibraryOpen(false)} 
+         onSelectMedia={handleMediaSelect} 
+         zIndexClass="z-[9999]"
+       />
+      
+      {/* LEFT SIDEBAR NAVIGATION */}
+      <div className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex-shrink-0 sticky top-0 h-screen overflow-y-auto">
+         <div className="p-5 border-b border-gray-200 dark:border-gray-700">
+            <h2 className="font-bold text-lg text-gray-900 dark:text-white">SEO & Analytics</h2>
+         </div>
+         <nav className="py-2">
+            {/* --- Group 1: General Settings --- */}
+            <div className="px-5 py-2 mt-2 text-xs font-bold text-gray-400 uppercase tracking-wider">
+                General Settings
+            </div>
+            {[
+                { id: 'breadcrumbs', label: 'Breadcrumbs', icon: FiList },
+                { id: 'sitemap_robots', label: 'Sitemap & Robots', icon: FiMap }, // --- NEW ITEM ---
+            ].map((item) => (
+                <button
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className={`w-full flex items-center px-5 py-3 text-sm font-medium transition-colors border-l-4 ${
+                        activeTab === item.id
+                        ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400"
+                        : "border-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700"
+                    }`}
+                >
+                    <SafeIcon icon={item.icon} className={`w-4 h-4 mr-3 ${activeTab === item.id ? "text-blue-500" : "text-gray-400"}`} />
+                    {item.label}
+                </button>
+            ))}
+
+            {/* --- Group 2: Titles & Meta --- */}
+            <div className="px-5 py-2 mt-4 text-xs font-bold text-gray-400 uppercase tracking-wider">
+                Titles & Meta
+            </div>
+            {[
+                { id: 'global', label: 'Global Meta', icon: FiGlobe },
+                { id: 'local', label: 'Local SEO', icon: FiLayout },
+                { id: 'social', label: 'Social Meta', icon: FiShare2 },
+                { id: 'homepage', label: 'Homepage', icon: FiHome },
+                { id: 'posts', label: 'Posts', icon: FiFileText },
+                { id: 'pages', label: 'Pages', icon: FiFileText },
+                { id: 'calculators', label: 'Calculators', icon: FiSettings },
+                { id: 'blog_categories', label: 'Blog Categories', icon: FiFolder },
+                { id: 'calc_categories', label: 'Calc Categories', icon: FiGrid },
+                { id: 'tags', label: 'Tags', icon: FiTag },
+                { id: 'misc', label: 'Misc Pages', icon: FiArchive },
+            ].map((item) => (
+                <button
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className={`w-full flex items-center px-5 py-3 text-sm font-medium transition-colors border-l-4 ${
+                        activeTab === item.id
+                        ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400"
+                        : "border-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700"
+                    }`}
+                >
+                    <SafeIcon icon={item.icon} className={`w-4 h-4 mr-3 ${activeTab === item.id ? "text-blue-500" : "text-gray-400"}`} />
+                    {item.label}
+                </button>
+            ))}
+         </nav>
+      </div>
+
+      {/* RIGHT CONTENT AREA */}
+      <div className="flex-1 p-8 overflow-y-auto">
+         <div className="max-w-5xl mx-auto">
+            
+            {/* Page Header */}
+            <div className="text-center mb-8">
+                <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
+                    {activeTab === 'global' ? 'Global Meta' : activeTab === 'sitemap_robots' ? 'Sitemap & Robots' : activeTab.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
+                </h1>
+                <p className="text-gray-500 dark:text-gray-400">
+                   Configure SEO, Schema, and Crawling settings.
+                </p>
+            </div>
+
+            {/* Main Settings Card */}
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+                
+                {/* Dynamic Content Area */}
+                <div className="p-8 space-y-1"> 
+                    {renderTabContent()}
+                </div>
+                
+                {/* Sticky Footer Actions */}
+                <div className="bg-gray-50 dark:bg-gray-900/50 px-8 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center rounded-b-lg sticky bottom-0 z-10">
+                    <button onClick={() => window.location.reload()} className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 text-sm font-medium">Reset Options</button>
+                    <button onClick={handleSave} disabled={isSubmitting} className="px-6 py-2.5 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded shadow-sm transition-colors disabled:opacity-50 flex items-center">
+                        <SafeIcon icon={FiSave} className="w-4 h-4 mr-2" />
+                        {isSubmitting ? 'Saving...' : 'Save Changes'}
+                    </button>
+                </div>
+            </div>
+         </div>
+      </div>
+    </div>
+  );
+};
+
+export default SeoAnalytics;

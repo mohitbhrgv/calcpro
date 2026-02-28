@@ -1,0 +1,558 @@
+// (Update) cPanel_Frontend/src/admin/pages/Media.jsx
+
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import SafeIcon from "../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+import LoadingSpinner from "../components/common/LoadingSpinner";
+import UploadModal from "../components/media/UploadModal";
+import MediaDetailsModal from "../components/media/MediaDetailsModal";
+import ConfirmModal from "../components/common/ConfirmModal";
+import { authenticatedFetch } from "../utils/apiService";
+import { useAdminCache } from "../context/AdminCacheContext";
+
+const { 
+  FiPlus, FiTrash2, FiEdit, FiImage, FiSearch, FiCloud, 
+  FiCheckSquare, FiSquare, FiRefreshCw, FiAlertTriangle 
+} = FiIcons;
+
+// --- INTERNAL COMPONENT: Progressive Grid Image ---
+const GridImage = ({ src, alt }) => {
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  return (
+    <div className="w-full h-full relative bg-gray-100 dark:bg-gray-800 flex items-center justify-center overflow-hidden">
+      {!isLoaded && (
+        <div className="absolute inset-0 flex items-center justify-center">
+           <SafeIcon icon={FiImage} className="w-6 h-6 text-gray-300 dark:text-gray-600 animate-pulse" />
+        </div>
+      )}
+      <img
+        src={src}
+        alt={alt}
+        loading="lazy"
+        onLoad={() => setIsLoaded(true)}
+        className={`w-full h-full object-cover transition-opacity duration-300 ease-out ${
+          isLoaded ? "opacity-100" : "opacity-0"
+        }`}
+      />
+    </div>
+  );
+};
+
+const MediaPage = () => {
+  const { getCache, setCacheData, invalidateCache, isInitialLoadComplete } = useAdminCache();
+
+  // --- State ---
+  const [filterStatus, setFilterStatus] = useState('active'); // 'active' | 'trash'
+  const [mediaItems, setMediaItems] = useState([]);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  
+  // Pagination & Infinite Scroll State
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const observerTarget = useRef(null);
+  
+  // Selection State
+  const [selectedIds, setSelectedIds] = useState([]);
+
+  // Modals
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
+  const [selectedMediaItem, setSelectedMediaItem] = useState(null);
+
+  // --- Confirmation Modal State ---
+  const [confirmDialog, setConfirmDialog] = useState({
+    isOpen: false,
+    title: "",
+    message: "",
+    confirmText: "",
+    type: "danger",
+    onConfirm: () => {}
+  });
+
+  const cacheKey = `media_${filterStatus}`;
+
+  // --- Fetch Logic ---
+  const fetchMedia = useCallback(
+    async (pageNum = 1, forceRefresh = false) => {
+      if (!forceRefresh && pageNum === 1) {
+        const cached = getCache(cacheKey);
+        if (cached) {
+          setMediaItems(cached.media);
+          setPage(cached.pagination?.currentPage || 1);
+          setHasMore(cached.pagination?.currentPage < cached.pagination?.totalPages);
+          return;
+        }
+      }
+
+      if (pageNum === 1) {
+        setIsUpdating(true);
+      } else {
+        setIsLoadingMore(true);
+      }
+
+      try {
+        const result = await authenticatedFetch(
+          `http://localhost/calcpro-api/api/admin/get_media.php?status=${filterStatus}&page=${pageNum}&limit=50`
+        );
+        
+        if (result.success) {
+          const newMedia = result.data.media;
+          const totalPages = result.data.pagination.totalPages;
+          
+          let updatedMedia = [];
+          if (pageNum === 1) {
+            updatedMedia = newMedia;
+            setMediaItems(newMedia);
+          } else {
+            updatedMedia = [...mediaItems, ...newMedia];
+            setMediaItems(updatedMedia);
+          }
+          
+          setHasMore(pageNum < totalPages);
+          setPage(pageNum);
+          
+          if (pageNum === 1 || forceRefresh) {
+             setCacheData(cacheKey, { 
+                 media: updatedMedia, 
+                 pagination: result.data.pagination 
+             });
+          }
+        } else {
+          toast.error(result.message || "Failed to load media.");
+        }
+      } catch (error) {
+        if (error.message !== "Unauthorized") {
+          toast.error("Could not connect to the server.");
+        }
+      } finally {
+        setIsUpdating(false);
+        setIsLoadingMore(false);
+      }
+    },
+    [filterStatus, getCache, setCacheData, cacheKey, mediaItems]
+  );
+
+  useEffect(() => {
+    setPage(1);
+    setHasMore(true);
+    setSelectedIds([]); 
+    fetchMedia(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterStatus]);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !isLoadingMore && !isUpdating && searchTerm === "") {
+          fetchMedia(page + 1, true);
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    if (observerTarget.current) {
+      observer.observe(observerTarget.current);
+    }
+
+    return () => observer.disconnect();
+  }, [hasMore, isLoadingMore, isUpdating, page, fetchMedia, searchTerm]);
+
+  const handleUploadComplete = () => {
+    setIsUploadModalOpen(false);
+    invalidateCache("media_active");
+    setPage(1);
+    fetchMedia(1, true);
+  };
+
+  const handleOpenDetails = (item) => {
+    if (filterStatus === 'trash') return; 
+    setSelectedMediaItem(item);
+    setIsDetailsModalOpen(true);
+  };
+
+  const handleMediaUpdate = (updatedItem) => {
+    if (updatedItem.needs_refresh) {
+      invalidateCache("media_active");
+      setPage(1);
+      fetchMedia(1, true);
+    } else {
+      const updatedList = mediaItems.map((item) => (item.id === updatedItem.id ? updatedItem : item));
+      setMediaItems(updatedList);
+      setCacheData(cacheKey, { media: updatedList, pagination: { currentPage: page } });
+    }
+  };
+
+  // --- PREMIUM SINGLE TRASH FLOW ---
+  const requestSingleTrash = (id) => {
+    setConfirmDialog({
+        isOpen: true,
+        title: "Move to Trash",
+        message: "Are you sure you want to move this item to the Trash? You can restore it later.",
+        confirmText: "Move to Trash",
+        type: "danger",
+        onConfirm: () => executeSingleTrash(id)
+    });
+  };
+
+  const executeSingleTrash = async (id) => {
+    setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+    setIsUpdating(true);
+
+    try {
+      const [result] = await Promise.all([
+          authenticatedFetch(
+            "http://localhost/calcpro-api/api/admin/manage_media_bulk.php",
+            {
+              method: "POST",
+              body: JSON.stringify({ ids: [id], action: 'trash' }),
+            }
+          ),
+          new Promise(resolve => setTimeout(resolve, 800))
+      ]);
+
+      if (result.success) {
+        toast.success("Item moved to Trash.");
+        invalidateCache("media_active");
+        invalidateCache("media_trash");
+        setIsDetailsModalOpen(false);
+        
+        const updatedList = mediaItems.filter(i => i.id !== id);
+        setMediaItems(updatedList);
+        setCacheData(cacheKey, { media: updatedList });
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      toast.error("Action failed.");
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const toggleSelect = (id, e) => {
+    e.stopPropagation(); 
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.length === filteredMedia.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filteredMedia.map(item => item.id));
+    }
+  };
+
+  // --- PREMIUM BULK ACTION FLOW ---
+  const requestBulkAction = (action) => {
+    if (selectedIds.length === 0) return;
+
+    let title = "";
+    let message = "";
+    let confirmText = "";
+    let type = "danger";
+
+    if (action === 'trash') {
+        title = "Move to Trash";
+        message = `Are you sure you want to move ${selectedIds.length} item(s) to the Trash?`;
+        confirmText = "Move to Trash";
+    } else if (action === 'restore') {
+        title = "Restore Items";
+        message = `Are you sure you want to restore ${selectedIds.length} item(s) to the Library?`;
+        confirmText = "Restore Items";
+        type = "primary";
+    } else if (action === 'delete_permanent') {
+        title = "Permanently Delete";
+        message = `Are you sure you want to permanently delete ${selectedIds.length} item(s)? This action cannot be undone.`;
+        confirmText = "Delete Forever";
+    }
+
+    setConfirmDialog({
+        isOpen: true,
+        title,
+        message,
+        confirmText,
+        type,
+        onConfirm: () => executeBulkAction(action)
+    });
+  };
+
+  const executeBulkAction = async (action) => {
+    setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+    setIsUpdating(true); 
+
+    try {
+      const [result] = await Promise.all([
+          authenticatedFetch(
+            "http://localhost/calcpro-api/api/admin/manage_media_bulk.php",
+            {
+              method: "POST",
+              body: JSON.stringify({ ids: selectedIds, action }),
+            }
+          ),
+          new Promise(resolve => setTimeout(resolve, 800))
+      ]);
+
+      if (result.success) {
+        toast.success(result.message);
+        invalidateCache("media_active");
+        invalidateCache("media_trash");
+        setSelectedIds([]);
+        setPage(1);
+        fetchMedia(1, true); 
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      toast.error("Action failed.");
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const filteredMedia = useMemo(() => {
+    if (!searchTerm) return mediaItems;
+    const lower = searchTerm.toLowerCase();
+    return mediaItems.filter(
+      (item) =>
+        item.file_name.toLowerCase().includes(lower) ||
+        (item.alt_text && item.alt_text.toLowerCase().includes(lower))
+    );
+  }, [mediaItems, searchTerm]);
+
+  if (!isInitialLoadComplete) return null;
+
+  return (
+    <>
+      <ConfirmModal
+        isOpen={confirmDialog.isOpen}
+        onClose={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={confirmDialog.onConfirm}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        confirmText={confirmDialog.confirmText}
+        type={confirmDialog.type}
+      />
+      
+      <UploadModal
+        isOpen={isUploadModalOpen}
+        onClose={() => setIsUploadModalOpen(false)}
+        onUploadComplete={handleUploadComplete}
+        disableAnimation={true}
+      />
+      
+      <MediaDetailsModal
+        isOpen={isDetailsModalOpen}
+        onClose={() => setIsDetailsModalOpen(false)}
+        mediaItem={selectedMediaItem}
+        onUpdate={handleMediaUpdate}
+        onDelete={requestSingleTrash}
+        disableAnimation={true}
+      />
+      
+      <div className="flex flex-col h-[calc(100vh-6rem)] min-h-[650px] gap-4">
+        
+        {/* --- Top Header Card --- */}
+        <div className="flex-shrink-0 flex items-center justify-between p-3.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+            <div className="flex items-center gap-3">
+                <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300">
+                    <SafeIcon icon={FiImage} className="w-5 h-5" />
+                </div>
+                <div>
+                    <h4 className="font-bold text-gray-900 dark:text-white leading-tight">Media Library</h4>
+                    <p className="text-[13px] text-gray-600 dark:text-gray-300 mt-0.5">
+                        Manage your assets. View up to 40 images instantly.
+                    </p>
+                </div>
+            </div>
+            <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => setIsUploadModalOpen(true)}
+                className="flex items-center justify-center space-x-2 bg-indigo-600 text-white px-5 py-2.5 rounded-lg shadow-sm hover:bg-indigo-700 transition-colors font-semibold text-sm whitespace-nowrap"
+            >
+                <SafeIcon icon={FiPlus} className="w-4 h-4" />
+                <span>Upload New</span>
+            </motion.button>
+        </div>
+
+        {/* --- Media App Container --- */}
+        <div className="flex-1 flex flex-col bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+            
+            {/* --- LOCKED HEADER SECTION --- */}
+            <div className="flex-shrink-0 flex flex-col z-20 shadow-sm relative border-b border-gray-200 dark:border-gray-700">
+                
+                {/* Search & Tabs Toolbar */}
+                <div className="px-5 py-3 bg-gray-50/90 dark:bg-gray-800/90 backdrop-blur-md flex flex-col sm:flex-row justify-between items-center gap-3">
+                    <div className="flex items-center gap-4 w-full sm:w-auto">
+                        <div className="flex bg-gray-200 dark:bg-gray-700 rounded-lg p-1">
+                            <button
+                                onClick={() => setFilterStatus('active')}
+                                className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${filterStatus === 'active' ? 'bg-white dark:bg-gray-600 text-indigo-600 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-100'}`}
+                            >
+                                Library
+                            </button>
+                            <button
+                                onClick={() => setFilterStatus('trash')}
+                                className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${filterStatus === 'trash' ? 'bg-white dark:bg-gray-600 text-red-600 dark:text-red-400 shadow-sm' : 'text-gray-500 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-100'}`}
+                            >
+                                Trash
+                            </button>
+                        </div>
+
+                        <AnimatePresence>
+                            {selectedIds.length > 0 && (
+                                <motion.div 
+                                    initial={{ opacity: 0, x: -10 }} 
+                                    animate={{ opacity: 1, x: 0 }} 
+                                    exit={{ opacity: 0, x: -10 }}
+                                    className="flex items-center gap-2 pl-4 border-l border-gray-300 dark:border-gray-600"
+                                >
+                                    <span className="text-xs font-bold text-gray-600 dark:text-gray-300 hidden md:block">{selectedIds.length} Selected</span>
+                                    
+                                    {filterStatus === 'active' ? (
+                                        <button 
+                                            onClick={() => requestBulkAction('trash')}
+                                            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50 rounded-md text-xs font-bold transition-colors focus:outline-none"
+                                        >
+                                            <SafeIcon icon={FiTrash2} className="w-3.5 h-3.5" /> Trash
+                                        </button>
+                                    ) : (
+                                        <>
+                                            <button 
+                                                onClick={() => requestBulkAction('restore')}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-300 dark:hover:bg-blue-900/50 rounded-md text-xs font-bold transition-colors focus:outline-none"
+                                            >
+                                                <SafeIcon icon={FiRefreshCw} className="w-3.5 h-3.5" /> Restore
+                                            </button>
+                                            <button 
+                                                onClick={() => requestBulkAction('delete_permanent')}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50 rounded-md text-xs font-bold transition-colors focus:outline-none"
+                                            >
+                                                <SafeIcon icon={FiAlertTriangle} className="w-3.5 h-3.5" /> Delete Forever
+                                            </button>
+                                        </>
+                                    )}
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </div>
+                    
+                    <div className="relative w-full sm:w-72">
+                        <SafeIcon icon={FiSearch} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-400 w-4 h-4" />
+                        <input 
+                            type="text" 
+                            placeholder="Search files..." 
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="w-full pl-9 pr-4 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow"
+                        />
+                    </div>
+                </div>
+
+                {filteredMedia.length > 0 && !isUpdating && (
+                    <div className="px-5 py-2 bg-white dark:bg-gray-800 flex items-center shadow-[0_4px_6px_-1px_rgba(0,0,0,0.02)] z-10">
+                         <button 
+                            onClick={toggleSelectAll} 
+                            className="flex items-center gap-2 text-[13px] text-gray-600 dark:text-gray-300 hover:text-indigo-600 dark:hover:text-indigo-400 font-semibold transition-colors focus:outline-none"
+                        >
+                             <SafeIcon icon={selectedIds.length === filteredMedia.length ? FiCheckSquare : FiSquare} className="w-4 h-4" />
+                             {selectedIds.length === filteredMedia.length ? 'Deselect All Images' : 'Select All Images'}
+                         </button>
+                    </div>
+                )}
+            </div>
+
+            {/* --- INDEPENDENTLY SCROLLING CONTENT --- */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-5 relative bg-gray-50/50 dark:bg-gray-900/30">
+                <AnimatePresence>
+                    {isUpdating && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="absolute inset-0 bg-white/60 dark:bg-gray-900/60 backdrop-blur-[2px] z-30 flex items-center justify-center"
+                        >
+                            <LoadingSpinner size="lg" />
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
+                {filteredMedia.length === 0 && !isUpdating ? (
+                     <div className="flex flex-col items-center justify-center py-24 text-center opacity-60 h-full">
+                        <SafeIcon icon={FiCloud} className="h-12 w-12 text-gray-400 mb-3" />
+                        <h3 className="text-lg font-medium text-gray-900 dark:text-white">No items found</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">
+                            {filterStatus === 'trash' ? "Trash is empty." : "Upload images to get started."}
+                        </p>
+                    </div>
+                 ) : (
+                    <>
+                        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-3 sm:gap-4 pb-4">
+                            {filteredMedia.map((item) => (
+                                /* CHANGED: Replaced motion.div with standard div to remove entry pop-in animation */
+                                <div
+                                    key={`media-item-${item.id}`}
+                                    onClick={() => handleOpenDetails(item)}
+                                    className={`group relative aspect-square rounded-lg border overflow-hidden cursor-pointer transition-all ${
+                                        selectedIds.includes(item.id)
+                                        ? "border-indigo-500 ring-2 ring-indigo-500/50 shadow-md transform scale-[0.98]"
+                                        : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:shadow-md hover:border-gray-300 dark:hover:border-gray-500"
+                                    }`}
+                                 >
+                                    <div 
+                                        onClick={(e) => toggleSelect(item.id, e)}
+                                        className="absolute top-2 left-2 z-20 p-1.5 bg-white/95 dark:bg-gray-900/95 rounded-md shadow-sm hover:bg-white dark:hover:bg-black cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+                                        style={{ opacity: selectedIds.includes(item.id) ? 1 : undefined }}
+                                    >
+                                        <SafeIcon 
+                                            icon={selectedIds.includes(item.id) ? FiCheckSquare : FiSquare} 
+                                            className={`w-4 h-4 ${selectedIds.includes(item.id) ? "text-indigo-600 dark:text-indigo-400" : "text-gray-400 dark:text-gray-500"}`} 
+                                        />
+                                    </div>
+
+                                    <GridImage src={item.full_url} alt={item.alt_text} />
+
+                                    <div className="absolute bottom-0 left-0 right-0 p-2 bg-gradient-to-t from-black/80 to-transparent pointer-events-none z-10">
+                                        <p className="text-white text-[11px] truncate font-medium drop-shadow-md">{item.file_name}</p>
+                                    </div>
+                                    
+                                    {filterStatus === 'active' && !selectedIds.includes(item.id) && (
+                                        <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none z-20">
+                                            <div className="bg-black/70 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1.5 rounded-full border border-white/10 shadow-lg transform translate-y-2 group-hover:translate-y-0 transition-transform">
+                                                View Details
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+
+                        {hasMore && (
+                            <div ref={observerTarget} className="flex justify-center items-center py-8 w-full">
+                                {isLoadingMore ? (
+                                    <div className="flex flex-col items-center">
+                                        <LoadingSpinner size="md" />
+                                        <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wider mt-3">Loading more assets...</span>
+                                    </div>
+                                ) : (
+                                    <span className="text-transparent">Scroll target</span>
+                                )}
+                            </div>
+                        )}
+                    </>
+                )}
+            </div>
+        </div>
+      </div>
+    </>
+  );
+};
+
+export default MediaPage;

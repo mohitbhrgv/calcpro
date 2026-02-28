@@ -1,0 +1,276 @@
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+} from "react";
+import toast from "react-hot-toast";
+import InactivityWarningModal from "../components/auth/InactivityWarningModal";
+import { authenticatedFetch } from "../utils/apiService";
+
+const AuthContext = createContext();
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error("useAuth must be used within an AuthProvider");
+  }
+  return context;
+};
+
+// --- CONSTANTS ---
+const STORAGE_KEY_USER = "calcpro-admin-user";
+const STORAGE_KEY_TOKEN = "calcpro-admin-token";
+const STORAGE_KEY_LAST_ACTIVE = "calcpro_last_active";
+const CHECK_INTERVAL_MS = 1000; 
+const THROTTLE_MS = 2000; 
+
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(null);
+  const [loading, setLoading] = useState(true);
+  
+  const [authSettings, setAuthSettings] = useState({
+    inactivity_logout_enabled: true,
+    inactivity_timeout_minutes: 15,
+  });
+
+  const [isWarningModalOpen, setWarningModalOpen] = useState(false);
+  const [secondsRemaining, setSecondsRemaining] = useState(60);
+
+  const lastActivityWrite = useRef(Date.now());
+  const checkInterval = useRef(null);
+
+  // --- 0. DYNAMIC WARNING CALCULATION ---
+  const getWarningThreshold = (minutes) => {
+      if (minutes <= 1) return 15 * 1000;
+      if (minutes <= 5) return 30 * 1000;
+      if (minutes <= 10) return 45 * 1000;
+      return 60 * 1000; 
+  };
+
+  // --- 1. LOGOUT ---
+  const logout = useCallback((message = "You have been logged out.") => {
+    // 1. Clear React State
+    setUser(null);
+    setToken(null);
+    setWarningModalOpen(false);
+
+    // 2. Clear Storage
+    localStorage.removeItem(STORAGE_KEY_USER);
+    localStorage.removeItem(STORAGE_KEY_TOKEN);
+    localStorage.removeItem(STORAGE_KEY_LAST_ACTIVE);
+
+    // 3. Clear Interval
+    if (checkInterval.current) clearInterval(checkInterval.current);
+
+    // 4. Show Message (Only if it's an explicit logout)
+    if (!message.includes("inactivity") && !message.includes("sync")) {
+      toast.success(message, { id: "auth-toast" });
+    } else if (message.includes("inactivity")) {
+       // Optional: You can force a reload here to ensure clean state if preferred
+       // window.location.reload(); 
+    }
+  }, []);
+
+  // --- 2. ACTIVITY TRACKER ---
+  const recordActivity = useCallback(() => {
+    if (isWarningModalOpen) return;
+
+    const now = Date.now();
+    if (now - lastActivityWrite.current > THROTTLE_MS) {
+      localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, now.toString());
+      lastActivityWrite.current = now;
+    }
+  }, [isWarningModalOpen]); 
+
+  // --- 3. EXPLICIT SESSION EXTENSION ---
+  const handleStayLoggedIn = useCallback(() => {
+    const now = Date.now();
+    localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, now.toString());
+    lastActivityWrite.current = now;
+    setWarningModalOpen(false);
+  }, []);
+
+  // --- 4. NEW: STORAGE SYNC LISTENER (The Fix) ---
+  // If another tab logs out, this tab detects the token removal immediately.
+  useEffect(() => {
+    const handleStorageChange = (event) => {
+      if (event.key === STORAGE_KEY_TOKEN && event.newValue === null) {
+        // Token was removed in another tab -> Logout this tab immediately
+        setUser(null);
+        setToken(null);
+        setWarningModalOpen(false);
+      }
+    };
+
+    window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
+  }, []);
+
+  // --- 5. THE POLLER ---
+  useEffect(() => {
+    if (!user || !authSettings.inactivity_logout_enabled) {
+        if (checkInterval.current) clearInterval(checkInterval.current);
+        return;
+    }
+
+    if (!localStorage.getItem(STORAGE_KEY_LAST_ACTIVE)) {
+        localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, Date.now().toString());
+    }
+
+    const timeoutMs = authSettings.inactivity_timeout_minutes * 60 * 1000;
+    const warningBufferMs = getWarningThreshold(authSettings.inactivity_timeout_minutes);
+
+    checkInterval.current = setInterval(() => {
+        // Integrity Check: If token is missing from storage, force logout immediately
+        // This handles cases where 'storage' event listener might have been missed
+        if (!localStorage.getItem(STORAGE_KEY_TOKEN)) {
+            logout("Session sync: Logged out.");
+            return;
+        }
+
+        const lastActive = parseInt(localStorage.getItem(STORAGE_KEY_LAST_ACTIVE) || Date.now());
+        const now = Date.now();
+        const timeInactive = now - lastActive;
+        const timeRemaining = timeoutMs - timeInactive;
+
+        // A. TIMEOUT EXCEEDED
+        if (timeRemaining <= 0) {
+            clearInterval(checkInterval.current);
+            logout("You have been logged out due to inactivity.");
+        } 
+        // B. WARNING ZONE (Dynamic)
+        else if (timeRemaining <= warningBufferMs) {
+            setSecondsRemaining(Math.ceil(timeRemaining / 1000));
+            setWarningModalOpen(true);
+        } 
+        // C. SAFE ZONE
+        else {
+            setWarningModalOpen((isOpen) => {
+                if (isOpen) return false;
+                return isOpen;
+            });
+        }
+
+    }, CHECK_INTERVAL_MS);
+
+    return () => clearInterval(checkInterval.current);
+  }, [user, authSettings, logout]);
+
+  // --- 6. EVENT LISTENERS ---
+  useEffect(() => {
+    if (!user) return;
+    
+    const events = ["mousemove", "keydown", "scroll", "click", "touchstart"];
+    const handler = () => recordActivity();
+
+    events.forEach(evt => window.addEventListener(evt, handler, { passive: true }));
+    
+    return () => {
+        events.forEach(evt => window.removeEventListener(evt, handler));
+    };
+  }, [user, recordActivity]);
+
+  // --- 7. INITIALIZATION ---
+  const fetchAuthSettings = useCallback(async (authToken) => {
+    try {
+      const result = await authenticatedFetch(
+        "http://localhost/calcpro-api/api/admin/get_settings.php",
+        { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {} }
+      );
+      if (result.success) {
+        setAuthSettings({
+             inactivity_logout_enabled: result.data.inactivity_logout_enabled === true || result.data.inactivity_logout_enabled === 'true',
+             inactivity_timeout_minutes: parseInt(result.data.inactivity_timeout_minutes) || 15
+        });
+      }
+    } catch (error) {
+      console.error("Settings load failed", error);
+    }
+  }, []);
+
+  const setAuthenticatedSession = useCallback(async (authData) => {
+      if (!authData?.user || !authData?.token) throw new Error("Invalid Auth Data");
+      
+      setUser(authData.user);
+      setToken(authData.token);
+      localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(authData.user));
+      localStorage.setItem(STORAGE_KEY_TOKEN, authData.token);
+      localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, Date.now().toString());
+      
+      await fetchAuthSettings(authData.token);
+  }, [fetchAuthSettings]);
+
+  const login = useCallback(async (email, password) => {
+      const response = await fetch("http://localhost/calcpro-api/api/admin/admin_login.php", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const result = await response.json();
+      if (response.ok && result.success) {
+        if (result.data && !result.data.otp_required) {
+          await setAuthenticatedSession(result.data);
+        }
+        return result;
+      } else {
+        throw result;
+      }
+  }, [setAuthenticatedSession]);
+
+  useEffect(() => {
+    try {
+      const savedUser = localStorage.getItem(STORAGE_KEY_USER);
+      const savedToken = localStorage.getItem(STORAGE_KEY_TOKEN);
+      if (savedUser && savedToken) {
+        setUser(JSON.parse(savedUser));
+        setToken(savedToken);
+        fetchAuthSettings(savedToken);
+      } else {
+          // If no token exists, ensure user state is null
+          setUser(null);
+          setLoading(false);
+      }
+    } catch (e) {
+      logout("Session expired.");
+    } finally {
+      // Ensure loading is set to false after checks
+      if (loading) setLoading(false);
+    }
+  }, []);
+
+  const updateUser = (data) => {
+      setUser(prev => {
+          const updated = { ...prev, ...data };
+          localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(updated));
+          return updated;
+      });
+  };
+
+  const value = {
+    user,
+    token,
+    login,
+    logout,
+    initiateLogout: () => logout(),
+    loading,
+    getToken: () => token,
+    updateUser,
+    refreshAuthSettings: () => fetchAuthSettings(token),
+    setAuthenticatedSession,
+  };
+
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+      <InactivityWarningModal
+        isOpen={isWarningModalOpen}
+        onStay={handleStayLoggedIn}
+        countdownStart={secondsRemaining}
+      />
+    </AuthContext.Provider>
+  );
+};

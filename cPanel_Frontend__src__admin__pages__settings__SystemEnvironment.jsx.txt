@@ -1,0 +1,536 @@
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { motion } from "framer-motion";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import { authenticatedFetch } from "../../utils/apiService";
+import toast from "react-hot-toast";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import SettingsHelpModal from "../../components/help/SettingsHelpModal";
+import Modal from "../../components/common/Modal";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+const {
+  FiSave,
+  FiDatabase,
+  FiLock,
+  FiGlobe,
+  FiMail,
+  FiEye,
+  FiEyeOff,
+  FiAlertTriangle,
+  FiInfo,
+  FiServer,
+  FiCpu
+} = FiIcons;
+
+const SystemEnvironment = () => {
+  const { getCache, setCacheData, isInitialLoadComplete } = useAdminCache();
+  const cacheKey = "settings_env";
+  const cachedData = getCache(cacheKey);
+
+  const [loading, setLoading] = useState(!cachedData);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [confirmInput, setConfirmInput] = useState("");
+
+  const [envSettings, setEnvSettings] = useState(cachedData?.config || {});
+  const [initialEnvSettings, setInitialEnvSettings] = useState(
+    cachedData?.config || {}
+  );
+  const [isEnvWritable, setIsEnvWritable] = useState(
+    cachedData?.meta?.writable || false
+  );
+  const [showSecrets, setShowSecrets] = useState({});
+
+  const hasChanges = useMemo(() => {
+    return JSON.stringify(envSettings) !== JSON.stringify(initialEnvSettings);
+  }, [envSettings, initialEnvSettings]);
+
+  const fetchEnvSettings = useCallback(
+    async (forceRefresh = false) => {
+      if (!forceRefresh && getCache(cacheKey)) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const result = await authenticatedFetch(
+          "http://localhost/calcpro-api/api/admin/get_sys_config.php"
+        );
+        if (result.success) {
+          setEnvSettings(result.data.config);
+          setInitialEnvSettings(result.data.config);
+          setIsEnvWritable(result.data.meta.writable);
+          setCacheData(cacheKey, result.data);
+        }
+      } catch (error) {
+        toast.error("Failed to load environment settings.");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [getCache, setCacheData, cacheKey]
+  );
+
+  useEffect(() => {
+    fetchEnvSettings();
+  }, [fetchEnvSettings]);
+
+  const handleEnvChange = (e) => {
+    const { name, value } = e.target;
+    setEnvSettings((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const toggleSecretVisibility = (key) => {
+    setShowSecrets((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const initiateSave = () => {
+    if (!hasChanges) return;
+    setConfirmInput("");
+    setShowConfirmModal(true);
+  };
+
+  const executeSave = async () => {
+    setShowConfirmModal(false);
+    setIsSubmitting(true);
+    const minDelayPromise = new Promise((resolve) => setTimeout(resolve, 1000));
+
+    try {
+      const apiCallPromise = authenticatedFetch(
+        "http://localhost/calcpro-api/api/admin/update_sys_config.php",
+        { method: "POST", body: JSON.stringify(envSettings) }
+      );
+
+      const [result] = await Promise.all([apiCallPromise, minDelayPromise]);
+
+      if (result.success) {
+        toast.success("Environment configuration saved!");
+        setInitialEnvSettings(envSettings);
+        // Invalidate/Update Cache for system config
+        const updatedData = {
+          config: envSettings,
+          meta: { writable: isEnvWritable },
+        };
+        setCacheData(cacheKey, updatedData);
+      } else {
+        toast.error(result.message || "Failed to save settings.");
+      }
+    } catch (error) {
+      toast.error(error.message || "Connection failed.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (!isInitialLoadComplete) return null;
+  if (loading) return <LoadingSpinner size="xl" className="h-64" />;
+
+  return (
+    <div className="space-y-8 pb-10">
+      {/* --- Settings Help Modal --- */}
+      <SettingsHelpModal
+        isOpen={isHelpOpen}
+        onClose={() => setIsHelpOpen(false)}
+        section="environment"
+        disableAnimation={true}
+      />
+
+      {/* --- Confirm Modal --- */}
+      <Modal
+        isOpen={showConfirmModal}
+        onClose={() => setShowConfirmModal(false)}
+        title="Confirm System Changes"
+        type="danger"
+        size="md"
+        disableAnimation={true}
+      >
+        <div className="space-y-4">
+          <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-200 dark:border-red-800 flex items-start gap-3">
+            <SafeIcon
+              icon={FiAlertTriangle}
+              className="w-6 h-6 text-red-600 shrink-0 mt-0.5"
+            />
+            <div>
+              <h4 className="text-sm font-bold text-red-900 dark:text-red-100">
+                Critical Action
+              </h4>
+              <p className="text-xs text-red-800 dark:text-red-200/80 mt-1">
+                You are about to modify the server's <code>.env</code> file.
+                Incorrect values can crash the application immediately. A system
+                backup will be created automatically.
+              </p>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Type <strong>CONFIRM</strong> to proceed:
+            </label>
+            <input
+              type="text"
+              value={confirmInput}
+              onChange={(e) => setConfirmInput(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-red-500 dark:bg-gray-700 dark:text-white"
+              placeholder="CONFIRM"
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              onClick={() => setShowConfirmModal(false)}
+              className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={executeSave}
+              disabled={confirmInput !== "CONFIRM"}
+              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium shadow-sm"
+            >
+              Save Changes
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* --- Header Section --- */}
+      <div className="flex items-start gap-4 p-4 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={FiServer} className="w-5 h-5" />
+        </div>
+        <div className="flex-1">
+          <div className="flex items-center justify-between">
+            <div>
+                <div className="flex items-center gap-2">
+                    <h4 className="font-bold text-gray-900 dark:text-white">System Environment</h4>
+                    <button
+                        onClick={() => setIsHelpOpen(true)}
+                        className="text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors p-1 rounded-full hover:bg-indigo-50 dark:hover:bg-indigo-900/30"
+                        title="Configuration Guide"
+                    >
+                        <SafeIcon icon={FiInfo} className="w-4 h-4" />
+                    </button>
+                </div>
+                <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                    Manage core server variables, database connections, and SMTP settings.
+                </p>
+            </div>
+            
+            {/* REMOVED: Main Action Button from Header */}
+          </div>
+        </div>
+      </div>
+
+      {!isEnvWritable && (
+          <div className="bg-amber-50 dark:bg-amber-900/20 border-l-4 border-amber-500 p-4 rounded-r-lg flex items-start gap-3">
+            <SafeIcon
+              icon={FiAlertTriangle}
+              className="w-5 h-5 text-amber-500 mt-0.5"
+            />
+            <div>
+              <h4 className="text-sm font-bold text-amber-800 dark:text-amber-100">
+                Read-Only Mode Active
+              </h4>
+              <p className="text-sm text-amber-700 dark:text-amber-200/80 mt-1">
+                The <code>.env</code> file is not writable by the server. Update
+                these variables via your hosting dashboard.
+              </p>
+            </div>
+          </div>
+      )}
+
+      {/* --- CONTENT CONTAINER (Centered Column) --- */}
+      <div className={`max-w-4xl mx-auto space-y-8 ${!isEnvWritable ? "opacity-75 pointer-events-none" : ""}`}>
+        
+        {/* 1. App Environment & URLs */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50">
+                <div className="flex items-center gap-2">
+                    <SafeIcon icon={FiGlobe} className="text-blue-500" />
+                    <h3 className="text-base font-bold text-gray-900 dark:text-white">Environment & URLs</h3>
+                </div>
+            </div>
+            
+            <div className="p-6 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">App Environment</label>
+                        <div className="relative">
+                            <select
+                                name="APP_ENV"
+                                value={envSettings.APP_ENV || "production"}
+                                onChange={handleEnvChange}
+                                className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none appearance-none"
+                            >
+                                <option value="development">Development</option>
+                                <option value="production">Production</option>
+                            </select>
+                            <div className="absolute right-3 top-3 pointer-events-none text-gray-400">
+                                <SafeIcon icon={FiCpu} className="w-4 h-4"/>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="md:col-span-2">
+                         <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">API Public URL</label>
+                         <input
+                            type="text"
+                            name="API_PUBLIC_URL"
+                            value={envSettings.API_PUBLIC_URL || ""}
+                            onChange={handleEnvChange}
+                            className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                        />
+                         <p className="text-[10px] text-gray-400 mt-1">Backend folder URL. Must end with a slash (/).</p>
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                     <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">Public Frontend URL</label>
+                        <input
+                            type="text"
+                            name="PUBLIC_FRONTEND_URL"
+                            value={envSettings.PUBLIC_FRONTEND_URL || ""}
+                            onChange={handleEnvChange}
+                            className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">Admin Frontend URL</label>
+                        <input
+                            type="text"
+                            name="ADMIN_FRONTEND_URL"
+                            value={envSettings.ADMIN_FRONTEND_URL || ""}
+                            onChange={handleEnvChange}
+                            className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                        />
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {/* 2. Database Connection */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+             <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50">
+                <div className="flex items-center gap-2">
+                    <SafeIcon icon={FiDatabase} className="text-purple-500" />
+                    <h3 className="text-base font-bold text-gray-900 dark:text-white">Database Connection</h3>
+                </div>
+            </div>
+            
+            <div className="p-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">DB Host</label>
+                        <input
+                            type="text"
+                            name="DB_HOST"
+                            value={envSettings.DB_HOST || ""}
+                            onChange={handleEnvChange}
+                            className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">DB Name</label>
+                        <input
+                            type="text"
+                            name="DB_NAME"
+                            value={envSettings.DB_NAME || ""}
+                            onChange={handleEnvChange}
+                            className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">DB User</label>
+                        <input
+                            type="text"
+                            name="DB_USER"
+                            value={envSettings.DB_USER || ""}
+                            onChange={handleEnvChange}
+                            className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">DB Password</label>
+                         <div className="relative">
+                            <input
+                                type={showSecrets["DB_PASS"] ? "text" : "password"}
+                                name="DB_PASS"
+                                value={envSettings.DB_PASS || ""}
+                                onChange={handleEnvChange}
+                                className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm pr-10 focus:ring-2 focus:ring-purple-500 outline-none"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => toggleSecretVisibility("DB_PASS")}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                            >
+                                <SafeIcon icon={showSecrets["DB_PASS"] ? FiEyeOff : FiEye} className="w-4 h-4" />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {/* 3. SMTP Email */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+             <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50">
+                <div className="flex items-center gap-2">
+                    <SafeIcon icon={FiMail} className="text-green-500" />
+                    <h3 className="text-base font-bold text-gray-900 dark:text-white">SMTP Email Server</h3>
+                </div>
+            </div>
+            
+            <div className="p-6 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                     <div className="md:col-span-3">
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">SMTP Host</label>
+                        <input
+                            type="text"
+                            name="SMTP_HOST"
+                            value={envSettings.SMTP_HOST || ""}
+                            onChange={handleEnvChange}
+                            className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm focus:ring-2 focus:ring-green-500 outline-none"
+                            placeholder="e.g., smtp.mailtrap.io"
+                        />
+                     </div>
+                     <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">Port</label>
+                        <input
+                            type="text"
+                            name="SMTP_PORT"
+                            value={envSettings.SMTP_PORT || ""}
+                            onChange={handleEnvChange}
+                            className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm focus:ring-2 focus:ring-green-500 outline-none"
+                            placeholder="587"
+                        />
+                     </div>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">SMTP User</label>
+                        <input
+                            type="text"
+                            name="SMTP_USER"
+                            value={envSettings.SMTP_USER || ""}
+                            onChange={handleEnvChange}
+                            className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm focus:ring-2 focus:ring-green-500 outline-none"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">SMTP Password</label>
+                         <div className="relative">
+                            <input
+                                type={showSecrets["SMTP_PASS"] ? "text" : "password"}
+                                name="SMTP_PASS"
+                                value={envSettings.SMTP_PASS || ""}
+                                onChange={handleEnvChange}
+                                className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm pr-10 focus:ring-2 focus:ring-green-500 outline-none"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => toggleSecretVisibility("SMTP_PASS")}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                            >
+                                <SafeIcon icon={showSecrets["SMTP_PASS"] ? FiEyeOff : FiEye} className="w-4 h-4" />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">From Name</label>
+                        <input
+                            type="text"
+                            name="SMTP_FROM_NAME"
+                            value={envSettings.SMTP_FROM_NAME || ""}
+                            onChange={handleEnvChange}
+                            className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm focus:ring-2 focus:ring-green-500 outline-none"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">From Email</label>
+                        <input
+                            type="text"
+                            name="SMTP_FROM_EMAIL"
+                            value={envSettings.SMTP_FROM_EMAIL || ""}
+                            onChange={handleEnvChange}
+                            className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm focus:ring-2 focus:ring-green-500 outline-none"
+                        />
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {/* 4. Security Keys */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+             <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50">
+                <div className="flex items-center gap-2">
+                    <SafeIcon icon={FiLock} className="text-red-500" />
+                    <h3 className="text-base font-bold text-gray-900 dark:text-white">Security Keys</h3>
+                </div>
+            </div>
+            
+            <div className="p-6">
+                 <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5">JWT Secret Key</label>
+                    <div className="relative">
+                        <input
+                        type={showSecrets["JWT_SECRET"] ? "text" : "password"}
+                        name="JWT_SECRET"
+                        value={envSettings.JWT_SECRET || ""}
+                        onChange={handleEnvChange}
+                        className="w-full px-3 py-2.5 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono text-sm pr-10 focus:ring-2 focus:ring-red-500 outline-none"
+                        />
+                        <button
+                        type="button"
+                        onClick={() => toggleSecretVisibility("JWT_SECRET")}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        >
+                        <SafeIcon
+                            icon={showSecrets["JWT_SECRET"] ? FiEyeOff : FiEye}
+                            className="w-4 h-4"
+                        />
+                        </button>
+                    </div>
+                    <div className="mt-3 flex items-start gap-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/10 p-2.5 rounded-lg border border-red-100 dark:border-red-900/30">
+                        <SafeIcon icon={FiAlertTriangle} className="w-4 h-4 shrink-0" />
+                        <p>Changing this key will invalidate all active sessions immediately. Proceed with caution.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {/* --- ADDED: Footer Save Button --- */}
+        {isEnvWritable && (
+            <div className="flex justify-end pt-4">
+                <motion.button
+                    whileHover={hasChanges ? { scale: 1.02 } : {}}
+                    whileTap={hasChanges ? { scale: 0.98 } : {}}
+                    onClick={initiateSave}
+                    disabled={isSubmitting || !hasChanges}
+                    className={`flex items-center space-x-2 px-6 py-3 rounded-lg shadow-sm font-bold transition-all ${
+                    hasChanges
+                        ? "bg-indigo-600 text-white hover:bg-indigo-700"
+                        : "bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-not-allowed"
+                    }`}
+                >
+                    {isSubmitting ? (
+                        <LoadingSpinner size="sm" color="white" />
+                    ) : (
+                        <SafeIcon icon={FiSave} className="w-5 h-5" />
+                    )}
+                    <span>{isSubmitting ? "Saving..." : "Save Changes"}</span>
+                </motion.button>
+            </div>
+        )}
+
+      </div>
+    </div>
+  );
+};
+
+export default SystemEnvironment;

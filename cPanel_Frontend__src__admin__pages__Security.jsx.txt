@@ -1,0 +1,96 @@
+import React, { useState, useEffect } from "react";
+import { useLocation } from "react-router-dom";
+import { motion } from "framer-motion";
+import SafeIcon from "../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import { useAdminCache } from "../context/AdminCacheContext";
+
+// --- Import Sub-Components ---
+import BruteForceManager from "../components/security/BruteForceManager";
+import AddIpModal from "../components/security/AddIpModal";
+import AddTempBlockModal from "../components/security/AddTempBlockModal";
+
+const { FiDatabase } = FiIcons;
+
+// Placeholder for the Backup module (future phase)
+const BackupRestorePlaceholder = () => (
+  <motion.div
+    initial={{ opacity: 0, y: 20 }}
+    animate={{ opacity: 1, y: 0 }}
+    transition={{ duration: 0.5 }}
+    className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 text-center mt-6"
+  >
+    <div className="w-16 h-16 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
+      <SafeIcon icon={FiDatabase} className="w-8 h-8 text-gray-500" />
+    </div>
+    <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
+      Backup & Restore
+    </h3>
+    <p className="text-gray-600 dark:text-gray-400 mt-2">
+      This feature is currently under development.
+    </p>
+  </motion.div>
+);
+
+const Security = () => {
+  const location = useLocation();
+  const { isInitialLoadComplete, invalidateCache } = useAdminCache();
+
+  // --- Modal States ---
+  const [isAddIpModalOpen, setIsAddIpModalOpen] = useState(false);
+  const [isAddTempBlockModalOpen, setIsAddTempBlockModalOpen] = useState(false);
+  
+  // --- Module Switching ---
+  const [activeModule, setActiveModule] = useState("bruteForce");
+
+  useEffect(() => {
+    setActiveModule(
+      location.pathname.includes("backup-restore")
+        ? "backupRestore"
+        : "bruteForce"
+    );
+  }, [location.pathname]);
+
+  // Handler to refresh data when a modal completes an action
+  const handleModalSuccess = () => {
+    invalidateCache("security_logs_");
+    window.dispatchEvent(new Event('security-data-update'));
+  };
+
+  if (!isInitialLoadComplete) {
+    return null;
+  }
+
+  return (
+    <>
+      {/* --- Modals with Animation Disabled --- */}
+      <AddIpModal
+        isOpen={isAddIpModalOpen}
+        onClose={() => setIsAddIpModalOpen(false)}
+        onSuccess={handleModalSuccess}
+        disableAnimation={true} // --- UPDATED ---
+      />
+      <AddTempBlockModal
+        isOpen={isAddTempBlockModalOpen}
+        onClose={() => setIsAddTempBlockModalOpen(false)}
+        onSuccess={handleModalSuccess}
+        disableAnimation={true} // --- UPDATED ---
+      />
+
+      <div className="space-y-6">
+        
+        {/* --- Render Active Module --- */}
+        {activeModule === "bruteForce" ? (
+          <BruteForceManager 
+             openAddIpModal={() => setIsAddIpModalOpen(true)}
+             openAddTempBlockModal={() => setIsAddTempBlockModalOpen(true)}
+          />
+        ) : (
+          <BackupRestorePlaceholder />
+        )}
+      </div>
+    </>
+  );
+};
+
+export default Security;

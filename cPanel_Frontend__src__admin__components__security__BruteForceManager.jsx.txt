@@ -1,0 +1,1248 @@
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { authenticatedFetch } from "../../../utils/apiService";
+import toast from "react-hot-toast";
+import DataTable from "../common/DataTable";
+import LoadingSpinner from "../common/LoadingSpinner";
+import Modal from "../common/Modal"; 
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import { useAdminCache } from "../../context/AdminCacheContext";
+import SecuritySettingsModal from "./SecuritySettingsModal";
+// --- NEW IMPORT ---
+import BruteForceHelpModal from "../help/BruteForceHelpModal";
+import { useSearchParams } from "react-router-dom";
+
+const {
+  FiPlus,
+  FiTrash2,
+  FiShield,
+  FiFilter,
+  FiRefreshCw,
+  FiSettings,
+  FiClock,
+  FiRotateCcw,
+  FiMail,
+  FiLock,
+  FiKey,
+  FiAlertOctagon,
+  FiAlertTriangle,
+  FiInfo // --- NEW ICON ---
+} = FiIcons;
+
+const BlockTypeBadge = ({ type }) => {
+  const types = {
+    failed_password: {
+      label: "Failed Password",
+      color: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
+    },
+    failed_email: {
+      label: "Failed Email",
+      color:
+        "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
+    },
+    failed_otp: {
+      label: "Failed OTP",
+      color:
+        "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
+    },
+    manual: {
+      label: "Manual Block",
+      color: "bg-gray-100 text-gray-800 dark:bg-gray-600/30 dark:text-gray-300",
+    },
+    escalation: {
+      label: "Escalated",
+      color:
+        "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
+    },
+    other: {
+      label: "Other",
+      color: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+    },
+  };
+  const currentType = types[type] || types.other;
+  return (
+    <span
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${currentType.color}`}
+    >
+      {currentType.label}
+    </span>
+  );
+};
+
+const OriginBadge = ({ origin }) => {
+  const styles =
+    origin === "system"
+      ? "bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-900/20 dark:text-blue-300 dark:border-blue-800"
+      : "bg-gray-50 text-gray-700 border border-gray-200 dark:bg-gray-700/50 dark:text-gray-300 dark:border-gray-600";
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${styles}`}
+    >
+      {origin}
+    </span>
+  );
+};
+
+// --- Helper to calculate expiry logic ---
+const getBlockStatus = (blockedAt, durationMinutes) => {
+  const blockDate = new Date(blockedAt.replace(" ", "T"));
+  const expiryDate = new Date(
+    blockDate.getTime() + durationMinutes * 60 * 1000
+  );
+  const now = new Date();
+  const isActive = now < expiryDate;
+
+  let timeLeftString = "";
+  if (isActive) {
+    const diffMs = expiryDate - now;
+    const diffMins = Math.ceil(diffMs / (1000 * 60));
+
+    const hours = Math.floor(diffMins / 60);
+    const minutes = diffMins % 60;
+
+    if (hours > 0) {
+      timeLeftString = `${hours}h`;
+      if (minutes > 0) {
+        timeLeftString += ` ${minutes}m`;
+      }
+      timeLeftString += " left";
+    } else {
+      timeLeftString = `${minutes}m left`;
+    }
+  }
+
+  return { isActive, timeLeftString };
+};
+
+const TempBlockStatusBadge = ({ blockedAt, durationMinutes = 1440 }) => {
+  const { isActive } = getBlockStatus(blockedAt, durationMinutes);
+
+  const styles = isActive
+    ? "bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800"
+    : "bg-green-50 text-green-700 border border-green-200 dark:bg-green-900/20 dark:text-green-300 dark:border-green-800";
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold ${styles}`}
+    >
+      {isActive ? (
+        <>
+          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+          Active
+        </>
+      ) : (
+        "Expired"
+      )}
+    </span>
+  );
+};
+
+const TempBlockDuration = ({ blockedAt, durationMinutes = 1440 }) => {
+  const { isActive, timeLeftString } = getBlockStatus(
+    blockedAt,
+    durationMinutes
+  );
+
+  if (!isActive) return <span className="text-gray-400 text-xs">-</span>;
+
+  return (
+    <span className="text-xs font-mono font-medium text-orange-600 dark:text-orange-400">
+      {timeLeftString}
+    </span>
+  );
+};
+
+const BruteForceManager = ({ openAddIpModal, openAddTempBlockModal }) => {
+  const { getCache, setCacheData, invalidateCache, isInitialLoadComplete } =
+    useAdminCache();
+
+  // --- (NEW) URL Params Hook ---
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const [settingsVersion, setSettingsVersion] = useState(0);
+
+  const tempBlockDuration = useMemo(() => {
+    const settingsCache = getCache("settings_general");
+    return parseInt(
+      settingsCache?.security_temp_block_duration_minutes || 1440
+    );
+  }, [getCache, settingsVersion]);
+
+  const [currentPages, setCurrentPages] = useState({
+    blacklist: 1,
+    tempBlocks: 1,
+    attempts: 1,
+    adminFailures: 1,
+    otp: 1,
+  });
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  const cacheKey = `security_logs_${JSON.stringify(currentPages)}_${debouncedSearch}`;
+  const cachedData = getCache(cacheKey);
+
+  const [logs, setLogs] = useState(
+    cachedData || {
+      ipBlacklist: { data: [] },
+      temporaryBlocks: { data: [] },
+      loginAttempts: { data: [] },
+      adminLoginFailures: { data: [] },
+      otpFailures: { data: [] },
+    }
+  );
+
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [loading, setLoading] = useState(!cachedData);
+
+  // --- (UPDATE) Initialize Active Tab from URL ---
+  const validTabs = ["blacklist", "tempBlocks", "attempts", "adminFailures", "otpFailures"];
+  const initialTab = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState(
+    validTabs.includes(initialTab) ? initialTab : "blacklist"
+  );
+
+  const [selectedIds, setSelectedIds] = useState([]);
+
+  const [originFilter, setOriginFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  // --- NEW: Help Modal State ---
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+
+  // --- Safe Action State ---
+  const [actionModal, setActionModal] = useState({
+      isOpen: false,
+      config: null,
+      api: null
+  });
+  const [confirmInput, setConfirmInput] = useState("");
+
+  // --- (NEW) Sync URL param changes to state ---
+  useEffect(() => {
+    const tabFromUrl = searchParams.get("tab");
+    if (tabFromUrl && validTabs.includes(tabFromUrl) && tabFromUrl !== activeTab) {
+      setActiveTab(tabFromUrl);
+    }
+  }, [searchParams]);
+
+  // --- (NEW) Handle Tab Switching and Update URL ---
+  const handleTabSwitch = (tabId) => {
+    setActiveTab(tabId);
+    setSearchParams({ tab: tabId });
+  };
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+    }, 500);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
+
+  const fetchLogs = useCallback(
+    async (pages, search, forceRefresh = false) => {
+      const key = `security_logs_${JSON.stringify(pages)}_${search}`;
+
+      if (!forceRefresh) {
+        const cached = getCache(key);
+        if (cached) {
+          setLogs(cached);
+          setLoading(false);
+          return;
+        }
+      }
+
+      setIsUpdating(true);
+      if (!cachedData) setLoading(true);
+
+      try {
+        const queryParams = new URLSearchParams({
+          page_blacklist: pages.blacklist,
+          page_temp: pages.tempBlocks,
+          page_unknown: pages.attempts,
+          page_admin: pages.adminFailures,
+          page_otp: pages.otp,
+          search: search,
+        });
+
+        const result = await authenticatedFetch(
+          `http://localhost/calcpro-api/api/admin/get_security_logs.php?${queryParams}`
+        );
+        if (result.success) {
+          setLogs(result.data);
+          setCacheData(key, result.data);
+        } else {
+          toast.error(result.message || "Failed to fetch logs.");
+        }
+      } catch (error) {
+        if (error.message !== "Unauthorized")
+          toast.error("Could not connect to the server.");
+      } finally {
+        setLoading(false);
+        setIsUpdating(false);
+      }
+    },
+    [getCache, setCacheData, cachedData]
+  );
+
+  useEffect(() => {
+    fetchLogs(currentPages, debouncedSearch);
+  }, [currentPages, debouncedSearch, fetchLogs]);
+
+  useEffect(() => {
+    if (debouncedSearch) return;
+    const interval = setInterval(
+      () => fetchLogs(currentPages, "", true),
+      15000
+    );
+    return () => clearInterval(interval);
+  }, [currentPages, debouncedSearch, fetchLogs]);
+
+  // --- Listen for External Refresh Events ---
+  useEffect(() => {
+    const handleForceRefresh = () => {
+        invalidateCache("security_logs_");
+        fetchLogs(currentPages, debouncedSearch, true);
+    };
+    window.addEventListener('security-data-update', handleForceRefresh);
+    return () => window.removeEventListener('security-data-update', handleForceRefresh);
+  }, [fetchLogs, currentPages, debouncedSearch, invalidateCache]);
+
+  useEffect(() => {
+    setSelectedIds([]);
+    setOriginFilter("all");
+    setTypeFilter("all");
+    setStatusFilter("all");
+  }, [activeTab]);
+
+  const handlePageChange = (tabKey, newPage) => {
+    setCurrentPages((prev) => ({ ...prev, [tabKey]: newPage }));
+  };
+
+  const handleRefresh = () => {
+    if (isUpdating) return;
+    invalidateCache("security_logs_");
+    fetchLogs(currentPages, debouncedSearch, true);
+    toast.success("Logs refreshed.", { id: "manual-refresh-toast" });
+  };
+
+  const handleSettingsSaved = async () => {
+    invalidateCache("security_logs_");
+    invalidateCache("settings_general");
+
+    try {
+      const result = await authenticatedFetch(
+        "http://localhost/calcpro-api/api/admin/get_settings.php"
+      );
+      if (result.success) {
+        setCacheData("settings_general", result.data);
+      }
+    } catch (e) {
+      console.error("Failed to refresh settings in background");
+    }
+
+    setSettingsVersion((v) => v + 1);
+    fetchLogs(currentPages, debouncedSearch, true);
+  };
+
+  const openSafeActionModal = (config, api) => {
+      setConfirmInput("");
+      setActionModal({
+          isOpen: true,
+          config,
+          api
+      });
+  };
+
+  const executePendingAction = async () => {
+      const { api } = actionModal;
+      setActionModal(prev => ({ ...prev, isOpen: false }));
+
+      const toastId = toast.loading("Processing...");
+      try {
+        const result = await authenticatedFetch(
+          `http://localhost/calcpro-api/api/admin/${api.endpoint}`,
+          { method: "POST", body: JSON.stringify(api.body) }
+        );
+        if (result.success) {
+          toast.success(api.successMessage || result.message, { id: toastId });
+          invalidateCache("security_logs_");
+          fetchLogs(currentPages, debouncedSearch, true);
+          setSelectedIds([]);
+        } else {
+          toast.error(result.message || "Action failed.", { id: toastId });
+        }
+      } catch (error) {
+        if (error.message !== "Unauthorized")
+          toast.error("Could not connect to server.", { id: toastId });
+      }
+  };
+
+  const logTypeMap = {
+    blacklist: "ip_blacklist",
+    tempBlocks: "temporary_blocks",
+    attempts: "login_attempts",
+    adminFailures: "admin_login_failures",
+    otpFailures: "admin_login_failures",
+  };
+
+  const handleDeleteSelected = () => {
+    if (selectedIds.length === 0) return;
+    openSafeActionModal({
+        title: `Delete ${selectedIds.length} Items?`,
+        message: "This will permanently remove the selected logs. This action cannot be undone.",
+        requiredWord: "DELETE",
+        confirmBtnText: "Delete Selected",
+        confirmBtnColor: "bg-red-600 hover:bg-red-700"
+    }, {
+        endpoint: "delete_security_logs_bulk.php",
+        body: { log_type: logTypeMap[activeTab], ids: selectedIds },
+        successMessage: "Selected items deleted successfully."
+    });
+  };
+
+  const handleDowngradeSelected = () => {
+    if (selectedIds.length === 0) return;
+    openSafeActionModal({
+        title: `Revert ${selectedIds.length} IPs?`,
+        message: "This will move the selected IPs from the Permanent Blacklist back to Temporary Blocks.",
+        requiredWord: "REVERT",
+        confirmBtnText: "Revert to Temp",
+        confirmBtnColor: "bg-orange-600 hover:bg-orange-700"
+    }, {
+        endpoint: "manage_blacklist.php",
+        body: { action: "downgrade_to_temp_bulk", ids: selectedIds },
+        successMessage: "Selected IPs reverted to temporary blocks."
+    });
+  };
+
+  const handleEscalateSelected = () => {
+    if (selectedIds.length === 0) return;
+    openSafeActionModal({
+        title: `Blacklist ${selectedIds.length} IPs?`,
+        message: "This will permanently ban the selected IPs. They will be blocked from accessing the admin panel.",
+        requiredWord: "BLOCK",
+        confirmBtnText: "Blacklist IPs",
+        confirmBtnColor: "bg-red-600 hover:bg-red-700"
+    }, {
+        endpoint: "manage_blacklist.php",
+        body: { action: "add_bulk", items: selectedIds.map(id => {
+            const item = logs.temporaryBlocks?.data?.find(b => b.id === id);
+            return item ? { ip_address: item.ip_address, block_type: item.block_type } : null;
+        }).filter(Boolean) },
+        successMessage: "Selected IPs escalated to blacklist."
+    });
+  };
+
+  const handleRemoveFromBlacklist = (item) => {
+    openSafeActionModal({
+        title: "Unblock IP Address?",
+        message: `Are you sure you want to unblock ${item.ip_address}? This will restore their access.`,
+        requiredWord: "UNBLOCK",
+        confirmBtnText: "Unblock IP",
+        confirmBtnColor: "bg-green-600 hover:bg-green-700"
+    }, {
+        endpoint: "manage_blacklist.php",
+        body: { action: "remove", id: item.id },
+        successMessage: "IP removed from blacklist."
+    });
+  };
+
+  const handleEscalateToBlacklist = (item) => {
+    openSafeActionModal({
+        title: "Permanently Block IP?",
+        message: `This will move ${item.ip_address} to the permanent blacklist.`,
+        requiredWord: "BLOCK",
+        confirmBtnText: "Block Forever",
+        confirmBtnColor: "bg-red-600 hover:bg-red-700"
+    }, {
+        endpoint: "manage_blacklist.php",
+        body: { action: "add", ip_address: item.ip_address, block_type: item.block_type, context: "manual" },
+        successMessage: "IP permanently blacklisted."
+    });
+  };
+
+  const handleManualTempBlock = (item, type = "failed_password") => {
+    openSafeActionModal({
+        title: "Temporarily Block IP?",
+        message: `Apply a temporary block to ${item.ip_address}.`,
+        requiredWord: "BLOCK",
+        confirmBtnText: "Temp Block",
+        confirmBtnColor: "bg-orange-600 hover:bg-orange-700"
+    }, {
+        endpoint: "manage_blacklist.php",
+        body: { action: "add_temporary", ip_address: item.ip_address, block_type: type },
+        successMessage: "IP temporarily blocked."
+    });
+  };
+
+  const handleManualPermanentBlock = (item, type = "failed_password") => {
+    openSafeActionModal({
+        title: "Permanently Block IP?",
+        message: `Immediately add ${item.ip_address} to the permanent blacklist.`,
+        requiredWord: "BLOCK",
+        confirmBtnText: "Blacklist IP",
+        confirmBtnColor: "bg-red-600 hover:bg-red-700"
+    }, {
+        endpoint: "manage_blacklist.php",
+        body: { action: "add", ip_address: item.ip_address, block_type: type, context: "manual" },
+        successMessage: "IP permanently blacklisted."
+    });
+  };
+
+  const handleDowngradeToTemp = (item) => {
+    openSafeActionModal({
+        title: "Revert to Temporary?",
+        message: `Move ${item.ip_address} back to the temporary block list.`,
+        requiredWord: "REVERT",
+        confirmBtnText: "Revert Block",
+        confirmBtnColor: "bg-orange-600 hover:bg-orange-700"
+    }, {
+        endpoint: "manage_blacklist.php",
+        body: { action: "downgrade_to_temp", id: item.id },
+        successMessage: "IP moved to Temporary Blocks."
+    });
+  };
+
+  const handleDeleteLog = (logType, item) => {
+    openSafeActionModal({
+        title: "Delete Log Entry?",
+        message: "This will permanently delete this specific log record.",
+        requiredWord: "DELETE",
+        confirmBtnText: "Delete Log",
+        confirmBtnColor: "bg-red-600 hover:bg-red-700"
+    }, {
+        endpoint: "delete_security_log.php",
+        body: { log_type: logType, id: item.id },
+        successMessage: "Log entry deleted."
+    });
+  };
+
+  const isBlockActive = (blockedAt) => {
+    const blockDate = new Date(blockedAt.replace(" ", "T"));
+    const expiryDate = new Date(
+      blockDate.getTime() + tempBlockDuration * 60 * 1000
+    );
+    return new Date() < expiryDate;
+  };
+
+  const filteredData = useMemo(() => {
+    let data;
+    switch (activeTab) {
+      case "blacklist":
+        data = logs.ipBlacklist?.data;
+        break;
+      case "tempBlocks":
+        data = logs.temporaryBlocks?.data;
+        break;
+      case "attempts":
+        data = logs.loginAttempts?.data;
+        break;
+      case "adminFailures":
+        data = logs.adminLoginFailures?.data;
+        break;
+      case "otpFailures":
+        data = logs.otpFailures?.data;
+        break;
+      default:
+        data = [];
+    }
+    if (!data) return [];
+
+    let filtered = data;
+
+    if (
+      originFilter !== "all" &&
+      (activeTab === "blacklist" || activeTab === "tempBlocks")
+    ) {
+      filtered = filtered.filter((item) => item.origin === originFilter);
+    }
+
+    if (typeFilter !== "all") {
+      filtered = filtered.filter((item) => item.block_type === typeFilter);
+    }
+
+    if (activeTab === "tempBlocks" && statusFilter !== "all") {
+      filtered = filtered.filter((item) => {
+        const isActive = isBlockActive(item.blocked_at);
+        return statusFilter === "active" ? isActive : !isActive;
+      });
+    }
+
+    return filtered;
+  }, [
+    activeTab,
+    logs,
+    originFilter,
+    typeFilter,
+    statusFilter,
+    tempBlockDuration,
+  ]);
+
+  const handleSelectRow = (id) =>
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  const handleSelectAll = (e) => {
+    setSelectedIds(e.target.checked ? filteredData.map((item) => item.id) : []);
+  };
+
+  const tabs = [
+    { 
+        id: "blacklist", 
+        label: "IP Blacklist", 
+        icon: FiAlertOctagon,
+        activeClass: "bg-rose-600 border-rose-700 text-white shadow-md shadow-rose-200 dark:shadow-none" 
+    },
+    { 
+        id: "tempBlocks", 
+        label: "Temporary Blocks", 
+        icon: FiClock,
+        activeClass: "bg-amber-500 border-amber-600 text-white shadow-md shadow-amber-200 dark:shadow-none" 
+    },
+    { 
+        id: "attempts", 
+        label: "Failed Email Log", 
+        icon: FiMail,
+        activeClass: "bg-blue-600 border-blue-700 text-white shadow-md shadow-blue-200 dark:shadow-none" 
+    },
+    { 
+        id: "adminFailures", 
+        label: "Failed Password Log", 
+        icon: FiLock,
+        activeClass: "bg-purple-600 border-purple-700 text-white shadow-md shadow-purple-200 dark:shadow-none" 
+    },
+    { 
+        id: "otpFailures", 
+        label: "Failed OTP Log", 
+        icon: FiKey,
+        activeClass: "bg-teal-600 border-teal-700 text-white shadow-md shadow-teal-200 dark:shadow-none" 
+    },
+  ];
+
+  const originFilterOptions = [
+    { value: "all", label: "All Origins" },
+    { value: "system", label: "System (Auto)" },
+    { value: "manual", label: "Manual" },
+  ];
+  const typeFilterOptions = [
+    { value: "all", label: "All Types" },
+    { value: "failed_password", label: "Failed Password" },
+    { value: "failed_email", label: "Failed Email" },
+    { value: "failed_otp", label: "Failed OTP" },
+  ];
+  const statusFilterOptions = [
+    { value: "all", label: "All Status" },
+    { value: "active", label: "Active" },
+    { value: "expired", label: "Expired" },
+  ];
+
+  const formatDate = (utcDateString) => {
+    if (!utcDateString) return "N/A";
+    const date = new Date(utcDateString.replace(" ", "T"));
+    return date.toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  };
+
+  const columns = useMemo(
+    () => ({
+      blacklist: [
+        {
+          key: "ip_address",
+          label: "IP Address",
+          render: (val) => <span className="font-mono text-xs">{val}</span>,
+        },
+        {
+          key: "origin",
+          label: "Origin",
+          render: (origin) => <OriginBadge origin={origin} />,
+        },
+        {
+          key: "block_type",
+          label: "Reason Type",
+          render: (type) => <BlockTypeBadge type={type} />,
+        },
+        {
+          key: "reason",
+          label: "Details",
+          wrap: true,
+          render: (val) => <span className="text-xs text-gray-500">{val}</span>,
+        },
+        {
+          key: "blocked_at",
+          label: "Blocked On",
+          render: (date) => (
+            <span className="text-xs text-gray-500">{formatDate(date)}</span>
+          ),
+        },
+      ],
+      tempBlocks: [
+        {
+          key: "ip_address",
+          label: "IP Address",
+          render: (val) => <span className="font-mono text-xs">{val}</span>,
+        },
+        {
+          key: "status",
+          label: "State",
+          render: (_, item) => (
+            <TempBlockStatusBadge
+              blockedAt={item.blocked_at}
+              durationMinutes={tempBlockDuration}
+            />
+          ),
+        },
+        {
+          key: "duration_left",
+          label: "Block Duration",
+          render: (_, item) => (
+            <TempBlockDuration
+              blockedAt={item.blocked_at}
+              durationMinutes={tempBlockDuration}
+            />
+          ),
+        },
+        {
+          key: "origin",
+          label: "Origin",
+          render: (origin) => <OriginBadge origin={origin} />,
+        },
+        {
+          key: "block_type",
+          label: "Reason Type",
+          render: (type) => <BlockTypeBadge type={type} />,
+        },
+        {
+          key: "blocked_at",
+          label: "Blocked On",
+          render: (date) => (
+            <span className="text-xs text-gray-500">{formatDate(date)}</span>
+          ),
+        },
+      ],
+      attempts: [
+        {
+          key: "ip_address",
+          label: "IP Address",
+          render: (val) => <span className="font-mono text-xs">{val}</span>,
+        },
+        {
+          key: "attempted_email",
+          label: "Target Email",
+          render: (val) => <span className="text-sm font-medium">{val}</span>,
+        },
+        {
+          key: "attempted_at",
+          label: "Time",
+          render: (date) => (
+            <span className="text-xs text-gray-500">{formatDate(date)}</span>
+          ),
+        },
+      ],
+      adminFailures: [
+        {
+          key: "admin_email",
+          label: "Target Account",
+          render: (val) => <span className="text-sm font-medium">{val}</span>,
+        },
+        {
+          key: "ip_address",
+          label: "Source IP",
+          render: (val) => <span className="font-mono text-xs">{val}</span>,
+        },
+        {
+          key: "attempted_at",
+          label: "Time",
+          render: (date) => (
+            <span className="text-xs text-gray-500">{formatDate(date)}</span>
+          ),
+        },
+      ],
+      otpFailures: [
+        {
+          key: "admin_email",
+          label: "Target Account",
+          render: (val) => <span className="text-sm font-medium">{val}</span>,
+        },
+        {
+          key: "ip_address",
+          label: "Source IP",
+          render: (val) => <span className="font-mono text-xs">{val}</span>,
+        },
+        {
+          key: "attempted_at",
+          label: "Time",
+          render: (date) => (
+            <span className="text-xs text-gray-500">{formatDate(date)}</span>
+          ),
+        },
+      ],
+    }),
+    [tempBlockDuration]
+  );
+
+  const activeTableConfig = useMemo(() => {
+    const tabKey = activeTab;
+    const pageDataMap = {
+      blacklist: logs.ipBlacklist?.pagination,
+      tempBlocks: logs.temporaryBlocks?.pagination,
+      attempts: logs.loginAttempts?.pagination,
+      adminFailures: logs.adminLoginFailures?.pagination,
+      otpFailures: logs.otpFailures?.pagination,
+    };
+    const pageStateKeyMap = {
+      blacklist: "blacklist",
+      tempBlocks: "tempBlocks",
+      attempts: "attempts",
+      adminFailures: "adminFailures",
+      otpFailures: "otp",
+    };
+
+    const baseConfig = {
+      columns: columns[tabKey],
+      pagination: true,
+      pageData: pageDataMap[tabKey],
+      pageChangeHandler: (newPage) =>
+        handlePageChange(pageStateKeyMap[tabKey], newPage),
+    };
+
+    switch (tabKey) {
+      case "blacklist":
+        return {
+          ...baseConfig,
+          onDelete: handleRemoveFromBlacklist,
+          deleteIcon: FiTrash2,
+          deleteTooltip: "Unblock IP",
+          customActions: [
+            {
+              icon: FiRotateCcw,
+              handler: handleDowngradeToTemp,
+              tooltip: "Revert to Temp Block",
+              className:
+                "text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/30",
+            },
+          ],
+        };
+      case "tempBlocks":
+        return {
+          ...baseConfig,
+          onDelete: (item) => handleDeleteLog("temporary_blocks", item),
+          deleteIcon: FiTrash2,
+          deleteTooltip: "Delete Log",
+          customActions: [
+            {
+              icon: FiShield,
+              handler: handleEscalateToBlacklist,
+              tooltip: "Move to Blacklist",
+              className:
+                "text-purple-600 hover:bg-purple-100 dark:hover:bg-purple-900/30",
+            },
+          ],
+        };
+      case "attempts":
+        return {
+          ...baseConfig,
+          onDelete: (item) => handleDeleteLog("login_attempts", item),
+          deleteIcon: FiTrash2,
+          deleteTooltip: "Delete Log",
+          customActions: [
+            {
+              icon: FiClock,
+              handler: (item) => handleManualTempBlock(item, "failed_email"),
+              tooltip: "Temp Block",
+              className:
+                "text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/30",
+            },
+            {
+              icon: FiShield,
+              handler: (item) =>
+                handleManualPermanentBlock(item, "failed_email"),
+              tooltip: "Permaban IP",
+              className:
+                "text-purple-600 hover:bg-purple-100 dark:hover:bg-purple-900/30",
+            },
+          ],
+        };
+      case "adminFailures":
+        return {
+          ...baseConfig,
+          onDelete: (item) => handleDeleteLog("admin_login_failures", item),
+          deleteIcon: FiTrash2,
+          deleteTooltip: "Delete Log",
+          customActions: [
+            {
+              icon: FiClock,
+              handler: (item) => handleManualTempBlock(item, "failed_password"),
+              tooltip: "Temp Block",
+              className:
+                "text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/30",
+            },
+            {
+              icon: FiShield,
+              handler: (item) =>
+                handleManualPermanentBlock(item, "failed_password"),
+              tooltip: "Permaban IP",
+              className:
+                "text-purple-600 hover:bg-purple-100 dark:hover:bg-purple-900/30",
+            },
+          ],
+        };
+      case "otpFailures":
+        return {
+          ...baseConfig,
+          onDelete: (item) => handleDeleteLog("admin_login_failures", item),
+          deleteIcon: FiTrash2,
+          deleteTooltip: "Delete Log",
+          customActions: [
+            {
+              icon: FiClock,
+              handler: (item) => handleManualTempBlock(item, "failed_otp"),
+              tooltip: "Temp Block",
+              className:
+                "text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/30",
+            },
+            {
+              icon: FiShield,
+              handler: (item) => handleManualPermanentBlock(item, "failed_otp"),
+              tooltip: "Permaban IP",
+              className:
+                "text-purple-600 hover:bg-purple-100 dark:hover:bg-purple-900/30",
+            },
+          ],
+        };
+      default:
+        return { ...baseConfig, customActions: [] };
+    }
+  }, [activeTab, columns, logs, handlePageChange]);
+
+  if (!isInitialLoadComplete) return null;
+
+  return (
+    <>
+      <SecuritySettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        onSuccess={handleSettingsSaved}
+        disableAnimation={true}
+      />
+      
+      {/* --- NEW: Help Modal --- */}
+      <BruteForceHelpModal
+        isOpen={isHelpOpen}
+        onClose={() => setIsHelpOpen(false)}
+        disableAnimation={true}
+      />
+      
+      {/* --- Safe Action Modal --- */}
+      <Modal
+        isOpen={actionModal.isOpen}
+        onClose={() => setActionModal({ ...actionModal, isOpen: false })}
+        title={actionModal.config?.title || "Confirm Action"}
+        type="warning"
+        size="sm"
+        disableAnimation={true}
+      >
+         <div className="space-y-4">
+             <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-200 dark:border-red-800 flex items-start gap-3">
+                 <SafeIcon icon={FiAlertTriangle} className="w-6 h-6 text-red-600 shrink-0 mt-0.5" />
+                 <div>
+                     <h4 className="text-sm font-bold text-red-900 dark:text-red-100">Warning</h4>
+                     <p className="text-xs text-red-800 dark:text-red-200/80 mt-1">
+                         {actionModal.config?.message}
+                     </p>
+                 </div>
+             </div>
+             
+             <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-2">
+                    Type <strong>{actionModal.config?.requiredWord}</strong> to confirm:
+                </label>
+                <input 
+                    type="text"
+                    value={confirmInput}
+                    onChange={(e) => setConfirmInput(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-red-500 dark:bg-gray-700 dark:text-white outline-none"
+                    placeholder={actionModal.config?.requiredWord}
+                />
+             </div>
+             
+             <div className="flex justify-end gap-2 pt-2">
+                 <button 
+                    onClick={() => setActionModal({ ...actionModal, isOpen: false })}
+                    className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
+                 >
+                     Cancel
+                 </button>
+                 <button
+                    onClick={executePendingAction}
+                    disabled={confirmInput !== actionModal.config?.requiredWord}
+                    className={`px-4 py-2 text-sm font-bold text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${actionModal.config?.confirmBtnColor}`}
+                 >
+                     {actionModal.config?.confirmBtnText}
+                 </button>
+             </div>
+         </div>
+      </Modal>
+
+      <div className="flex items-start gap-4 p-4 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50 mb-6">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={FiShield} className="w-5 h-5" />
+        </div>
+        <div>
+          {/* --- HEADER TITLE & INFO BUTTON --- */}
+          <div className="flex items-center gap-2">
+            <h4 className="font-bold text-gray-900 dark:text-white">
+              Brute Force Protection
+            </h4>
+            <button
+                onClick={() => setIsHelpOpen(true)}
+                className="text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors p-1 rounded-full hover:bg-indigo-50 dark:hover:bg-indigo-900/30"
+                title="How Protection Works"
+            >
+                <SafeIcon icon={FiInfo} className="w-4 h-4" />
+            </button>
+          </div>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            Monitor and manage failed login attempts, temporary IP blocks, and
+            the permanent IP blacklist.
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 relative flex flex-col h-[calc(100vh-200px)] min-h-[600px]">
+        <AnimatePresence>
+          {isUpdating && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-white/60 dark:bg-gray-900/60 backdrop-blur-[1px] z-10 flex items-center justify-center"
+            >
+              <LoadingSpinner size="lg" />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex flex-col sm:flex-row justify-between sm:items-center gap-4 shrink-0">
+          
+          <nav className="flex space-x-2 overflow-x-auto pb-2 sm:pb-0">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => handleTabSwitch(tab.id)} // Changed from setActiveTab
+                className={`
+                    flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold transition-all border border-transparent whitespace-nowrap
+                    ${
+                      activeTab === tab.id
+                        ? tab.activeClass
+                        : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 border-gray-200 dark:border-gray-600"
+                    }
+                `}
+              >
+                <SafeIcon icon={tab.icon} className="w-3.5 h-3.5" />
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="flex items-center gap-2 justify-end">
+            <button
+              onClick={() => setIsSettingsModalOpen(true)}
+              className="p-2 text-gray-600 dark:text-gray-300 bg-gray-100 hover:bg-indigo-50 hover:text-indigo-600 dark:bg-gray-700 dark:hover:bg-gray-600 dark:hover:text-indigo-300 rounded-lg transition-colors border border-transparent hover:border-indigo-200"
+              title="Configuration"
+            >
+              <SafeIcon icon={FiSettings} className="w-4 h-4" />
+            </button>
+
+            <button
+              onClick={handleRefresh}
+              disabled={isUpdating}
+              className={`p-2 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/20 dark:text-indigo-300 dark:hover:bg-indigo-900/40 rounded-lg transition-colors border border-indigo-100 dark:border-indigo-800 ${
+                isUpdating ? "opacity-50 cursor-not-allowed" : ""
+              }`}
+              title="Refresh Logs"
+            >
+              <SafeIcon
+                icon={FiRefreshCw}
+                className={`w-4 h-4 ${isUpdating ? "animate-spin" : ""}`}
+              />
+            </button>
+
+            {activeTab === "blacklist" && (
+              <button
+                onClick={openAddIpModal}
+                className="flex items-center space-x-2 bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 transition-all duration-200 text-xs font-bold shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:-translate-y-0.5"
+              >
+                <SafeIcon icon={FiPlus} className="w-3.5 h-3.5" />{" "}
+                <span>Add to Blacklist</span>
+              </button>
+            )}
+
+            {activeTab === "tempBlocks" && (
+              <button
+                onClick={openAddTempBlockModal}
+                className="flex items-center space-x-2 bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 transition-all duration-200 text-xs font-bold shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:-translate-y-0.5"
+              >
+                <SafeIcon icon={FiPlus} className="w-3.5 h-3.5" />{" "}
+                <span>Add Temp Block</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="p-4 flex flex-col sm:flex-row justify-between items-center gap-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
+          <div className="w-full sm:w-auto flex flex-wrap items-center gap-4">
+            <div className="relative flex-1 sm:flex-none">
+              <SafeIcon
+                icon={FiIcons.FiSearch}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4"
+              />
+              <input
+                type="text"
+                placeholder="Search logs..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full sm:w-64 pl-9 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 dark:bg-gray-700 dark:text-white text-sm outline-none"
+              />
+            </div>
+
+            {(activeTab === "blacklist" || activeTab === "tempBlocks") && (
+              <div className="relative">
+                <select
+                  value={originFilter}
+                  onChange={(e) => setOriginFilter(e.target.value)}
+                  className="pl-3 pr-8 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 dark:bg-gray-700 dark:text-white text-sm appearance-none cursor-pointer"
+                >
+                  {originFilterOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <SafeIcon
+                  icon={FiFilter}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 w-3 h-3 pointer-events-none"
+                />
+              </div>
+            )}
+
+            <div className="relative">
+              <select
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+                className="pl-3 pr-8 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 dark:bg-gray-700 dark:text-white text-sm appearance-none cursor-pointer"
+              >
+                {typeFilterOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <SafeIcon
+                icon={FiFilter}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 w-3 h-3 pointer-events-none"
+              />
+            </div>
+
+            {activeTab === "tempBlocks" && (
+              <div className="relative">
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  className="pl-3 pr-8 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 dark:bg-gray-700 dark:text-white text-sm appearance-none cursor-pointer"
+                >
+                  {statusFilterOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <SafeIcon
+                  icon={FiFilter}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 w-3 h-3 pointer-events-none"
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center space-x-2 w-full sm:w-auto justify-end">
+            <AnimatePresence>
+              {selectedIds.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, x: 10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 10 }}
+                  className="flex gap-2"
+                >
+                  {/* --- Revert Bulk Action (Blacklist Only) --- */}
+                  {activeTab === "blacklist" && (
+                    <button
+                      onClick={handleDowngradeSelected}
+                      title="Revert to Temp Block"
+                      className="p-2 rounded-lg text-orange-600 bg-orange-50 hover:bg-orange-100 dark:bg-orange-900/20 dark:hover:bg-orange-900/40 transition-colors"
+                    >
+                      <SafeIcon icon={FiRotateCcw} className="w-4 h-4" />
+                    </button>
+                  )}
+
+                  {activeTab === "tempBlocks" && (
+                    <button
+                      onClick={handleEscalateSelected}
+                      title="Move Selected to Blacklist"
+                      className="p-2 rounded-lg text-purple-600 bg-purple-50 hover:bg-purple-100 dark:bg-purple-900/20 dark:hover:bg-purple-900/40 transition-colors"
+                    >
+                      <SafeIcon icon={FiShield} className="w-4 h-4" />
+                    </button>
+                  )}
+                  <button
+                    onClick={handleDeleteSelected}
+                    title="Delete Selected"
+                    className="p-2 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 transition-colors"
+                  >
+                    <SafeIcon icon={FiTrash2} className="w-4 h-4" />
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+
+        {/* --- Table Container --- */}
+        <div className="flex-1 overflow-hidden relative">
+          {loading ? (
+            <LoadingSpinner size="lg" className="h-full" />
+          ) : (
+            <DataTable
+              columns={activeTableConfig.columns}
+              data={filteredData}
+              onDelete={activeTableConfig.onDelete}
+              deleteIcon={activeTableConfig.deleteIcon}
+              deleteTooltip={activeTableConfig.deleteTooltip}
+              customActions={activeTableConfig.customActions}
+              pagination={activeTableConfig.pagination}
+              currentPage={activeTableConfig.pageData?.currentPage || 1}
+              totalPages={activeTableConfig.pageData?.totalPages || 1}
+              onPageChange={activeTableConfig.pageChangeHandler}
+              selectable={true}
+              selectedIds={selectedIds}
+              onSelectRow={handleSelectRow}
+              onSelectAll={handleSelectAll}
+              searchable={false}
+              tableContainerClass="h-full overflow-y-auto custom-scrollbar"
+            />
+          )}
+        </div>
+      </div>
+    </>
+  );
+};
+
+export default BruteForceManager;

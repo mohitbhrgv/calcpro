@@ -1,0 +1,87 @@
+/**
+ * Formats a UTC date string according to the site's global configuration.
+ * 
+ * @param {string} dateString - The UTC date string from the database (e.g., "2025-01-05 14:00:00").
+ * @param {object} settings - The global settings object containing site_timezone, date_format, etc.
+ * @param {boolean} includeTime - Whether to include the time in the output.
+ * @returns {string} The formatted date string.
+ */
+export const formatDateTime = (dateString, settings = {}, includeTime = true) => {
+    if (!dateString) return 'N/A';
+
+    // 1. Ensure dateString is treated as UTC
+    // MySQL sends "YYYY-MM-DD HH:MM:SS". We append 'Z' to force JS to treat it as UTC.
+    // If it already has 'Z' or offsets, leave it.
+    const utcString = (dateString.endsWith('Z') || dateString.includes('+')) 
+        ? dateString 
+        : dateString.replace(' ', 'T') + 'Z';
+
+    let date;
+    try {
+        date = new Date(utcString);
+        if (isNaN(date.getTime())) return 'Invalid Date';
+    } catch (e) {
+        return 'Invalid Date';
+    }
+
+    // 2. Get Configuration with Defaults
+    const timeZone = settings.site_timezone || 'UTC';
+    const dateFormatStr = settings.date_format || 'F j, Y';
+    const timeFormatStr = settings.time_format || 'g:i A';
+
+    // 3. Map PHP Date Formats to Intl Locale/Options
+    // We select a specific locale to force the order (e.g., en-GB for DD/MM/YYYY)
+    let dateLocale = 'en-US';
+    const dateOptions = { timeZone };
+
+    switch (dateFormatStr) {
+        case 'Y-m-d': // 2025-01-05
+            dateLocale = 'en-CA'; 
+            dateOptions.year = 'numeric'; dateOptions.month = '2-digit'; dateOptions.day = '2-digit';
+            break;
+        case 'm/d/Y': // 01/05/2025
+            dateLocale = 'en-US';
+            dateOptions.year = 'numeric'; dateOptions.month = '2-digit'; dateOptions.day = '2-digit';
+            break;
+        case 'd/m/Y': // 05/01/2025
+            dateLocale = 'en-GB';
+            dateOptions.year = 'numeric'; dateOptions.month = '2-digit'; dateOptions.day = '2-digit';
+            break;
+        default: // F j, Y (January 5, 2025) - Default Fallback
+            dateLocale = 'en-US';
+            dateOptions.year = 'numeric'; dateOptions.month = 'long'; dateOptions.day = 'numeric';
+    }
+
+    // 4. Map PHP Time Formats to Intl Options
+    const timeOptions = { timeZone };
+    if (timeFormatStr.includes('H')) { // 24-hour
+        timeOptions.hour = '2-digit'; timeOptions.minute = '2-digit'; timeOptions.hour12 = false;
+    } else { // 12-hour
+        timeOptions.hour = 'numeric'; timeOptions.minute = '2-digit'; timeOptions.hour12 = true;
+    }
+    
+    if (timeFormatStr.includes('T')) {
+        timeOptions.timeZoneName = 'short';
+    }
+
+    try {
+        // Format Date
+        const dStr = new Intl.DateTimeFormat(dateLocale, dateOptions).format(date);
+        
+        if (!includeTime) return dStr;
+
+        // Format Time
+        const tStr = new Intl.DateTimeFormat('en-US', timeOptions).format(date);
+        
+        // Handle lowercase 'am/pm' preference
+        let finalTime = tStr;
+        if (timeFormatStr.includes('a') && !timeFormatStr.includes('A')) {
+            finalTime = tStr.toLowerCase();
+        }
+
+        return `${dStr} at ${finalTime}`;
+    } catch (error) {
+        console.error("Date formatting error:", error);
+        return date.toLocaleDateString(); // Safe Fallback
+    }
+};

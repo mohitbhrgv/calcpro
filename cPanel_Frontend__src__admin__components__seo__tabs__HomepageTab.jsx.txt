@@ -1,0 +1,48 @@
+import React from "react";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import { Link } from "react-router-dom"; // Import Link for navigation
+
+const { FiHome } = FiIcons;
+
+const HomepageTab = () => {
+  return (
+    <div className="animate-fade-in">
+        {/* --- Standardized Header Card --- */}
+        <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+            <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+                <SafeIcon icon={FiHome} className="w-5 h-5" />
+            </div>
+            <div>
+                <h4 className="font-bold text-gray-900 dark:text-white">Homepage SEO</h4>
+                <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                    The homepage SEO is managed via the "Home" page in the Content section. This ensures all settings, including visual content and meta data, are in one place.
+                </p>
+            </div>
+        </div>
+
+        <div className="py-10 text-center bg-gray-50 dark:bg-gray-700/30 rounded-xl border border-gray-100 dark:border-gray-700">
+            <div className="w-16 h-16 bg-white dark:bg-gray-800 rounded-full flex items-center justify-center mx-auto mb-6 shadow-md ring-1 ring-gray-200 dark:ring-gray-700">
+                <SafeIcon icon={FiHome} className="w-8 h-8 text-blue-500 dark:text-blue-400" />
+            </div>
+            
+            <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">
+                Homepage is a Static Page
+            </h3>
+            
+            <p className="text-gray-500 dark:text-gray-400 max-w-md mx-auto mb-8 leading-relaxed">
+                You can edit the Homepage title, meta description, and OpenGraph settings directly by editing the "Home" page in the Pages section.
+            </p>
+            
+            <Link 
+                to="/admin/content/pages" 
+                className="inline-flex items-center px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg shadow-md transition-colors duration-200"
+            >
+                Edit Home Page
+            </Link>
+        </div>
+    </div>
+  );
+};
+
+export default HomepageTab;

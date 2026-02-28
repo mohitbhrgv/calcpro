@@ -1,0 +1,187 @@
+// (Update) cPanel_Frontend/src/admin/components/seo/tabs/GlobalTab.jsx
+
+import React from "react";
+import SafeIcon from "../../../../common/SafeIcon";
+import Toggle from "../common/Toggle";
+import RobotsRow from "../common/RobotsRow";
+import AdvancedRobotsRow from "../common/AdvancedRobotsRow";
+import * as FiIcons from "react-icons/fi";
+
+const { FiX, FiImage, FiAlertTriangle, FiGlobe } = FiIcons;
+
+const GlobalTab = ({ settings, handleChange, handleCustomChange, onOpenMediaLibrary }) => {
+  return (
+    <div className="animate-fade-in">
+      
+      {/* --- WARNING ALERT: Missing OG Image --- */}
+      {!settings.seo_social_default_og_image && (
+        <div className="mb-6 p-4 bg-amber-50 dark:bg-amber-900/20 border-l-4 border-amber-500 rounded-r-lg flex items-start gap-3 shadow-sm">
+            <SafeIcon icon={FiAlertTriangle} className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+                <h4 className="text-sm font-bold text-amber-900 dark:text-amber-100">Default Social Image Missing</h4>
+                <p className="text-xs text-amber-800 dark:text-amber-200/80 mt-1 leading-relaxed">
+                    You have not set a fallback image. Links shared on social media (Facebook, Twitter, etc.) may appear without a thumbnail if the specific page doesn't have a featured image.
+                </p>
+            </div>
+        </div>
+      )}
+
+      {/* --- Standardized Header Card --- */}
+      <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={FiGlobe} className="w-5 h-5" />
+        </div>
+        <div>
+          <h4 className="font-bold text-gray-900 dark:text-white">Global Meta</h4>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            These settings act as the master defaults for your entire site's SEO, including Robots Meta, Social Thumbnails, and Title Separators.
+          </p>
+        </div>
+      </div>
+      
+      <RobotsRow 
+        label="Robots Meta" 
+        prefix="seo_robots_global_" 
+        settings={settings} 
+        onChange={handleChange} 
+      />
+      
+      <AdvancedRobotsRow 
+        prefix="seo_robots_global_" 
+        settings={settings} 
+        onChange={handleChange} 
+      />
+      
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+        <div className="w-full md:w-1/4 pt-1 grayscale opacity-60 pointer-events-none">
+          <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">
+            Noindex Empty Archives
+          </label>
+        </div>
+        <div className="w-full md:w-3/4 flex items-center space-x-3 grayscale opacity-60 pointer-events-none">
+          <Toggle 
+            checked={settings.seo_global_noindex_empty_archives || false} 
+            onChange={() => {}} // Prevent interaction
+          />
+          <span className="text-sm text-gray-500">Highly recommended to prevent thin content issues.</span>
+        </div>
+      </div>
+
+      <div className="-mt-4 mb-6 px-4">
+        <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg flex items-start gap-3">
+          <SafeIcon icon={FiAlertTriangle} className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+          <div>
+            <h4 className="text-sm font-bold text-red-800 dark:text-red-100">
+              Feature Not Implemented
+            </h4>
+            <p className="text-xs text-red-700 dark:text-red-200/90 mt-1">
+              This toggle is for display purposes only. The functionality to "Noindex Empty Archives" will be implemented in a future phase and currently has no effect on the live website.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Separator Character */}
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+        <div className="w-full md:w-1/4 pt-2"><label className="text-sm font-semibold text-gray-800 dark:text-gray-200">Separator Character</label></div>
+        <div className="w-full md:w-3/4">
+          <div className="flex gap-2">
+            {['-', '|', '•', '»', '//', '—'].map(char => (
+              <button 
+                key={char}
+                onClick={() => handleCustomChange('seo_separator', char)}
+                className={`w-10 h-10 border rounded flex items-center justify-center transition-all ${
+                  settings.seo_separator === char 
+                  ? 'bg-blue-500 text-white border-blue-500 ring-2 ring-offset-1 ring-blue-500' 
+                  : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 hover:border-blue-300 text-gray-700 dark:text-gray-200'
+                }`}
+              >
+                {char}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">This character appears between your post title and site name (e.g. Post Title - Site Name).</p>
+        </div>
+      </div>
+
+      {/* Capitalize Titles */}
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+        <div className="w-full md:w-1/4 pt-1">
+          <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">
+            Capitalize Titles
+          </label>
+        </div>
+        <div className="w-full md:w-3/4 flex items-center space-x-3">
+          <Toggle 
+            checked={settings.seo_capitalize_titles || false} 
+            onChange={(val) => handleCustomChange('seo_capitalize_titles', val)} 
+          />
+          <span className="text-sm text-gray-500">Automatically capitalize the first letter of each word in meta titles.</span>
+        </div>
+      </div>
+
+      {/* OpenGraph Thumbnail */}
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+        <div className="w-full md:w-1/4 pt-2">
+          <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">OpenGraph Thumbnail</label>
+          <p className="text-xs text-gray-500 mt-1">Fallback image for Facebook/Twitter sharing.</p>
+        </div>
+        <div className="w-full md:w-3/4">
+          {!settings.seo_social_default_og_image ? (
+            <button
+              onClick={() => onOpenMediaLibrary('seo_social_default_og_image')}
+              className="flex items-center gap-2 px-4 py-2 border rounded text-sm bg-gray-50 hover:bg-gray-100 dark:bg-gray-700 dark:border-gray-600 dark:hover:bg-gray-600 transition-colors text-gray-700 dark:text-gray-200"
+            >
+              <SafeIcon icon={FiImage} className="w-4 h-4" />
+              Add or Upload File
+            </button>
+          ) : (
+            <div className="relative inline-block group">
+              <img
+                src={settings.seo_social_default_og_image}
+                alt="OG Default"
+                className="h-32 w-auto object-cover rounded border border-gray-300 dark:border-gray-600"
+              />
+              {/* --- ACTION BUTTON OVERLAY (New) --- */}
+              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 rounded">
+                   <button
+                        onClick={() => onOpenMediaLibrary('seo_social_default_og_image')}
+                        className="bg-white text-gray-900 rounded p-1.5 hover:bg-gray-100 transition-colors shadow-sm"
+                        title="Change Image"
+                   >
+                        <SafeIcon icon={FiImage} className="w-4 h-4" />
+                   </button>
+                   <button
+                        onClick={() => handleCustomChange('seo_social_default_og_image', '')}
+                        className="bg-red-500 text-white rounded p-1.5 hover:bg-red-600 transition-colors shadow-sm"
+                        title="Remove Image"
+                   >
+                        <SafeIcon icon={FiX} className="w-4 h-4" />
+                   </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Twitter Card Type */}
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700 last:border-0">
+        <div className="w-full md:w-1/4 pt-2">
+          <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">Twitter Card Type</label>
+        </div>
+        <div className="w-full md:w-3/4">
+          <select
+            value={settings.seo_social_twitter_card_type || 'summary_large_image'}
+            onChange={(e) => handleCustomChange('seo_social_twitter_card_type', e.target.value)}
+            className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-white dark:bg-gray-800"
+          >
+            <option value="summary_large_image">Summary Card with Large Image</option>
+            <option value="summary">Summary Card</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default GlobalTab;

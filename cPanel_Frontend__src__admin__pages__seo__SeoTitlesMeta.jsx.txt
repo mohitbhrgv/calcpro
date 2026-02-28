@@ -1,0 +1,378 @@
+// (Update) cPanel_Frontend/src/admin/pages/seo/SeoTitlesMeta.jsx
+
+import React, { useState, useEffect, useMemo } from "react";
+import toast from "react-hot-toast";
+import SafeIcon from "../../../common/SafeIcon";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import MediaLibrary from "../../components/media/MediaLibrary";
+import { authenticatedFetch } from "../../utils/apiService";
+import Modal from "../../components/common/Modal";
+import * as FiIcons from "react-icons/fi";
+
+// --- Import Modular Tabs ---
+import GlobalTab from "../../components/seo/tabs/GlobalTab";
+import LocalSeoTab from "../../components/seo/tabs/LocalSeoTab";
+import SocialTab from "../../components/seo/tabs/SocialTab";
+import HomepageTab from "../../components/seo/tabs/HomepageTab";
+import PostTypeTab from "../../components/seo/tabs/PostTypeTab";
+import TaxonomyTab from "../../components/seo/tabs/TaxonomyTab";
+import AuthPagesTab from "../../components/seo/tabs/AuthPagesTab";
+import MiscTab from "../../components/seo/tabs/MiscTab";
+import SitemapRobotsTab from "../../components/seo/tabs/SitemapRobotsTab";
+import StructureDataTab from "../../components/seo/tabs/StructureDataTab";
+
+const { FiGlobe, FiLayout, FiShare2, FiFileText, FiFolder, FiTag, FiSettings, FiArchive, FiHome, FiSave, FiAlertTriangle, FiX, FiLock, FiGrid, FiMap, FiLayers } = FiIcons;
+
+const SeoTitlesMeta = () => {
+  const [activeTab, setActiveTab] = useState("global");
+  const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // Settings State
+  const [settings, setSettings] = useState({});
+  const [initialSettings, setInitialSettings] = useState({});
+  const [pagesList, setPagesList] = useState([]);
+  
+  // Media Library State
+  const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
+  const [mediaTarget, setMediaTarget] = useState(null);
+
+  // Confirmation Modal State
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [confirmInput, setConfirmInput] = useState("");
+
+  // --- 1. Load Data ---
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const settingsResult = await authenticatedFetch("http://localhost/calcpro-api/api/admin/get_settings.php");
+        if (settingsResult.success) {
+            const defaults = {
+                seo_robots_global_index: true,
+                seo_separator: '-',
+                seo_page_for_about: '',
+                seo_page_for_contact: '',
+                seo_enable_sitelinks_search: false
+            };
+            const mergedSettings = { ...defaults, ...settingsResult.data };
+            setSettings(mergedSettings);
+            setInitialSettings(mergedSettings);
+        }
+        const pagesResult = await authenticatedFetch("http://localhost/calcpro-api/api/admin/get_pages.php?status=published");
+        if (pagesResult.success) {
+            setPagesList(pagesResult.data.pages || []);
+        }
+      } catch (e) {
+        toast.error("Failed to load settings.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadData();
+  }, []);
+
+  // --- Helper: Check if a key belongs to the current tab ---
+  const isKeyInTab = (key, tab) => {
+    switch (tab) {
+        case 'global':
+            return key.startsWith('seo_robots_global_') || 
+                   ['seo_separator', 'seo_capitalize_titles', 'seo_social_default_og_image', 'seo_social_twitter_card_type', 'seo_global_noindex_empty_archives'].includes(key);
+        case 'local':
+            return key.startsWith('seo_local_') || key.startsWith('seo_person_') || key.startsWith('seo_site_');
+        case 'structure':
+            return key.startsWith('seo_page_for_') || key === 'seo_enable_sitelinks_search';
+        case 'social':
+            // Include general social keys but exclude the specific ones handled in Global
+            return key.startsWith('seo_social_') && !['seo_social_default_og_image', 'seo_social_twitter_card_type'].includes(key);
+        case 'posts': return key.startsWith('seo_post_');
+        case 'pages': return key.startsWith('seo_page_');
+        case 'calculators': return key.startsWith('seo_calc_');
+        case 'blog_categories': return key.startsWith('seo_tax_blog_category_');
+        case 'calc_categories': return key.startsWith('seo_tax_calc_category_');
+        case 'tags': return key.startsWith('seo_tax_tag_');
+        case 'sitemap_robots': return key.startsWith('seo_sitemap_') || key.startsWith('seo_robots_custom_');
+        case 'auth': return key.startsWith('seo_auth_');
+        case 'misc': return key.startsWith('seo_special_') || key.startsWith('seo_archive_');
+        case 'homepage': return false; // Homepage tab has no settings (it's a link)
+        default: return false;
+    }
+  };
+
+  // --- 2. Change Detection (Tab Scoped) ---
+  const hasChanges = useMemo(() => {
+    if (!settings || !initialSettings) return false;
+
+    // Get all keys that exist in either current or initial settings
+    const allKeys = new Set([...Object.keys(settings), ...Object.keys(initialSettings)]);
+    
+    for (let key of allKeys) {
+        // Only check keys relevant to the active tab
+        if (isKeyInTab(key, activeTab)) {
+            // Loose equality check to handle string/number differences if they occur
+            // JSON stringify is safe for deep objects and primitives
+            if (JSON.stringify(settings[key]) !== JSON.stringify(initialSettings[key])) {
+                return true;
+            }
+        }
+    }
+    return false;
+  }, [settings, initialSettings, activeTab]);
+
+  // Handle Input Change
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setSettings(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
+  };
+
+  // Handle Custom Change
+  const handleCustomChange = (name, value) => {
+    setSettings(prev => ({ ...prev, [name]: value }));
+  };
+
+  // Media Library Handlers
+  const handleOpenMediaLibrary = (targetField) => {
+    setMediaTarget(targetField);
+    setIsMediaLibraryOpen(true);
+  };
+  const handleMediaSelect = (media) => {
+      if(mediaTarget) handleCustomChange(mediaTarget, media.full_url);
+      setIsMediaLibraryOpen(false);
+  };
+
+  // --- 3. Save Logic with Confirmation ---
+  const handleSaveClick = () => {
+      if (!hasChanges) return;
+      setConfirmInput("");
+      setShowConfirmModal(true);
+  };
+
+  const executeSave = async () => {
+    setShowConfirmModal(false);
+    setIsSubmitting(true);
+    const toastId = toast.loading("Saving configuration...");
+    const minDelay = new Promise(resolve => setTimeout(resolve, 1000));
+    
+    try {
+      // NOTE: We send the ENTIRE settings object. 
+      // The API updates everything. This is safe because 'settings' holds the latest state of ALL tabs.
+      const apiCall = authenticatedFetch("http://localhost/calcpro-api/api/admin/update_settings.php", {
+        method: "POST",
+        body: JSON.stringify(settings),
+      });
+      
+      const [result] = await Promise.all([apiCall, minDelay]);
+      
+      if (result.success) {
+        toast.success("Settings saved successfully!", { id: toastId });
+        setInitialSettings(settings); // Sync initial with current
+      } else {
+        toast.error("Failed to save settings.", { id: toastId });
+      }
+    } catch (e) {
+      toast.error("Connection failed.", { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleCancel = () => {
+      // Reset only the keys for the current tab to their initial values
+      // This preserves unsaved changes in OTHER tabs if the user switches back and forth
+      setSettings(prev => {
+          const next = { ...prev };
+          Object.keys(initialSettings).forEach(key => {
+              if (isKeyInTab(key, activeTab)) {
+                  next[key] = initialSettings[key];
+              }
+          });
+          return next;
+      });
+      toast("Changes for this tab discarded.");
+  };
+
+  // Render Content
+  const renderTabContent = () => {
+    const commonProps = { settings, handleChange, handleCustomChange };
+    switch (activeTab) {
+      case 'global': return <GlobalTab {...commonProps} onOpenMediaLibrary={handleOpenMediaLibrary} />;
+      case 'local': return <LocalSeoTab {...commonProps} />;
+      case 'structure': return <StructureDataTab {...commonProps} pagesList={pagesList} />;
+      case 'social': return <SocialTab {...commonProps} />;
+      case 'homepage': return <HomepageTab />;
+      
+      // Post Types
+      case 'posts': 
+      case 'pages': 
+      case 'calculators': 
+        return <PostTypeTab type={activeTab} {...commonProps} />;
+      
+      // Taxonomies
+      case 'blog_categories': 
+      case 'calc_categories': 
+      case 'tags': 
+        return <TaxonomyTab type={activeTab} {...commonProps} />;
+        
+      case 'auth': return <AuthPagesTab {...commonProps} />;
+      case 'misc': return <MiscTab {...commonProps} />;
+      case 'sitemap_robots': return <SitemapRobotsTab {...commonProps} />;
+      default: return <div>Select a tab</div>;
+    }
+  };
+
+  if (loading) return <LoadingSpinner size="xl" className="h-64" />;
+
+  return (
+    <div className="flex flex-col md:flex-row bg-gray-100 dark:bg-gray-900 font-sans text-gray-900 dark:text-gray-100 min-h-full">
+       
+       {/* 
+         --- UPDATED: Pass settings[mediaTarget] as initialSelectedUrl ---
+         We check mediaTarget first to prevent access error if null
+       */}
+       <MediaLibrary 
+         isOpen={isMediaLibraryOpen} 
+         onClose={() => setIsMediaLibraryOpen(false)} 
+         onSelectMedia={handleMediaSelect} 
+         zIndexClass="z-[9999]"
+         disableAnimation={true}
+         initialSelectedUrl={mediaTarget ? settings[mediaTarget] : ""}
+       />
+       
+       <Modal
+          isOpen={showConfirmModal}
+          onClose={() => setShowConfirmModal(false)}
+          title="Confirm SEO Changes"
+          type="warning"
+          size="md"
+          disableAnimation={true}
+        >
+          <div className="space-y-4">
+              <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-lg border border-amber-200 dark:border-amber-800 flex items-start gap-3">
+                  <SafeIcon icon={FiAlertTriangle} className="w-6 h-6 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                      <h4 className="text-sm font-bold text-amber-900 dark:text-amber-100">Warning: SEO Impact</h4>
+                      <p className="text-xs text-amber-800 dark:text-amber-200/80 mt-1">
+                          Changing these settings will affect how search engines verify and index your site. Ensure all data is correct.
+                      </p>
+                  </div>
+              </div>
+              <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Type <strong>CONFIRM</strong> to save changes:
+                  </label>
+                  <input
+                      type="text"
+                      value={confirmInput}
+                      onChange={(e) => setConfirmInput(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-amber-500 dark:bg-gray-700 dark:text-white"
+                      placeholder="CONFIRM"
+                  />
+              </div>
+              <div className="flex justify-end gap-3 pt-2">
+                  <button onClick={() => setShowConfirmModal(false)} className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors">
+                      Cancel
+                  </button>
+                  <button
+                      onClick={executeSave}
+                      disabled={confirmInput !== "CONFIRM"}
+                      className="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium shadow-sm"
+                  >
+                      Save Changes
+                  </button>
+              </div>
+          </div>
+        </Modal>
+      
+      {/* Sidebar */}
+      <div className="w-full md:w-64 bg-white dark:bg-gray-800 border-b md:border-b-0 md:border-r border-gray-200 dark:border-gray-700 flex-shrink-0">
+         <div className="p-5 border-b border-gray-200 dark:border-gray-700">
+            <h2 className="font-bold text-lg text-gray-900 dark:text-white">Titles & Meta</h2>
+         </div>
+         <nav className="py-2 overflow-y-auto">
+            {[
+                { id: 'global', label: 'Global Meta', icon: FiGlobe },
+                { id: 'local', label: 'Identity & Publisher', icon: FiLayout },
+                { id: 'structure', label: 'Structure & Pages', icon: FiLayers },
+                { id: 'social', label: 'Social Meta', icon: FiShare2 },
+                { id: 'homepage', label: 'Homepage', icon: FiHome },
+                { header: 'Post Types' },
+                { id: 'posts', label: 'Posts', icon: FiFileText },
+                { id: 'pages', label: 'Pages', icon: FiFileText },
+                { id: 'calculators', label: 'Calculators', icon: FiSettings },
+                { header: 'Taxonomies' },
+                { id: 'blog_categories', label: 'Blog Categories', icon: FiFolder },
+                { id: 'calc_categories', label: 'Calculator Categories', icon: FiGrid },
+                { id: 'tags', label: 'Tags', icon: FiTag },
+                { header: 'System' },
+                { id: 'sitemap_robots', label: 'Sitemap & Robots', icon: FiMap },
+                { id: 'auth', label: 'Auth Pages', icon: FiLock },
+                { id: 'misc', label: 'Misc Pages', icon: FiArchive },
+            ].map((item, idx) => (
+                item.header ? (
+                    <div key={idx} className="px-5 py-2 mt-2 text-xs font-bold text-gray-400 uppercase tracking-wider">{item.header}</div>
+                ) : (
+                    <button
+                        key={item.id}
+                        onClick={() => setActiveTab(item.id)}
+                        className={`w-full flex items-center px-5 py-3 text-sm font-medium transition-colors border-l-4 ${
+                            activeTab === item.id
+                            ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400"
+                            : "border-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700"
+                        }`}
+                    >
+                        <SafeIcon icon={item.icon} className={`w-4 h-4 mr-3 ${activeTab === item.id ? "text-blue-500" : "text-gray-400"}`} />
+                        {item.label}
+                    </button>
+                )
+            ))}
+         </nav>
+      </div>
+
+      {/* Content Area */}
+      <div className="flex-1 p-4 md:p-8 overflow-y-auto">
+         <div className="max-w-5xl mx-auto">
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+                <div className="p-8 space-y-1">{renderTabContent()}</div>
+                
+                <div className="bg-gray-50 dark:bg-gray-900/50 px-8 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center rounded-b-lg sticky bottom-0 z-10">
+                    
+                    {hasChanges ? (
+                        <button 
+                            onClick={handleCancel} 
+                            className="flex items-center gap-2 text-gray-500 hover:text-red-600 dark:hover:text-red-400 text-sm font-medium transition-colors"
+                        >
+                            <SafeIcon icon={FiX} className="w-4 h-4" /> Discard Changes
+                        </button>
+                    ) : (
+                        <div></div> 
+                    )}
+                    
+                    <button 
+                        onClick={handleSaveClick} 
+                        disabled={isSubmitting || !hasChanges} 
+                        className={`px-6 py-2.5 font-medium rounded shadow-sm transition-all flex items-center gap-2 ${
+                            hasChanges 
+                            ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-md transform hover:-translate-y-0.5' 
+                            : 'bg-gray-300 dark:bg-gray-700 text-gray-500 cursor-not-allowed'
+                        }`}
+                    >
+                        {isSubmitting ? (
+                            <>
+                                <LoadingSpinner size="xs" color="white" />
+                                <span>Saving...</span>
+                            </>
+                        ) : (
+                            <>
+                                <SafeIcon icon={FiSave} className="w-4 h-4" />
+                                <span>Save Changes</span>
+                            </>
+                        )}
+                    </button>
+                </div>
+            </div>
+         </div>
+      </div>
+    </div>
+  );
+};
+
+export default SeoTitlesMeta;

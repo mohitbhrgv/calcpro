@@ -1,0 +1,291 @@
+import React, { useState, useEffect, useMemo } from "react";
+import { motion } from "framer-motion";
+import toast from "react-hot-toast";
+import SafeIcon from "../../../common/SafeIcon";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import { authenticatedFetch } from "../../utils/apiService";
+import { useAuth } from "../../context/AuthContext";
+import { useAdminCache } from "../../context/AdminCacheContext";
+import * as FiIcons from "react-icons/fi";
+
+const { FiClock, FiCheckCircle, FiAlertTriangle, FiSave, FiInfo } = FiIcons;
+
+const InactivityLogout = () => {
+  const { refreshAuthSettings } = useAuth();
+  const { getCache, setCacheData, isInitialLoadComplete } = useAdminCache();
+
+  const cacheKey = "settings_general";
+  const cachedData = getCache(cacheKey);
+
+  const [loading, setLoading] = useState(!cachedData);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Helper to parse consistent structure
+  const parseSettings = (data) => ({
+    inactivity_logout_enabled: data?.inactivity_logout_enabled ?? true,
+    inactivity_timeout_minutes: data?.inactivity_timeout_minutes || 15,
+  });
+
+  // Initialize from cache
+  const [settings, setSettings] = useState(
+    cachedData ? parseSettings(cachedData) : { inactivity_logout_enabled: true, inactivity_timeout_minutes: 15 }
+  );
+
+  // Track initial state
+  const [initialSettings, setInitialSettings] = useState(
+    cachedData ? parseSettings(cachedData) : {}
+  );
+
+  // Detect changes
+  const hasChanges = useMemo(() => {
+    return JSON.stringify(settings) !== JSON.stringify(initialSettings);
+  }, [settings, initialSettings]);
+
+  useEffect(() => {
+    if (cachedData) {
+      setLoading(false);
+      return;
+    }
+
+    const fetchSettings = async () => {
+      try {
+        const result = await authenticatedFetch(
+          "http://localhost/calcpro-api/api/admin/get_settings.php"
+        );
+        if (result.success) {
+          const newSettings = parseSettings(result.data);
+          setSettings(newSettings);
+          setInitialSettings(newSettings); // Set baseline
+          setCacheData(cacheKey, result.data);
+        } else {
+          toast.error("Failed to load settings.");
+        }
+      } catch (error) {
+        toast.error("Could not connect to server.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchSettings();
+  }, [cachedData, setCacheData]);
+
+  const handleToggle = () => {
+    setSettings((prev) => ({
+      ...prev,
+      inactivity_logout_enabled: !prev.inactivity_logout_enabled,
+    }));
+  };
+
+  const handleTimeoutChange = (e) => {
+    const val = parseInt(e.target.value);
+    setSettings((prev) => ({ ...prev, inactivity_timeout_minutes: val }));
+  };
+
+  const handleSave = async () => {
+    if (!hasChanges) return;
+
+    if (
+      settings.inactivity_logout_enabled &&
+      (settings.inactivity_timeout_minutes < 1 ||
+        settings.inactivity_timeout_minutes > 120)
+    ) {
+      toast.error("Timeout must be between 1 and 120 minutes.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    const toastId = "save-settings-toast"; 
+
+    // 1. Show Loading Toast
+    toast.loading("Updating session settings...", { id: toastId });
+
+    // 2. API call + Delay
+    const apiCall = authenticatedFetch(
+      "http://localhost/calcpro-api/api/admin/update_settings.php",
+      {
+        method: "POST",
+        body: JSON.stringify(settings),
+      }
+    );
+    
+    const minDelay = new Promise(resolve => setTimeout(resolve, 1000));
+
+    try {
+      // 3. Wait for BOTH
+      const [result] = await Promise.all([apiCall, minDelay]);
+
+      if (result.success) {
+        // 4. Update Toast & State
+        toast.success("Settings updated successfully!", { id: toastId });
+        
+        await refreshAuthSettings();
+        
+        setInitialSettings(settings); // Sync baseline
+        
+        // Update Cache
+        const currentCache = getCache(cacheKey) || {};
+        setCacheData(cacheKey, { ...currentCache, ...settings });
+      } else {
+        toast.error(result.message || "Update failed.", { id: toastId });
+      }
+    } catch (error) {
+      toast.error("Connection error.", { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Helper to calculate warning time for UI display
+  const getWarningDuration = () => {
+      const mins = settings.inactivity_timeout_minutes;
+      if (mins <= 1) return "15 seconds";
+      if (mins <= 5) return "30 seconds";
+      if (mins <= 10) return "45 seconds";
+      return "60 seconds";
+  };
+
+  if (!isInitialLoadComplete) return null;
+  if (loading) return <LoadingSpinner size="xl" className="h-64" />;
+
+  return (
+    <div className="space-y-6">
+      {/* --- Standardized Header Card --- */}
+      <div className="flex items-start gap-4 p-4 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={FiClock} className="w-5 h-5" />
+        </div>
+        <div>
+          <h4 className="font-bold text-gray-900 dark:text-white">Auto-Logout Settings</h4>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            Configure automatic session termination to protect unattended screens and prevent unauthorized access.
+          </p>
+        </div>
+      </div>
+
+      {/* Main Status Card */}
+      <div
+        className={`rounded-xl border p-6 flex flex-col md:flex-row items-center justify-between gap-6 transition-colors ${
+          settings.inactivity_logout_enabled
+            ? "bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800"
+            : "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800"
+        }`}
+      >
+        <div className="flex items-center gap-4">
+          <div
+            className={`p-4 rounded-full ${
+              settings.inactivity_logout_enabled
+                ? "bg-green-100 text-green-600"
+                : "bg-red-100 text-red-600"
+            }`}
+          >
+            <SafeIcon
+              icon={
+                settings.inactivity_logout_enabled ? FiCheckCircle : FiAlertTriangle
+              }
+              className="w-8 h-8"
+            />
+          </div>
+          <div>
+            <h3
+              className={`text-lg font-bold ${
+                settings.inactivity_logout_enabled
+                  ? "text-green-900 dark:text-green-100"
+                  : "text-red-900 dark:text-red-100"
+              }`}
+            >
+              Auto-Logout is {settings.inactivity_logout_enabled ? "Active" : "Disabled"}
+            </h3>
+            <p
+              className={`text-sm ${
+                settings.inactivity_logout_enabled
+                  ? "text-green-700 dark:text-green-300"
+                  : "text-red-700 dark:text-red-300"
+              }`}
+            >
+              {settings.inactivity_logout_enabled
+                ? "Sessions will automatically close after a period of inactivity."
+                : "Sessions will remain open indefinitely. This is a security risk."}
+            </p>
+          </div>
+        </div>
+
+        {/* Toggle Switch */}
+        <button
+          onClick={handleToggle}
+          className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+            settings.inactivity_logout_enabled
+              ? "bg-green-600 focus:ring-green-500"
+              : "bg-gray-400 focus:ring-gray-400"
+          }`}
+        >
+          <span
+            className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${
+              settings.inactivity_logout_enabled
+                ? "translate-x-7"
+                : "translate-x-1"
+            }`}
+          />
+        </button>
+      </div>
+
+      {/* Configuration Options */}
+      {settings.inactivity_logout_enabled && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden"
+        >
+          <div className="p-6">
+            <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">
+              Timeout Duration (Minutes)
+            </label>
+            <div className="flex items-center gap-4">
+              <input
+                type="number"
+                min="1"
+                max="120"
+                value={settings.inactivity_timeout_minutes}
+                onChange={handleTimeoutChange}
+                className="w-32 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+              />
+              <span className="text-sm text-gray-500">
+                minutes of inactivity
+              </span>
+            </div>
+            <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg flex gap-3 border border-blue-100 dark:border-blue-800">
+              <SafeIcon
+                icon={FiInfo}
+                className="w-5 h-5 text-blue-600 shrink-0 mt-0.5"
+              />
+              <p className="text-sm text-blue-800 dark:text-blue-200">
+                <strong>Note:</strong> A warning modal will appear <strong>{getWarningDuration()}</strong> before the session actually expires, giving you a chance to stay logged in.
+              </p>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Save Button */}
+      <div className="flex justify-end pt-4">
+        <button
+          onClick={handleSave}
+          disabled={isSubmitting || !hasChanges} // --- UPDATED DISABLE LOGIC ---
+          className={`flex items-center space-x-2 px-6 py-3 rounded-lg shadow-md transition-all ${
+             hasChanges 
+             ? "bg-indigo-600 text-white hover:bg-indigo-700" 
+             : "bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-not-allowed"
+          }`}
+        >
+          {isSubmitting ? (
+             <LoadingSpinner size="sm" color="white" />
+          ) : (
+             <SafeIcon icon={FiSave} className="w-5 h-5" />
+          )}
+          <span>{isSubmitting ? "Saving..." : "Save Configuration"}</span>
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default InactivityLogout;

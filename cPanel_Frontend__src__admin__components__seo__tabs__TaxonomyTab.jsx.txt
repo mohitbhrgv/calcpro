@@ -1,0 +1,165 @@
+import React from "react";
+import SmartInput from "../common/SmartInput";
+import RobotsRow from "../common/RobotsRow";
+import AdvancedRobotsRow from "../common/AdvancedRobotsRow";
+import Toggle from "../common/Toggle";
+import InheritanceControl from "../common/InheritanceControl";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiFolder, FiGrid, FiTag } = FiIcons;
+
+const TaxonomyTab = ({ type, settings, handleChange, handleCustomChange }) => {
+  // Map UI type to DB prefix and labels
+  const typeMap = {
+    blog_categories: { prefix: "blog_category", label: "Blog Categories", icon: FiFolder },
+    calc_categories: { prefix: "calc_category", label: "Calculator Categories", icon: FiGrid },
+    tags: { prefix: "tag", label: "Tags", icon: FiTag },
+  };
+
+  const currentType = typeMap[type] || { prefix: type, label: type, icon: FiFolder };
+  const dbPrefix = `seo_tax_${currentType.prefix}`;
+  const label = currentType.label;
+
+  // Master Switch Logic
+  const customEnabledKey = `${dbPrefix}_robots_custom_enabled`;
+  const isCustomEnabled = settings[customEnabledKey] === true;
+
+  // Specific variables for taxonomies
+  const vars = [
+    { label: "Title", value: "%title%" },
+    { label: "Term Name", value: "%term%" },
+    { label: "Term Description", value: "%term_description%" },
+    { label: "Separator", value: "%sep%" },
+    { label: "Site Name", value: "%sitename%" },
+    { label: "Current Year", value: "%currentyear%" },
+  ];
+
+  // --- Handle Inheritance Toggle ---
+  const handleToggleInheritance = (shouldEnable) => {
+      handleCustomChange(customEnabledKey, shouldEnable);
+      if (shouldEnable) {
+          const keysToCopy = [
+              'index', 'noindex', 'nofollow', 'noarchive', 'noimageindex', 'nosnippet',
+              'max_snippet', 'max_video_preview', 'max_image_preview'
+          ];
+          
+          keysToCopy.forEach(key => {
+             const globalValue = settings[`seo_robots_global_${key}`];
+             handleCustomChange(`${dbPrefix}_robots_${key}`, globalValue);
+          });
+      }
+  };
+
+  return (
+    <div className="animate-fade-in">
+      {/* --- Standardized Header Card --- */}
+      <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={currentType.icon} className="w-5 h-5" />
+        </div>
+        <div>
+          <h4 className="font-bold text-gray-900 dark:text-white">{label}</h4>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            Set the default SEO templates for {label.toLowerCase()} archive pages.
+          </p>
+        </div>
+      </div>
+
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+        {label} Archive Settings
+      </h3>
+
+      <SmartInput
+        label={`${label} Title`}
+        value={settings[`${dbPrefix}_title_template`]}
+        onChange={(e) =>
+          handleCustomChange(`${dbPrefix}_title_template`, e.target.value)
+        }
+        helpText={`Title template for ${label} archives. Example: %term% Archives %sep% %sitename%`}
+        variables={vars}
+      />
+
+      <SmartInput
+        label={`${label} Description`}
+        value={settings[`${dbPrefix}_desc_template`]}
+        onChange={(e) =>
+          handleCustomChange(`${dbPrefix}_desc_template`, e.target.value)
+        }
+        helpText={`Meta description for ${label} archives. Example: %term_description%`}
+        variables={vars}
+      />
+
+      <div className="py-4">
+        <hr className="border-gray-100 dark:border-gray-700" />
+      </div>
+
+      {/* --- Robots Meta with Inheritance Control --- */}
+      <InheritanceControl 
+        isCustom={isCustomEnabled} 
+        onToggle={handleToggleInheritance} 
+        label={`${label} Robots`} 
+      />
+
+      <RobotsRow
+        label={`${label} Robots Meta`}
+        prefix={`${dbPrefix}_robots_`}
+        settings={settings}
+        onChange={handleChange}
+        disabled={!isCustomEnabled}
+      />
+
+      <AdvancedRobotsRow
+        prefix={`${dbPrefix}_robots_`}
+        settings={settings}
+        onChange={handleChange}
+        disabled={!isCustomEnabled}
+      />
+
+      <div className="py-4">
+        <hr className="border-gray-100 dark:border-gray-700" />
+      </div>
+
+      {/* --- Schema Markup Section --- */}
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+        Schema & Features
+      </h3>
+
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+        <div className="w-full md:w-1/4 pt-1">
+          <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">
+            Remove Snippet Data
+          </label>
+        </div>
+        <div className="w-full md:w-3/4 flex items-center space-x-3">
+          <Toggle 
+            checked={settings[`${dbPrefix}_remove_snippet_data`] || false} 
+            onChange={(val) => handleCustomChange(`${dbPrefix}_remove_snippet_data`, val)} 
+          />
+          <span className="text-sm text-gray-500">Remove Schema data from {label.toLowerCase()} archives.</span>
+        </div>
+      </div>
+
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+        <div className="w-full md:w-1/4 pt-2">
+            <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">Schema Type</label>
+        </div>
+        <div className="w-full md:w-3/4">
+            <select 
+                value={settings[`${dbPrefix}_schema_type`] || 'CollectionPage'}
+                onChange={(e) => handleCustomChange(`${dbPrefix}_schema_type`, e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md dark:bg-gray-800 dark:text-white"
+                disabled={settings[`${dbPrefix}_remove_snippet_data`]}
+            >
+                <option value="CollectionPage">Collection Page (Recommended)</option>
+                <option value="WebPage">Web Page (General)</option>
+                <option value="ItemPage">Item Page</option>
+                <option value="None">None</option>
+            </select>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default TaxonomyTab;

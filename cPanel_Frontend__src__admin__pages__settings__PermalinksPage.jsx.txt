@@ -1,0 +1,254 @@
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { motion } from "framer-motion";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import { authenticatedFetch } from "../../utils/apiService";
+import toast from "react-hot-toast";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import PermalinksTab from "../../components/settings/PermalinksTab";
+import SettingsHelpModal from "../../components/help/SettingsHelpModal";
+import Modal from "../../components/common/Modal";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+const { FiSave, FiLink, FiInfo, FiAlertTriangle, FiCornerUpRight } = FiIcons;
+
+const PermalinksPage = () => {
+  const { getCache, setCacheData, isInitialLoadComplete } = useAdminCache();
+  const cacheKey = "settings_general";
+  const cachedData = getCache(cacheKey);
+
+  const [loading, setLoading] = useState(!cachedData);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [confirmInput, setConfirmInput] = useState("");
+  
+  const [autoRedirect, setAutoRedirect] = useState(true);
+
+  // Helper to parse only what we need
+  const parseSettings = (data) => ({
+    permalink_structure: data.permalink_structure || "slug",
+    calculator_base_slug: data.calculator_base_slug || "calculator",
+  });
+
+  const [settings, setSettings] = useState(
+    cachedData ? parseSettings(cachedData) : { permalink_structure: "slug", calculator_base_slug: "calculator" }
+  );
+  const [initialSettings, setInitialSettings] = useState(
+    cachedData ? parseSettings(cachedData) : {}
+  );
+
+  const hasChanges = useMemo(() => {
+    return JSON.stringify(settings) !== JSON.stringify(initialSettings);
+  }, [settings, initialSettings]);
+
+  // --- DETECT SPECIFIC CHANGES ---
+  const isCalcChanged = settings.calculator_base_slug !== initialSettings.calculator_base_slug;
+  const isBlogChanged = settings.permalink_structure !== initialSettings.permalink_structure;
+  const showRedirectOption = isCalcChanged || isBlogChanged;
+
+  const fetchSettings = useCallback(
+    async (forceRefresh = false) => {
+      if (!forceRefresh && getCache(cacheKey)) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const result = await authenticatedFetch(
+          "http://localhost/calcpro-api/api/admin/get_settings.php"
+        );
+        if (result.success) {
+          const data = parseSettings(result.data);
+          setSettings(data);
+          setInitialSettings(data);
+          setCacheData(cacheKey, result.data);
+        }
+      } catch (error) {
+        toast.error("Failed to load settings.");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [getCache, setCacheData, cacheKey]
+  );
+
+  useEffect(() => {
+    fetchSettings();
+  }, [fetchSettings]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setSettings((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSaveClick = () => {
+    setConfirmInput("");
+    setAutoRedirect(true);
+    setShowConfirmModal(true);
+  };
+
+  const executeSave = async () => {
+    setShowConfirmModal(false);
+    setIsSubmitting(true);
+    
+    const payload = {
+        ...settings,
+        // Send true if user checked the box AND something relevant changed
+        auto_redirects: showRedirectOption ? autoRedirect : false 
+    };
+
+    try {
+      const result = await authenticatedFetch(
+        "http://localhost/calcpro-api/api/admin/update_settings.php",
+        { method: "POST", body: JSON.stringify(payload) }
+      );
+
+      if (result.success) {
+        toast.success("Permalinks updated successfully!");
+        setInitialSettings(settings);
+        const currentCache = getCache(cacheKey) || {};
+        setCacheData(cacheKey, { ...currentCache, ...settings });
+      } else {
+        toast.error(result.message || "Failed to save.");
+      }
+    } catch (error) {
+      toast.error("Connection failed.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const getRedirectMessage = () => {
+      const parts = [];
+      if (isCalcChanged) parts.push("calculators");
+      if (isBlogChanged) parts.push("blog posts");
+      return parts.join(" and ");
+  };
+
+  if (!isInitialLoadComplete) return null;
+  if (loading) return <LoadingSpinner size="xl" className="h-64" />;
+
+  return (
+    <div className="space-y-6">
+      {/* --- Settings Help Modal (Updated with disableAnimation) --- */}
+      <SettingsHelpModal
+        isOpen={isHelpOpen}
+        onClose={() => setIsHelpOpen(false)}
+        section="permalinks"
+        disableAnimation={true} // --- PROP PASSED ---
+      />
+
+      {/* --- Confirm Modal (Updated with disableAnimation) --- */}
+      <Modal
+        isOpen={showConfirmModal}
+        onClose={() => setShowConfirmModal(false)}
+        title="Confirm Permalink Changes"
+        type="danger"
+        size="md"
+        disableAnimation={true} // --- PROP PASSED ---
+      >
+        <div className="space-y-5">
+          <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-200 dark:border-red-800 flex items-start gap-3">
+            <SafeIcon
+              icon={FiAlertTriangle}
+              className="w-6 h-6 text-red-600 shrink-0 mt-0.5"
+            />
+            <div>
+              <h4 className="text-sm font-bold text-red-900 dark:text-red-100">
+                Warning: Broken Links
+              </h4>
+              <p className="text-xs text-red-800 dark:text-red-200/80 mt-1">
+                Changing the URL structure will <strong>break all existing links</strong> to your content.
+              </p>
+            </div>
+          </div>
+
+          {/* --- Dynamic Option for Both Types --- */}
+          {showRedirectOption && (
+             <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
+                <label className="flex items-start gap-3 cursor-pointer">
+                    <div className="flex items-center h-5">
+                        <input 
+                            type="checkbox" 
+                            checked={autoRedirect}
+                            onChange={(e) => setAutoRedirect(e.target.checked)}
+                            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                        />
+                    </div>
+                    <div>
+                        <span className="block text-sm font-bold text-blue-900 dark:text-blue-100 flex items-center gap-2">
+                           <SafeIcon icon={FiCornerUpRight} className="w-3.5 h-3.5" /> Auto-Create Redirects
+                        </span>
+                        <p className="text-xs text-blue-800 dark:text-blue-200/80 mt-0.5">
+                            Automatically create 301 redirects for all existing <strong>{getRedirectMessage()}</strong> to match the new structure.
+                        </p>
+                    </div>
+                </label>
+             </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Type <strong>CONFIRM</strong> to proceed:
+            </label>
+            <input
+              type="text"
+              value={confirmInput}
+              onChange={(e) => setConfirmInput(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-red-500 dark:bg-gray-700 dark:text-white"
+              placeholder="CONFIRM"
+            />
+          </div>
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              onClick={() => setShowConfirmModal(false)}
+              className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={executeSave}
+              disabled={confirmInput !== "CONFIRM"}
+              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium shadow-sm"
+            >
+              Save Changes
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <div className="flex items-start gap-4 p-4 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0"><SafeIcon icon={FiLink} className="w-5 h-5" /></div>
+        <div>
+          <div className="flex items-center gap-2">
+            <h4 className="font-bold text-gray-900 dark:text-white">Permalinks</h4>
+            <button onClick={() => setIsHelpOpen(true)} className="text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors p-1 rounded-full hover:bg-indigo-50 dark:hover:bg-indigo-900/30"><SafeIcon icon={FiInfo} className="w-4 h-4" /></button>
+          </div>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">Customize the URL structure for your blog posts and calculator tools.</p>
+        </div>
+      </div>
+
+      <PermalinksTab settings={settings} onChange={handleChange} />
+
+      <div className="flex justify-end pt-2">
+        <motion.button
+          whileHover={hasChanges ? { scale: 1.02 } : {}}
+          whileTap={hasChanges ? { scale: 0.98 } : {}}
+          onClick={handleSaveClick}
+          disabled={isSubmitting || !hasChanges}
+          className={`flex items-center space-x-2 px-6 py-3 rounded-lg shadow-sm font-bold transition-all ${
+            hasChanges ? "bg-indigo-600 text-white hover:bg-indigo-700" : "bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-not-allowed"
+          }`}
+        >
+          <SafeIcon icon={FiSave} className="w-5 h-5" />
+          <span>{isSubmitting ? "Saving..." : "Save Configuration"}</span>
+        </motion.button>
+      </div>
+    </div>
+  );
+};
+
+export default PermalinksPage;

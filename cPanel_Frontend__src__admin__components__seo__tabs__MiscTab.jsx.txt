@@ -1,0 +1,147 @@
+import React from "react";
+import SmartInput from "../common/SmartInput";
+import RobotsRow from "../common/RobotsRow";
+import AdvancedRobotsRow from "../common/AdvancedRobotsRow";
+import InheritanceControl from "../common/InheritanceControl";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiAlertCircle, FiArchive } = FiIcons;
+
+const MiscTab = ({ settings, handleChange, handleCustomChange }) => {
+  const vars = [
+    { label: "Title", value: "%title%" },
+    { label: "Separator", value: "%sep%" },
+    { label: "Site Name", value: "%sitename%" },
+    { label: "Current Year", value: "%currentyear%" },
+  ];
+
+  const searchVars = [...vars, { label: "Search Query", value: "%search_query%" }];
+  const authorVars = [...vars, { label: "Author Name", value: "%author%" }];
+  const dateVars = [...vars, { label: "Date", value: "%date%" }];
+
+  // --- Handle Inheritance Toggle ---
+  const handleToggleInheritance = (prefix, shouldEnable) => {
+      const customEnabledKey = `${prefix}robots_custom_enabled`;
+      handleCustomChange(customEnabledKey, shouldEnable);
+
+      if (shouldEnable) {
+          const keysToCopy = [
+              'index', 'noindex', 'nofollow', 'noarchive', 'noimageindex', 'nosnippet',
+              'max_snippet', 'max_video_preview', 'max_image_preview'
+          ];
+          
+          keysToCopy.forEach(key => {
+             const globalValue = settings[`seo_robots_global_${key}`];
+             handleCustomChange(`${prefix}robots_${key}`, globalValue);
+          });
+      }
+  };
+
+  const RenderArchiveSection = ({ label, prefix, helpText, variables }) => {
+      const isCustomEnabled = settings[`${prefix}robots_custom_enabled`] === true;
+      
+      return (
+        <div className="mb-8">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+                {label}
+            </h3>
+
+            <SmartInput
+                label={`${label} Title`}
+                value={settings[`${prefix}title`]}
+                onChange={(e) => handleCustomChange(`${prefix}title`, e.target.value)}
+                helpText={helpText}
+                variables={variables}
+            />
+
+            <InheritanceControl 
+                isCustom={isCustomEnabled} 
+                onToggle={(val) => handleToggleInheritance(prefix, val)} 
+                label={`${label} Robots`} 
+            />
+
+            <RobotsRow
+                label={`${label} Robots Meta`}
+                prefix={`${prefix}robots_`}
+                settings={settings}
+                onChange={handleChange}
+                disabled={!isCustomEnabled}
+            />
+            
+            <AdvancedRobotsRow
+                prefix={`${prefix}robots_`}
+                settings={settings}
+                onChange={handleChange}
+                disabled={!isCustomEnabled}
+            />
+        </div>
+      );
+  };
+
+  return (
+    <div className="animate-fade-in">
+        {/* --- Standardized Header Card --- */}
+        <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+            <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+                <SafeIcon icon={FiArchive} className="w-5 h-5" />
+            </div>
+            <div>
+                <h4 className="font-bold text-gray-900 dark:text-white">Miscellaneous Pages</h4>
+                <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                    Control SEO settings for system-generated pages like 404 errors, search results, and date-based archives.
+                </p>
+            </div>
+        </div>
+
+      {/* --- 404 & Search (System Pages) --- */}
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+        System Pages
+      </h3>
+
+      <SmartInput
+        label="404 Title"
+        value={settings.seo_special_404_title}
+        onChange={(e) => handleCustomChange("seo_special_404_title", e.target.value)}
+        helpText="Title for the 404 Not Found page."
+        variables={vars}
+      />
+
+      <SmartInput
+        label="Search Results Title"
+        value={settings.seo_special_search_title}
+        onChange={(e) => handleCustomChange("seo_special_search_title", e.target.value)}
+        helpText="Title for search results pages."
+        variables={searchVars}
+      />
+      
+      <div className="p-4 my-6 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 text-sm rounded border border-amber-100 dark:border-amber-800">
+        <strong>SEO Best Practice:</strong> Search Results and 404 pages are strictly forced to <code>noindex</code> to protect your crawl budget and prevent low-quality indexing.
+      </div>
+
+      <div className="py-2"></div>
+
+      {/* --- Date Archives --- */}
+      <RenderArchiveSection 
+          label="Date Archives" 
+          prefix="seo_archive_date_" 
+          helpText="Title for year/month/day archives." 
+          variables={dateVars}
+      />
+
+      {/* --- Author Archives --- */}
+      <RenderArchiveSection 
+          label="Author Archives" 
+          prefix="seo_archive_author_" 
+          helpText="Title for author specific archives." 
+          variables={authorVars}
+      />
+      
+       <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-sm rounded border border-blue-100 dark:border-blue-800">
+        <strong>Tip:</strong> If you are a single-author website, it is highly recommended to set Author Archives to <code>noindex</code> (or Disable Global Inheritance and check "No Index") to avoid duplicate content with your homepage.
+      </div>
+    </div>
+  );
+};
+
+export default MiscTab;

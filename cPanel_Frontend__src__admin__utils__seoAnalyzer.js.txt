@@ -1,0 +1,143 @@
+// A simple utility to count words in a string
+const countWords = (text) => {
+    if (!text) return 0;
+    return text.trim().split(/\s+/).length;
+};
+
+// A utility to get plain text from HTML content for analysis
+const getPlainText = (html) => {
+    if (!html) return '';
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return doc.body.textContent || "";
+};
+
+// --- CORE SEO CHECKS ---
+
+const checkContentLength = (plainText) => {
+    const wordCount = countWords(plainText);
+    if (wordCount < 300) {
+        return {
+            pass: false,
+            text: `Content is ${wordCount} words long. Good job, but it should be at least 300 words.`
+        };
+    }
+    return {
+        pass: true,
+        text: `Content is ${wordCount} words long. Great job!`
+    };
+};
+
+const checkKeywordInTitle = (title, keyword) => {
+    if (!keyword) return null;
+    if (title.toLowerCase().includes(keyword.toLowerCase())) {
+        return {
+            pass: true,
+            text: "Focus keyword appears in the SEO title."
+        };
+    }
+    return {
+        pass: false,
+        text: "Focus keyword does not appear in the SEO title."
+    };
+};
+
+const checkKeywordInMetaDescription = (metaDescription, keyword) => {
+    if (!keyword) return null;
+    if (metaDescription.toLowerCase().includes(keyword.toLowerCase())) {
+        return {
+            pass: true,
+            text: "Focus keyword appears in the meta description."
+        };
+    }
+    return {
+        pass: false,
+        text: "Focus keyword not found in the meta description."
+    };
+};
+
+const checkKeywordInFirstParagraph = (plainText, keyword) => {
+    if (!keyword) return null;
+    const first150Words = plainText.split(/\s+/).slice(0, 150).join(" ");
+    if (first150Words.toLowerCase().includes(keyword.toLowerCase())) {
+        return {
+            pass: true,
+            text: "Focus keyword appears in the first 10% of the content."
+        };
+    }
+    return {
+        pass: false,
+        text: "Focus keyword does not appear at the beginning of your content."
+    };
+};
+
+const checkKeywordDensity = (plainText, keyword) => {
+    if (!keyword) return null;
+    const wordCount = countWords(plainText);
+    if (wordCount === 0) return { pass: false, text: "Keyword density is 0. Add content." };
+
+    const keywordCount = (plainText.toLowerCase().match(new RegExp(keyword.toLowerCase(), 'g')) || []).length;
+    const density = (keywordCount / wordCount) * 100;
+
+    if (keywordCount === 0) {
+        return {
+            pass: false,
+            text: "Focus keyword was not found in the content."
+        };
+    }
+
+    if (density < 0.5 || density > 2.5) {
+        return {
+            pass: false,
+            text: `Keyword density is ${density.toFixed(1)}%. The focus keyword was found ${keywordCount} times. Aim for a density between 0.5% and 2.5%.`
+        };
+    }
+    return {
+        pass: true,
+        text: `Keyword density is ${density.toFixed(1)}%. The focus keyword was found ${keywordCount} times.`
+    };
+};
+
+const checkMetaDescriptionLength = (metaDescription) => {
+    const length = metaDescription.length;
+    if (length === 0) {
+        return {
+            pass: false,
+            text: "No meta description has been specified."
+        };
+    }
+    if (length < 120 || length > 160) {
+        return {
+            pass: false,
+            text: `Meta description is ${length} characters. The recommended length is 120-160 characters.`
+        };
+    }
+    return {
+        pass: true,
+        text: `Meta description length is good.`
+    };
+};
+
+// --- MAIN ANALYZER FUNCTION ---
+export const analyzeSeo = (formData) => {
+    const { title, content, metaDescription, focusKeywords } = formData;
+    const plainText = getPlainText(content);
+    const primaryKeyword = focusKeywords ? focusKeywords.split(',')[0].trim() : '';
+
+    const checklist = [
+        checkContentLength(plainText),
+        checkKeywordInTitle(title, primaryKeyword),
+        checkKeywordInMetaDescription(metaDescription, primaryKeyword),
+        checkKeywordInFirstParagraph(plainText, primaryKeyword),
+        checkKeywordDensity(plainText, primaryKeyword),
+        checkMetaDescriptionLength(metaDescription),
+    ].filter(item => item !== null); // Filter out checks that didn't run
+
+    const passedChecks = checklist.filter(item => item.pass).length;
+    const totalChecks = checklist.length;
+    const score = totalChecks > 0 ? Math.round((passedChecks / totalChecks) * 100) : 0;
+
+    return {
+        score,
+        checklist,
+    };
+};

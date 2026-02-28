@@ -1,0 +1,631 @@
+// (Update) cPanel_Frontend/src/admin/components/seo/PreviewSnippetEditor.jsx
+
+import React, { useState, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import SafeIcon from "@/common/SafeIcon";
+import MediaLibrary from "../media/MediaLibrary";
+import * as FiIcons from "react-icons/fi";
+import { FaGlobeAmericas, FaRetweet, FaRegHeart, FaRegChartBar, FaRegShareSquare } from "react-icons/fa";
+import { BiLike, BiComment, BiShare, BiMessageRounded } from "react-icons/bi";
+import { BsThreeDots } from "react-icons/bs";
+
+const { FiMonitor, FiSmartphone, FiImage, FiX, FiUploadCloud, FiChevronDown, FiShare2, FiGlobe, FiTrash2, FiEdit2, FiLink } = FiIcons;
+
+// --- Utility: Estimate Pixel Width ---
+const getPixelWidth = (text, fontSize = "18px") => {
+  if (!text) return 0;
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  context.font = `${fontSize} Arial, sans-serif`; 
+  return Math.round(context.measureText(text).width);
+};
+
+// --- Component: Metric Bar ---
+const MetricBar = ({ current, max }) => {
+  const percentage = (current / max) * 100;
+  let colorClass = "bg-orange-400"; 
+  if (percentage > 0 && percentage <= 100) colorClass = "bg-green-500"; 
+  if (percentage > 100) colorClass = "bg-red-600"; 
+  const width = Math.min(percentage, 100);
+  return (
+    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 mt-1.5 overflow-hidden">
+       <div className={`h-full transition-all duration-300 ${colorClass}`} style={{ width: `${width}%` }}></div>
+    </div>
+  );
+};
+
+// --- Component: Google Search Mockup ---
+const GooglePreview = ({ mode, title, url, desc, siteName }) => {
+    const isMobile = mode === 'mobile';
+    const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    
+    if (isMobile) {
+        return (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden font-sans text-left mx-auto w-[375px] min-w-[375px]">
+                <div className="p-4">
+                    <div className="flex items-center gap-3 mb-3">
+                        <div className="w-7 h-7 bg-gray-100 rounded-full flex items-center justify-center border border-gray-200 overflow-hidden flex-shrink-0">
+                            <SafeIcon icon={FiGlobe} className="w-4 h-4 text-blue-600"/> 
+                        </div>
+                        <div className="flex flex-col overflow-hidden">
+                            <span className="text-sm text-[#202124] font-normal truncate">{siteName || "CalcPro"}</span>
+                            <span className="text-xs text-[#5f6368] truncate">{url}</span>
+                        </div>
+                        <span className="ml-auto text-gray-500 flex-shrink-0">⋮</span>
+                    </div>
+                    <div className="text-[#1a0dab] text-lg leading-snug font-medium mb-1 break-words">{title || "Your Page Title"}</div>
+                    <div className="text-[#4d5156] text-sm leading-normal line-clamp-4"><span className="text-gray-500 text-xs mr-1">{date} — </span>{desc || "Your meta description will appear here..."}</div>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden font-sans text-left w-full">
+            <div className="p-5 max-w-[600px]">
+                <div className="flex items-center gap-1 mb-1 group cursor-pointer">
+                     <div className="flex flex-col"><span className="text-sm text-[#202124]">{siteName || "CalcPro"}</span><span className="text-xs text-[#5f6368] mt-0.5">{url}</span></div>
+                     <span className="text-gray-400 text-[10px] ml-1 mt-4">▼</span>
+                </div>
+                <h3 className="text-[#1a0dab] text-xl font-medium hover:underline cursor-pointer mb-1 truncate leading-snug">{title || "Your Page Title"}</h3>
+                <div className="text-[#4d5156] text-sm leading-[1.58] line-clamp-2"><span className="text-gray-500 text-xs mr-1.5">{date} — </span>{desc || "Your meta description will appear here..."}</div>
+            </div>
+        </div>
+    );
+};
+
+// --- Helper: Image Placeholder / Overlay ---
+const ImageArea = ({ image, onUpload, onRemove, isSynced = false, hasCustomImage = false }) => {
+    return (
+        <div className="aspect-[1.91/1] w-full bg-gray-100 dark:bg-gray-800 relative overflow-hidden group/image border-b border-gray-200 dark:border-gray-700">
+            {image ? (
+                <>
+                    <img src={image} alt="Preview" className="w-full h-full object-cover" />
+                    {/* Hover Actions */}
+                    {!isSynced && (
+                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover/image:opacity-100 transition-opacity flex items-center justify-center gap-3">
+                            <button 
+                                onClick={(e) => { e.stopPropagation(); onUpload(); }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-gray-900 rounded-lg text-xs font-bold hover:bg-gray-100 transition-colors shadow-lg"
+                            >
+                                <SafeIcon icon={FiEdit2} className="w-3.5 h-3.5" /> Change
+                            </button>
+                            {/* FIX: Only show Remove button if a custom image exists */}
+                            {hasCustomImage && (
+                                <button 
+                                    onClick={(e) => { e.stopPropagation(); onRemove(); }}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-bold hover:bg-red-700 transition-colors shadow-lg"
+                                >
+                                    <SafeIcon icon={FiTrash2} className="w-3.5 h-3.5" /> Remove
+                                </button>
+                            )}
+                        </div>
+                    )}
+                </>
+            ) : (
+                <button 
+                    onClick={!isSynced ? onUpload : undefined}
+                    className={`w-full h-full flex flex-col items-center justify-center text-gray-400 gap-2 transition-colors ${!isSynced ? "hover:bg-gray-200 dark:hover:bg-gray-700 cursor-pointer" : "cursor-default"}`}
+                >
+                    <div className="p-3 bg-white dark:bg-gray-700 rounded-full shadow-sm">
+                        <SafeIcon icon={FiUploadCloud} className="w-6 h-6" />
+                    </div>
+                    <span className="text-xs font-semibold">
+                        {isSynced ? "Image Synced" : "Click to Upload Image"}
+                    </span>
+                    <span className="text-[10px] opacity-60">1200 x 630px</span>
+                </button>
+            )}
+
+            {/* Sync Indicator */}
+            {isSynced && (
+                <div className="absolute top-3 right-3 bg-black/60 text-white text-[10px] font-bold px-2 py-1 rounded-md backdrop-blur-sm flex items-center gap-1.5 border border-white/10 z-10">
+                    <SafeIcon icon={FiLink} className="w-3 h-3" /> Synced
+                </div>
+            )}
+        </div>
+    );
+};
+
+// --- Component: Facebook Feed Preview ---
+const FacebookPreview = ({ image, title, desc, domain = "CALCPRO.COM", onUpload, onRemove, hasCustomImage }) => {
+    return (
+        <div className="w-full bg-white rounded-lg border border-gray-200 shadow-sm font-sans max-w-[500px] mx-auto overflow-hidden">
+            {/* Header */}
+            <div className="p-3 flex items-start justify-between">
+                <div className="flex gap-2">
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white font-bold">
+                        C
+                    </div>
+                    <div>
+                        <div className="flex items-center gap-1">
+                            <span className="font-semibold text-[#050505] text-[15px]">CalcPro</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-xs text-[#65676B]">
+                            <span>Just now</span>
+                            <span>·</span>
+                            <FaGlobeAmericas />
+                        </div>
+                    </div>
+                </div>
+                <BsThreeDots className="text-[#65676B] text-xl" />
+            </div>
+
+            {/* Post Text */}
+            <div className="px-3 pb-3 text-[15px] text-[#050505]">
+                {desc || "Check out this amazing calculator tool on CalcPro!"}
+            </div>
+
+            {/* Interactive Image Area */}
+            <ImageArea 
+                image={image} 
+                onUpload={onUpload} 
+                onRemove={onRemove} 
+                hasCustomImage={hasCustomImage} // Passed Prop
+            />
+                
+            {/* Meta Data */}
+            <div className="p-3 bg-[#F0F2F5] border-t border-gray-200">
+                <div className="uppercase text-[12px] text-[#65676B] mb-0.5 truncate">
+                    {domain.toUpperCase()}
+                </div>
+                <div className="font-bold text-[16px] text-[#050505] leading-5 mb-1 line-clamp-2">
+                    {title || "Your Page Title"}
+                </div>
+                <div className="text-[14px] text-[#65676B] line-clamp-1">
+                    {desc || "Your page description goes here..."}
+                </div>
+            </div>
+
+            {/* Footer Actions */}
+            <div className="px-4 py-1 border-t border-gray-200">
+                 <div className="flex items-center justify-between text-[#65676B] text-sm py-2">
+                    <div className="flex items-center gap-2">
+                        <div className="w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center">
+                             <BiLike className="text-white w-3 h-3" />
+                        </div>
+                        <span>12</span>
+                    </div>
+                    <div className="flex gap-3">
+                        <span>2 Comments</span>
+                        <span>1 Share</span>
+                    </div>
+                 </div>
+                 <div className="border-t border-gray-200 flex justify-between py-1">
+                    <button className="flex-1 flex items-center justify-center gap-2 py-2 hover:bg-gray-50 rounded text-[#65676B] font-medium text-[15px]">
+                        <BiLike className="text-xl" /> Like
+                    </button>
+                    <button className="flex-1 flex items-center justify-center gap-2 py-2 hover:bg-gray-50 rounded text-[#65676B] font-medium text-[15px]">
+                        <BiComment className="text-xl" /> Comment
+                    </button>
+                    <button className="flex-1 flex items-center justify-center gap-2 py-2 hover:bg-gray-50 rounded text-[#65676B] font-medium text-[15px]">
+                        <BiShare className="text-xl" /> Share
+                    </button>
+                 </div>
+            </div>
+        </div>
+    );
+};
+
+// --- Component: Twitter (X) Feed Preview ---
+const TwitterPreview = ({ image, title, desc, domain = "calcpro.com", onUpload, onRemove, isSynced, hasCustomImage }) => {
+    return (
+        <div className="w-full bg-white rounded-lg border border-gray-100 shadow-sm font-sans max-w-[500px] mx-auto p-4 hover:bg-gray-50 transition-colors">
+            <div className="flex gap-3">
+                {/* Avatar */}
+                <div className="flex-shrink-0">
+                    <div className="w-10 h-10 rounded-full bg-black flex items-center justify-center text-white font-bold text-sm">
+                        CP
+                    </div>
+                </div>
+
+                {/* Content */}
+                <div className="flex-1 min-w-0">
+                    {/* Header */}
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1 text-[15px]">
+                            <span className="font-bold text-[#0f1419] truncate">CalcPro</span>
+                            <span className="text-[#536471] truncate">@calcpro</span>
+                            <span className="text-[#536471]">·</span>
+                            <span className="text-[#536471]">2h</span>
+                        </div>
+                        <BsThreeDots className="text-[#536471]" />
+                    </div>
+
+                    {/* Tweet Text */}
+                    <div className="text-[15px] text-[#0f1419] leading-snug mb-3 whitespace-pre-wrap">
+                        {desc ? desc.substring(0, 120) + "..." : "Discover the best tools for your calculations. Accurate, fast, and professional. 🚀 #CalcPro #Finance"}
+                    </div>
+
+                    {/* Interactive Image Card */}
+                    <div className="relative rounded-2xl border border-[#cfd9de] overflow-hidden bg-gray-100 mb-1">
+                        <ImageArea 
+                            image={image} 
+                            onUpload={onUpload} 
+                            onRemove={onRemove} 
+                            isSynced={isSynced}
+                            hasCustomImage={hasCustomImage} // Passed Prop
+                        />
+                        
+                        {/* Title Overlay Badge */}
+                        <div className="absolute bottom-3 left-3 right-3 pointer-events-none">
+                            <span className="bg-black/75 text-white text-[13px] font-medium px-1.5 py-0.5 rounded-[4px] inline-block truncate max-w-full">
+                                {title || "Page Title"}
+                            </span>
+                        </div>
+                    </div>
+                    
+                    {/* Domain Line */}
+                    <div className="text-[#536471] text-[13px] mb-3">
+                        From {domain}
+                    </div>
+
+                    {/* Action Bar */}
+                    <div className="flex justify-between items-center text-[#536471] max-w-[350px]">
+                         <div className="flex items-center gap-1 group cursor-pointer hover:text-[#1d9bf0]">
+                            <div className="p-2 rounded-full group-hover:bg-[#1d9bf0]/10">
+                                <BiMessageRounded className="text-[18px]" />
+                            </div>
+                            <span className="text-xs">2</span>
+                         </div>
+                         <div className="flex items-center gap-1 group cursor-pointer hover:text-[#00ba7c]">
+                            <div className="p-2 rounded-full group-hover:bg-[#00ba7c]/10">
+                                <FaRetweet className="text-[18px]" />
+                            </div>
+                            <span className="text-xs">5</span>
+                         </div>
+                         <div className="flex items-center gap-1 group cursor-pointer hover:text-[#f91880]">
+                            <div className="p-2 rounded-full group-hover:bg-[#f91880]/10">
+                                <FaRegHeart className="text-[16px]" />
+                            </div>
+                            <span className="text-xs">24</span>
+                         </div>
+                         <div className="flex items-center gap-1 group cursor-pointer hover:text-[#1d9bf0]">
+                            <div className="p-2 rounded-full group-hover:bg-[#1d9bf0]/10">
+                                <FaRegChartBar className="text-[16px]" />
+                            </div>
+                            <span className="text-xs">1.2K</span>
+                         </div>
+                         <div className="p-2 rounded-full hover:bg-[#1d9bf0]/10 hover:text-[#1d9bf0] cursor-pointer">
+                            <FaRegShareSquare className="text-[16px]" />
+                         </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const availableVars = [
+    { label: "Post Title", value: "%title%" },
+    { label: "Excerpt", value: "%excerpt%" },
+    { label: "Site Name", value: "%sitename%" },
+    { label: "Current Year", value: "%currentyear%" }
+];
+
+// --- Main Component ---
+const PreviewSnippetEditor = ({ isOpen, onClose, formData, onFormDataChange, basePath = "blog/", featuredImage = null }) => {
+  const [activeTab, setActiveTab] = useState("general");
+  const [socialPlatform, setSocialPlatform] = useState("facebook"); 
+  const [previewDevice, setPreviewDevice] = useState("desktop");
+  const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
+  
+  const [showTitleVars, setShowTitleVars] = useState(false);
+  const [showDescVars, setShowDescVars] = useState(false);
+  
+  // --- CACHE FOR TWITTER DATA ---
+  const [cachedTwitterData, setCachedTwitterData] = useState({
+      title: "",
+      description: "",
+      image: ""
+  });
+
+  // --- TOGGLE STATE INITIALIZATION ---
+  const [useFbDataForTwitter, setUseFbDataForTwitter] = useState(() => {
+      const hasTwitterData = formData.twitterTitle || formData.twitterDescription || formData.twitterImage;
+      return !hasTwitterData;
+  });
+
+  // Initialize Cache on Mount
+  useEffect(() => {
+      if (isOpen) {
+          setCachedTwitterData({
+              title: formData.twitterTitle || "",
+              description: formData.twitterDescription || "",
+              image: formData.twitterImage || ""
+          });
+      }
+  }, [isOpen]);
+
+  // Derived Data
+  const metaTitle = formData.metaTitle || formData.title || "";
+  const metaDescription = formData.metaDescription || formData.excerpt || "";
+  
+  const titleLimitPx = 580;
+  const descLimitPx = 920;
+  
+  const titlePixels = getPixelWidth(metaTitle, "20px"); 
+  const descPixels = getPixelWidth(metaDescription, "14px"); 
+  
+  const displayUrl = `https://calcpro.com/${basePath}${formData.slug || ""}`.replace(/\/+/g, "/").replace("https:/", "https://");
+  const permalinkValue = formData.slug || ""; 
+
+  // Close dropdowns
+  useEffect(() => {
+      const closeDropdowns = () => { setShowTitleVars(false); setShowDescVars(false); };
+      if (showTitleVars || showDescVars) window.addEventListener('click', closeDropdowns);
+      return () => window.removeEventListener('click', closeDropdowns);
+  }, [showTitleVars, showDescVars]);
+
+  // Handle Image Selection
+  const handleSelectMedia = (media) => {
+    // If we are on Twitter tab and SYNC is OFF, update twitterImage
+    if (socialPlatform === 'twitter' && !useFbDataForTwitter) {
+         onFormDataChange({ target: { name: "twitterImage", value: media.full_url } });
+         setCachedTwitterData(prev => ({...prev, image: media.full_url})); 
+    } else {
+         // Default to updating og_image (Facebook)
+         onFormDataChange({ target: { name: "og_image", value: media.full_url } });
+    }
+    setIsMediaLibraryOpen(false);
+  };
+  
+  // Handle Image Removal
+  const handleRemoveImage = () => {
+      if (socialPlatform === 'twitter' && !useFbDataForTwitter) {
+          onFormDataChange({ target: { name: "twitterImage", value: "" } });
+          setCachedTwitterData(prev => ({...prev, image: ""}));
+      } else {
+          onFormDataChange({ target: { name: "og_image", value: "" } });
+      }
+  };
+
+  const handlePermalinkChange = (e) => {
+      const newSlug = e.target.value.replace(/[^a-z0-9-]/g, '-'); 
+      onFormDataChange({ target: { name: "slug", value: newSlug } });
+  };
+
+  const insertVariable = (field, variable) => {
+      const currentValue = formData[field] || "";
+      onFormDataChange({ target: { name: field, value: currentValue + variable } });
+  };
+  
+  // --- REFINED TOGGLE LOGIC ---
+  const handleTwitterSyncToggle = () => {
+      const newSyncState = !useFbDataForTwitter;
+      setUseFbDataForTwitter(newSyncState);
+      
+      if (newSyncState) {
+          // Turning Sync ON: Save current input values to cache then clear inputs
+          setCachedTwitterData({
+              title: formData.twitterTitle || "",
+              description: formData.twitterDescription || "",
+              image: formData.twitterImage || ""
+          });
+          onFormDataChange({ target: { name: "twitterTitle", value: "" } });
+          onFormDataChange({ target: { name: "twitterDescription", value: "" } });
+          onFormDataChange({ target: { name: "twitterImage", value: "" } });
+      } else {
+          // Turning Sync OFF: Restore values from cache
+          onFormDataChange({ target: { name: "twitterTitle", value: cachedTwitterData.title } });
+          onFormDataChange({ target: { name: "twitterDescription", value: cachedTwitterData.description } });
+          onFormDataChange({ target: { name: "twitterImage", value: cachedTwitterData.image } });
+      }
+  };
+
+  // Wrapper for input changes to also update cache if Sync is OFF
+  const handleTwitterInputChange = (e) => {
+      const { name, value } = e.target;
+      onFormDataChange(e);
+      if (socialPlatform === 'twitter' && !useFbDataForTwitter) {
+          const cacheKey = name === 'twitterTitle' ? 'title' : name === 'twitterDescription' ? 'description' : null;
+          if (cacheKey) {
+              setCachedTwitterData(prev => ({ ...prev, [cacheKey]: value }));
+          }
+      }
+  };
+
+  // --- Logic: Featured Image Fallback ---
+  const fallbackImage = featuredImage ? featuredImage.full_url : null;
+  
+  // Facebook Data (Always available)
+  const fbTitle = formData.ogTitle || metaTitle;
+  const fbDesc = formData.ogDescription || metaDescription;
+  const fbImage = formData.og_image || fallbackImage;
+
+  // --- BUG FIX: TWITTER IMAGE LOGIC ---
+  // If Sync is OFF, and no Custom Twitter Image is set, we must fallback to 'fallbackImage' (featured),
+  // ignoring the Facebook image entirely to decouple them.
+  const twTitle = useFbDataForTwitter ? fbTitle : (formData.twitterTitle || metaTitle);
+  const twDesc = useFbDataForTwitter ? fbDesc : (formData.twitterDescription || metaDescription);
+  
+  const twImage = useFbDataForTwitter 
+      ? fbImage // Sync ON: Mirror Facebook
+      : (formData.twitterImage ? formData.twitterImage : fallbackImage); // Sync OFF: Custom -> Featured -> Null (Empty)
+
+  const toggleDropdown = (e, setter) => {
+      e.stopPropagation();
+      setter(prev => !prev);
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm" />
+          
+          {/* 
+            --- UPDATE: Pass initialSelectedUrl depending on context ---
+          */}
+          <MediaLibrary 
+            isOpen={isMediaLibraryOpen} 
+            onClose={() => setIsMediaLibraryOpen(false)} 
+            onSelectMedia={handleSelectMedia} 
+            zIndexClass="z-[110]" 
+            initialSelectedUrl={
+                (socialPlatform === 'twitter' && !useFbDataForTwitter)
+                    ? formData.twitterImage
+                    : formData.og_image
+            }
+          />
+
+          <motion.div initial={{ scale: 0.95, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.95, opacity: 0, y: 20 }} className="bg-white dark:bg-gray-800 w-full max-w-3xl rounded-xl shadow-2xl flex flex-col max-h-[90vh] relative z-10 overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white">Preview Snippet Editor</h3>
+              <button onClick={onClose} className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-white"><SafeIcon icon={FiX} className="w-6 h-6" /></button>
+            </div>
+
+            {/* Tabs */}
+            <div className="flex border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-6 pt-2">
+              <button onClick={() => setActiveTab("general")} className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${activeTab === "general" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}><SafeIcon icon={FiMonitor} className="w-4 h-4" /> General</button>
+              <button onClick={() => setActiveTab("social")} className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${activeTab === "social" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}><SafeIcon icon={FiShare2} className="w-4 h-4" /> Social</button>
+            </div>
+
+            {/* Scrollable Content */}
+            <div className="flex-1 overflow-y-auto p-6 bg-gray-50/50 dark:bg-gray-900/50">
+              
+              {activeTab === "general" && (
+                <div className="space-y-8 mx-auto">
+                  {/* Preview Area */}
+                  <div>
+                      <div className="flex justify-between items-center mb-3">
+                          <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{previewDevice === 'desktop' ? 'Desktop Preview' : 'Mobile Preview'}</h4>
+                          <div className="flex gap-1 bg-gray-200 dark:bg-gray-700 p-1 rounded-lg">
+                              <button onClick={() => setPreviewDevice('desktop')} className={`p-1.5 rounded-md transition-all ${previewDevice === 'desktop' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`} title="Desktop Preview"><SafeIcon icon={FiMonitor} className="w-4 h-4" /></button>
+                              <button onClick={() => setPreviewDevice('mobile')} className={`p-1.5 rounded-md transition-all ${previewDevice === 'mobile' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`} title="Mobile Preview"><SafeIcon icon={FiSmartphone} className="w-4 h-4" /></button>
+                          </div>
+                      </div>
+                      <div className="flex justify-center">
+                        <GooglePreview mode={previewDevice} title={metaTitle} url={displayUrl} desc={metaDescription} siteName="CalcPro" />
+                      </div>
+                  </div>
+
+                  {/* Editor Inputs */}
+                  <div className="space-y-6 bg-white dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm relative">
+                    {/* Title Input */}
+                    <div className="relative">
+                        <div className="flex justify-between items-center mb-2">
+                            <label className="font-bold text-sm text-gray-700 dark:text-gray-200">Title</label>
+                            <div className="flex items-center gap-3"><span className={`text-xs ${titlePixels > titleLimitPx ? 'text-red-600 font-bold' : 'text-gray-500'}`}>{metaTitle.length} / 60 ({titlePixels}px / {titleLimitPx}px)</span><div className="w-24"><MetricBar current={titlePixels} max={titleLimitPx} /></div></div>
+                        </div>
+                        <div className="relative flex items-center">
+                            <input type="text" name="metaTitle" value={formData.metaTitle || ""} onChange={onFormDataChange} className="w-full pl-4 pr-10 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-shadow" placeholder={formData.title} />
+                            <button onClick={(e) => toggleDropdown(e, setShowTitleVars)} className="absolute right-0 top-0 h-full px-3 text-gray-400 hover:text-blue-600 border-l border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 rounded-r-lg"><SafeIcon icon={FiChevronDown} className="w-4 h-4" /></button>
+                        </div>
+                        {showTitleVars && (
+                            <div className="absolute right-0 top-full mt-1 w-64 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-md shadow-xl z-50 max-h-60 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                                {availableVars.map((v) => (<button key={v.value} onClick={() => insertVariable('metaTitle', v.value)} className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-blue-50 hover:text-blue-600">{v.label} <span className="text-xs text-gray-400 ml-1">({v.value})</span></button>))}
+                            </div>
+                        )}
+                    </div>
+                    {/* Permalink */}
+                    <div>
+                        <div className="flex justify-between items-center mb-2">
+                            <label className="font-bold text-sm text-gray-700 dark:text-gray-200">Permalink</label>
+                            <div className="flex items-center gap-3"><span className={`text-xs ${permalinkValue.length > 75 ? 'text-red-600 font-bold' : 'text-gray-500'}`}>{permalinkValue.length} / 75</span><div className="w-24"><MetricBar current={permalinkValue.length} max={75} /></div></div>
+                        </div>
+                        <div className="flex rounded-lg shadow-sm">
+                            <span className="inline-flex items-center px-3 rounded-l-lg border border-r-0 border-gray-300 bg-gray-50 text-gray-500 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-400">https://calcpro.com/{basePath}</span>
+                            <input type="text" value={permalinkValue} onChange={handlePermalinkChange} className="flex-1 min-w-0 block w-full px-3 py-2.5 border border-gray-300 rounded-r-lg focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:border-gray-600 text-gray-500 dark:text-gray-400 sm:text-sm" />
+                        </div>
+                    </div>
+                    {/* Description */}
+                    <div className="relative">
+                        <div className="flex justify-between items-center mb-2">
+                            <label className="font-bold text-sm text-gray-700 dark:text-gray-200">Description</label>
+                            <div className="flex items-center gap-3"><span className={`text-xs ${descPixels > descLimitPx ? 'text-red-600 font-bold' : 'text-gray-500'}`}>{metaDescription.length} / 160 ({descPixels}px / {descLimitPx}px)</span><div className="w-24"><MetricBar current={descPixels} max={descLimitPx} /></div></div>
+                        </div>
+                         <div className="relative flex items-start">
+                            <textarea name="metaDescription" value={formData.metaDescription || ""} onChange={onFormDataChange} rows={3} className="w-full pl-4 pr-10 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-shadow" placeholder={formData.excerpt} />
+                            <button onClick={(e) => toggleDropdown(e, setShowDescVars)} className="absolute right-0 top-0 h-full px-3 text-gray-400 hover:text-blue-600 border-l border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 rounded-r-lg"><SafeIcon icon={FiChevronDown} className="w-4 h-4" /></button>
+                        </div>
+                        {showDescVars && (
+                            <div className="absolute right-0 top-full mt-1 w-64 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-md shadow-xl z-50 max-h-60 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                                {availableVars.map((v) => (<button key={v.value} onClick={() => insertVariable('metaDescription', v.value)} className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-blue-50 hover:text-blue-600">{v.label} <span className="text-xs text-gray-400 ml-1">({v.value})</span></button>))}
+                            </div>
+                        )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === "social" && (
+                 <div className="mx-auto flex flex-col gap-6">
+                    <div className="flex rounded-lg bg-gray-200 dark:bg-gray-700 p-1 max-w-[500px] mx-auto w-full">
+                        <button onClick={() => setSocialPlatform('facebook')} className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-medium transition-all ${socialPlatform === 'facebook' ? 'bg-white dark:bg-gray-600 text-blue-700 dark:text-white shadow-sm' : 'text-gray-600 dark:text-gray-400'}`}>Facebook</button>
+                        <button onClick={() => setSocialPlatform('twitter')} className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-medium transition-all ${socialPlatform === 'twitter' ? 'bg-black text-white shadow-sm' : 'text-gray-600 dark:text-gray-400'}`}>Twitter (X)</button>
+                    </div>
+                    
+                    {/* Render Specific Card Component */}
+                    <div className="w-full flex justify-center">
+                        {socialPlatform === 'facebook' ? (
+                            <FacebookPreview 
+                                image={fbImage} 
+                                title={fbTitle} 
+                                desc={fbDesc} 
+                                onUpload={() => setIsMediaLibraryOpen(true)}
+                                onRemove={() => handleRemoveImage('og_image')}
+                                hasCustomImage={!!formData.og_image} // Pass boolean
+                            />
+                        ) : (
+                            <TwitterPreview 
+                                image={twImage} 
+                                title={twTitle} 
+                                desc={twDesc}
+                                onUpload={() => setIsMediaLibraryOpen(true)}
+                                onRemove={() => handleRemoveImage('twitterImage')}
+                                isSynced={useFbDataForTwitter} 
+                                hasCustomImage={!!formData.twitterImage} // Pass boolean
+                            />
+                        )}
+                    </div>
+
+                    {socialPlatform === 'twitter' && (
+                         <div className="flex items-center justify-between p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800 max-w-[500px] mx-auto w-full">
+                            <span className="text-sm font-medium text-gray-700 dark:text-gray-200">Use Data from Facebook Tab</span>
+                            <button onClick={handleTwitterSyncToggle} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${useFbDataForTwitter ? 'bg-blue-600' : 'bg-gray-300'}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${useFbDataForTwitter ? 'translate-x-6' : 'translate-x-1'}`} /></button>
+                         </div>
+                     )}
+
+                     {/* Form Controls - Only Text Inputs (Image is now inside preview) */}
+                     <div className={`space-y-5 max-w-[500px] mx-auto w-full ${(socialPlatform === 'twitter' && useFbDataForTwitter) ? 'opacity-50 pointer-events-none' : ''}`}>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1">Social Title</label>
+                            <input 
+                                type="text" 
+                                name={socialPlatform === 'facebook' ? "ogTitle" : "twitterTitle"} 
+                                value={socialPlatform === 'facebook' ? (formData.ogTitle || "") : (formData.twitterTitle || "")} 
+                                onChange={handleTwitterInputChange} 
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white" 
+                                placeholder={socialPlatform === 'twitter' && !useFbDataForTwitter ? metaTitle : fbTitle} 
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1">Social Description</label>
+                            <textarea 
+                                name={socialPlatform === 'facebook' ? "ogDescription" : "twitterDescription"} 
+                                value={socialPlatform === 'facebook' ? (formData.ogDescription || "") : (formData.twitterDescription || "")} 
+                                onChange={handleTwitterInputChange} 
+                                rows={3} 
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white resize-none" 
+                                placeholder={socialPlatform === 'twitter' && !useFbDataForTwitter ? metaDescription : fbDesc} 
+                            />
+                        </div>
+                     </div>
+                 </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 flex justify-end">
+                <button onClick={onClose} className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg shadow hover:bg-blue-700 transition-colors">Done</button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+};
+
+export default PreviewSnippetEditor;

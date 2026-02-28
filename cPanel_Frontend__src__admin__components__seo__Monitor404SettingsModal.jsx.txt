@@ -1,0 +1,301 @@
+import React, { useState, useEffect } from "react";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import { authenticatedFetch } from "../../utils/apiService";
+import toast from "react-hot-toast";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import Toggle from "./common/Toggle"; // Adjusted path to be relative to this file's location
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+const { FiSave, FiPlus, FiTrash2, FiRefreshCw, FiAlertCircle } = FiIcons;
+
+const Monitor404SettingsModal = ({ isOpen, onClose, disableAnimation = false }) => {
+  const { getCache, setCacheData } = useAdminCache();
+  
+  const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Form State
+  const [mode, setMode] = useState("simple");
+  const [logLimit, setLogLimit] = useState(100);
+  const [ignoreQuery, setIgnoreQuery] = useState(true);
+  const [excludePaths, setExcludePaths] = useState([]);
+
+  // Helper to parse settings data into state
+  const parseAndSetData = (data) => {
+    if (!data) return;
+    
+    setMode(data.seo_404_monitor_mode || "simple");
+    setLogLimit(parseInt(data.seo_404_monitor_limit) || 100);
+    
+    const rawIgnore = data.seo_404_monitor_ignore_query;
+    setIgnoreQuery(rawIgnore === true || rawIgnore === "true");
+
+    try {
+        const paths = data.seo_404_monitor_exclude 
+          ? (typeof data.seo_404_monitor_exclude === 'string' ? JSON.parse(data.seo_404_monitor_exclude) : data.seo_404_monitor_exclude)
+          : [];
+        setExcludePaths(Array.isArray(paths) ? paths : []);
+    } catch (e) {
+        setExcludePaths([]);
+    }
+  };
+
+  // --- INITIALIZATION LOGIC ---
+  useEffect(() => {
+    if (isOpen) {
+      // 1. Try to load from cache immediately for speed
+      const cached = getCache("settings_general");
+      if (cached) {
+        parseAndSetData(cached);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+
+      // 2. Fetch fresh data in background (or foreground if no cache)
+      const fetchSettings = async () => {
+        try {
+          const result = await authenticatedFetch(
+            "http://localhost/calcpro-api/api/admin/get_settings.php"
+          );
+          if (result.success) {
+            parseAndSetData(result.data);
+            setCacheData("settings_general", result.data);
+          }
+        } catch (error) {
+          console.error("Failed to sync settings:", error);
+          if (!cached) toast.error("Failed to load settings.");
+        } finally {
+          setLoading(false);
+        }
+      };
+      fetchSettings();
+    }
+  }, [isOpen]); // Only run when modal opens, NOT when cachedData changes
+
+  // --- UI Handlers ---
+
+  const handleAddPath = () => {
+    setExcludePaths([...excludePaths, { value: "", type: "exact" }]);
+  };
+
+  const handleRemovePath = (index) => {
+    setExcludePaths(excludePaths.filter((_, i) => i !== index));
+  };
+
+  const handlePathChange = (index, field, value) => {
+    const newPaths = [...excludePaths];
+    newPaths[index][field] = value;
+    setExcludePaths(newPaths);
+  };
+
+  const handleReset = () => {
+    if (window.confirm("Reset all 404 Monitor settings to defaults?")) {
+        setMode("simple");
+        setLogLimit(100);
+        setIgnoreQuery(true);
+        setExcludePaths([]);
+        toast.success("Settings reset to defaults (unsaved).");
+    }
+  };
+
+  const handleSave = async () => {
+    setIsSubmitting(true);
+    const toastId = "save-404-settings";
+    toast.loading("Saving settings...", { id: toastId });
+
+    const payload = {
+        seo_404_monitor_mode: mode,
+        seo_404_monitor_limit: logLimit,
+        seo_404_monitor_ignore_query: ignoreQuery,
+        seo_404_monitor_exclude: excludePaths 
+    };
+
+    try {
+      const result = await authenticatedFetch(
+        "http://localhost/calcpro-api/api/admin/update_settings.php",
+        { method: "POST", body: JSON.stringify(payload) }
+      );
+
+      if (result.success) {
+        toast.success("Settings saved successfully!", { id: toastId });
+        
+        // Update cache with new values so they persist
+        const currentCache = getCache("settings_general") || {};
+        setCacheData("settings_general", { ...currentCache, ...payload });
+        
+        onClose();
+      } else {
+        toast.error(result.message || "Save failed.", { id: toastId });
+      }
+    } catch (error) {
+      toast.error("Connection failed.", { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="404 Monitor Settings"
+      size="lg"
+      disableAnimation={disableAnimation}
+    >
+      {loading ? (
+        <div className="h-64 flex items-center justify-center">
+            <LoadingSpinner size="lg" />
+        </div>
+      ) : (
+        <div className="space-y-8 font-sans text-gray-700 dark:text-gray-300 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
+            
+            <div className="bg-red-50 dark:bg-red-900/20 border-l-4 border-red-500 p-4 rounded-r-lg flex gap-3">
+                <SafeIcon icon={FiAlertCircle} className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-red-800 dark:text-red-200/90 leading-relaxed">
+                    If you have hundreds of 404 errors, your database size might increase quickly. 
+                    Only choose <strong>Advanced Mode</strong> or disable the <strong>Log Limit</strong> if you actively maintain this list.
+                </p>
+            </div>
+
+            {/* Mode Selection */}
+            <div className="flex flex-col md:flex-row md:items-start gap-4 md:gap-12 border-b border-gray-100 dark:border-gray-700 pb-6">
+                <div className="w-full md:w-1/4 pt-2">
+                    <label className="text-sm font-bold text-gray-800 dark:text-white block">Mode</label>
+                </div>
+                <div className="w-full md:w-3/4">
+                    <div className="inline-flex bg-gray-100 dark:bg-gray-700 p-1 rounded-lg">
+                        <button
+                            type="button"
+                            onClick={() => setMode("simple")}
+                            className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${mode === "simple" ? "bg-white dark:bg-gray-600 text-indigo-600 dark:text-white shadow-sm" : "text-gray-500 hover:text-gray-700 dark:text-gray-400"}`}
+                        >
+                            Simple
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setMode("advanced")}
+                            className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${mode === "advanced" ? "bg-white dark:bg-gray-600 text-indigo-600 dark:text-white shadow-sm" : "text-gray-500 hover:text-gray-700 dark:text-gray-400"}`}
+                        >
+                            Advanced
+                        </button>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2 leading-relaxed">
+                        The <strong>Simple</strong> mode only logs URI and access time. The <strong>Advanced</strong> mode logs additional information such as the <strong>Referer URL</strong> and User Agent.
+                    </p>
+                </div>
+            </div>
+
+            {/* Log Limit */}
+            <div className="flex flex-col md:flex-row md:items-start gap-4 md:gap-12 border-b border-gray-100 dark:border-gray-700 pb-6">
+                <div className="w-full md:w-1/4 pt-2">
+                    <label className="text-sm font-bold text-gray-800 dark:text-white block">Log Limit</label>
+                </div>
+                <div className="w-full md:w-3/4">
+                    <input 
+                        type="number"
+                        min="0"
+                        max="10000"
+                        value={logLimit}
+                        onChange={(e) => setLogLimit(parseInt(e.target.value) || 0)}
+                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                    />
+                    <p className="text-xs text-gray-500 mt-2">
+                        Sets the maximum number of rows to keep. Set to <strong>0</strong> to disable the limit (Not Recommended).
+                    </p>
+                </div>
+            </div>
+
+            {/* Exclude Paths */}
+            <div className="flex flex-col md:flex-row md:items-start gap-4 md:gap-12 border-b border-gray-100 dark:border-gray-700 pb-6">
+                <div className="w-full md:w-1/4 pt-2">
+                    <label className="text-sm font-bold text-gray-800 dark:text-white block">Exclude Paths</label>
+                </div>
+                <div className="w-full md:w-3/4 space-y-3">
+                    {excludePaths.map((item, index) => (
+                        <div key={index} className="flex gap-2">
+                            <input 
+                                type="text"
+                                placeholder="/wp-admin"
+                                value={item.value}
+                                onChange={(e) => handlePathChange(index, "value", e.target.value)}
+                                className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                            />
+                            <select
+                                value={item.type}
+                                onChange={(e) => handlePathChange(index, "type", e.target.value)}
+                                className="w-32 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-800 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                            >
+                                <option value="exact">Exact</option>
+                                <option value="contains">Contains</option>
+                            </select>
+                            <button
+                                type="button"
+                                onClick={() => handleRemovePath(index)}
+                                className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                            >
+                                <SafeIcon icon={FiTrash2} className="w-4 h-4" />
+                            </button>
+                        </div>
+                    ))}
+                    <button
+                        type="button"
+                        onClick={handleAddPath}
+                        className="text-xs font-bold text-gray-500 hover:text-indigo-600 flex items-center gap-1 transition-colors px-1"
+                    >
+                        <SafeIcon icon={FiPlus} className="w-3 h-3" /> Add another
+                    </button>
+                    <p className="text-xs text-gray-500 mt-2">
+                        Enter URIs or keywords you wish to prevent from getting logged (e.g. <code>/wp-login.php</code>).
+                    </p>
+                </div>
+            </div>
+
+            {/* Ignore Query Parameters */}
+            <div className="flex flex-col md:flex-row md:items-start gap-4 md:gap-12 pb-2">
+                <div className="w-full md:w-1/4 pt-1">
+                    <label className="text-sm font-bold text-gray-800 dark:text-white block">Ignore Query Parameters</label>
+                </div>
+                <div className="w-full md:w-3/4">
+                    <div className="flex items-center gap-3">
+                        <Toggle 
+                            checked={ignoreQuery} 
+                            onChange={(val) => setIgnoreQuery(val)} 
+                        />
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2 leading-relaxed">
+                        Turn <strong>ON</strong> to ignore all query parameters (the part after a question mark in a URL) when logging 404 errors. 
+                        Example: <code>/page?ref=123</code> becomes <code>/page</code>.
+                    </p>
+                </div>
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="flex justify-between pt-6 border-t border-gray-200 dark:border-gray-700 mt-2">
+                <button
+                    type="button"
+                    onClick={handleReset}
+                    className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors flex items-center gap-2"
+                >
+                    <SafeIcon icon={FiRefreshCw} className="w-3.5 h-3.5" />
+                    Reset Options
+                </button>
+                <button
+                    type="button"
+                    onClick={handleSave}
+                    disabled={isSubmitting}
+                    className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold rounded-lg shadow-sm transition-all flex items-center gap-2 disabled:opacity-50"
+                >
+                    {isSubmitting ? <LoadingSpinner size="xs" color="white" /> : <SafeIcon icon={FiSave} className="w-3.5 h-3.5" />}
+                    Save Changes
+                </button>
+            </div>
+        </div>
+      )}
+    </Modal>
+  );
+};
+
+export default Monitor404SettingsModal;

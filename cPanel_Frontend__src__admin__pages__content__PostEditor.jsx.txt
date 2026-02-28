@@ -1,0 +1,1091 @@
+// (Update) cPanel_Frontend/src/admin/pages/content/PostEditor.jsx
+
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  useMemo,
+} from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import ReactQuill, { Quill } from "react-quill-new";
+import "react-quill-new/dist/quill.snow.css";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+
+// --- Components ---
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import MediaLibrary from "../../components/media/MediaLibrary";
+import ImageEditorModal from "../../components/seo/ImageEditorModal";
+import ImageToolbar from "../../components/editor/ImageToolbar";
+import Modal from "../../components/common/Modal";
+import SchemaBuilderModal from "../../components/seo/SchemaBuilderModal";
+import SchemaCatalogModal from "../../components/seo/SchemaCatalogModal";
+import PreviewSnippetEditor from "../../components/seo/PreviewSnippetEditor";
+
+// --- NEW SIDEBAR ---
+import PostSidebar from "../../components/content/PostSidebar";
+
+import { authenticatedFetch } from "../../utils/apiService";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+const {
+  FiSave,
+  FiArrowLeft,
+  FiAlertTriangle,
+  FiCheckCircle,
+  FiFileText,
+  FiCornerUpRight,
+  FiCopy,
+  FiExternalLink,
+  FiTrash2,
+  FiZap 
+} = FiIcons;
+
+// --- Custom Image Blot for Quill ---
+const ImageBlot = Quill.import("formats/image");
+class EditableImage extends ImageBlot {
+  static create(value) {
+    const src = typeof value === "object" ? value.src : value;
+    const node = super.create(src);
+    if (typeof value === "object") {
+      const allowedAttributes = [
+        "alt",
+        "data-id",
+        "data-filename",
+        "data-filesize",
+        "data-dimensions",
+        "style",
+        "class",
+      ];
+      allowedAttributes.forEach((attr) => {
+        if (value[attr]) node.setAttribute(attr, value[attr]);
+      });
+    }
+    return node;
+  }
+  static value(node) {
+    return Array.from(node.attributes).reduce((acc, attr) => {
+      acc[attr.name] = attr.value;
+      return acc;
+    }, {});
+  }
+}
+EditableImage.blotName = "image";
+EditableImage.tagName = "IMG";
+Quill.register(EditableImage, true);
+
+const PostEditor = () => {
+  const { id: paramId } = useParams();
+  const navigate = useNavigate();
+  const { invalidateCache } = useAdminCache();
+  
+  const quillRef = useRef(null);
+  const titleTextareaRef = useRef(null);
+  const editorWrapperRef = useRef(null);
+
+  const [postId, setPostId] = useState(paramId ? parseInt(paramId) : null);
+  const isEditing = Boolean(postId);
+
+  // --- Global State ---
+  const [initialData, setInitialData] = useState(null);
+  const [globalSettings, setGlobalSettings] = useState(null);
+  const [isRobotsDefault, setIsRobotsDefault] = useState(true);
+  
+  // --- Form Data ---
+  const [formData, setFormData] = useState({
+    title: "",
+    slug: "",
+    content: "",
+    excerpt: "",
+    status: "draft",
+    categories: [],
+    primary_category_id: null,
+    featuredImageId: null,
+    
+    // SEO - General
+    metaTitle: "",
+    metaDescription: "",
+    focusKeywords: "",
+    canonical_url: "",
+    
+    // SEO - Social (Facebook)
+    ogTitle: "",
+    ogDescription: "",
+    og_image: "",
+    
+    // SEO - Social (Twitter)
+    twitterTitle: "",
+    twitterDescription: "",
+    twitterImage: "",
+
+    // Robots Meta
+    no_index: false,
+    no_follow: false,
+    no_archive: false,
+    no_image_index: false,
+    no_snippet: false,
+    maxSnippet: null,
+    maxVideoPreview: null,
+    maxImagePreview: null,
+
+    schema_json: [],
+    tags: [],
+  });
+
+  const [isMinorEdit, setIsMinorEdit] = useState(true);
+  
+  const [activeRedirect, setActiveRedirect] = useState(null);
+  const [originalSlug, setOriginalSlug] = useState(null);
+
+  // --- Aux Data ---
+  const [categories, setCategories] = useState([]);
+  const [allTags, setAllTags] = useState([]);
+  const [allMedia, setAllMedia] = useState([]);
+  const [featuredImage, setFeaturedImage] = useState(null);
+  
+  const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [initialLoad, setInitialLoad] = useState(true);
+
+  // --- UI Toggles ---
+  const [expandedSections, setExpandedSections] = useState({
+    seo: true,
+    categories: true,
+    tags: true,
+    featuredImage: true,
+  });
+
+  // --- Modals ---
+  const [isFeaturedMediaLibraryOpen, setIsFeaturedMediaLibraryOpen] = useState(false);
+  const [isEditorMediaLibraryOpen, setIsEditorMediaLibraryOpen] = useState(false);
+  const [isImageEditorModalOpen, setIsImageEditorModalOpen] = useState(false);
+  const [selectedImageData, setSelectedImageData] = useState(null);
+  const [isUpdatingImage, setIsUpdatingImage] = useState(false);
+
+  const [isSchemaModalOpen, setIsSchemaModalOpen] = useState(false);
+  const [isSchemaCatalogOpen, setIsSchemaCatalogOpen] = useState(false);
+  const [isDeleteSchemaModalOpen, setIsDeleteSchemaModalOpen] = useState(false);
+  const [isSnippetModalOpen, setIsSnippetModalOpen] = useState(false);
+  const [isSeoHazardModalOpen, setIsSeoHazardModalOpen] = useState(false);
+  const [isPermalinkModalOpen, setIsPermalinkModalOpen] = useState(false);
+  const [showSaveConfirmation, setShowSaveConfirmation] = useState(false);
+
+  const [editingSchemaIndex, setEditingSchemaIndex] = useState(null);
+  const [tempSchemaData, setTempSchemaData] = useState(null);
+  const [schemaToDeleteIndex, setSchemaToDeleteIndex] = useState(null);
+  const [confirmationInput, setConfirmationInput] = useState("");
+  const [publishConfirmInput, setPublishConfirmInput] = useState("");
+
+  const [toolbarState, setToolbarState] = useState({
+    visible: false,
+    top: 0,
+    left: 0,
+    imageNode: null,
+  });
+
+  // --- Computed: Category Tree ---
+  const categoryTree = useMemo(() => {
+    const buildTree = (parentId = null, depth = 0) => {
+        const nodes = categories.filter(c => {
+             const cParent = c.parent_id ? parseInt(c.parent_id) : null;
+             const targetParent = parentId ? parseInt(parentId) : null;
+             return cParent === targetParent;
+        });
+        
+        let result = [];
+        nodes.forEach(node => {
+            result.push({ ...node, depth });
+            const children = buildTree(node.id, depth + 1);
+            result = result.concat(children);
+        });
+        return result;
+    };
+    return buildTree(null, 0);
+  }, [categories]);
+
+  // --- Effect: Primary Category Logic ---
+  useEffect(() => {
+    const selectedIds = new Set(formData.categories);
+    // Enforce Parent Selection
+    categories.forEach(cat => {
+      if (selectedIds.has(cat.id) && cat.parent_id && !selectedIds.has(parseInt(cat.parent_id))) {
+        selectedIds.add(parseInt(cat.parent_id));
+      }
+    });
+
+    const finalSelectedIds = Array.from(selectedIds);
+    let newPrimaryId = formData.primary_category_id; 
+
+    // Prefer Children Logic for Primary
+    if (finalSelectedIds.length > 0) {
+        const selectedObjs = categories.filter(c => finalSelectedIds.includes(c.id));
+        const parents = selectedObjs.filter(c => !c.parent_id);
+        const children = selectedObjs.filter(c => c.parent_id);
+
+        if (children.length > 0) {
+             if (!children.some(c => c.id === newPrimaryId)) {
+                 newPrimaryId = children[0].id;
+             }
+        } 
+        else if (parents.length > 0) {
+             if (!parents.some(c => c.id === newPrimaryId)) {
+                 newPrimaryId = parents[0].id;
+             }
+        }
+        else if (!finalSelectedIds.includes(newPrimaryId)) {
+            newPrimaryId = finalSelectedIds[0];
+        }
+    } else {
+        newPrimaryId = null;
+    }
+    
+    const prevCats = [...formData.categories].sort();
+    const newCats = [...finalSelectedIds].sort();
+    
+    if (
+      JSON.stringify(prevCats) !== JSON.stringify(newCats) ||
+      formData.primary_category_id !== newPrimaryId
+    ) {
+      setFormData(prev => ({
+        ...prev,
+        categories: finalSelectedIds,
+        primary_category_id: newPrimaryId
+      }));
+    }
+  }, [formData.categories, categories, formData.primary_category_id]);
+
+  const hasChanges = useMemo(() => {
+    return JSON.stringify(formData) !== JSON.stringify(initialData);
+  }, [formData, initialData]);
+
+  // --- Data Fetching ---
+  const fetchPostAndDependencies = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [settingsResult, categoriesResult, tagsResult, mediaResult] = await Promise.all([
+        authenticatedFetch("http://localhost/calcpro-api/api/admin/get_settings.php"),
+        authenticatedFetch("http://localhost/calcpro-api/api/admin/get_categories.php"),
+        authenticatedFetch("http://localhost/calcpro-api/api/admin/get_tags.php"),
+        authenticatedFetch("http://localhost/calcpro-api/api/admin/get_media.php"),
+      ]);
+
+      let globalSet = {};
+      if (settingsResult.success) {
+          globalSet = settingsResult.data;
+          setGlobalSettings(globalSet);
+      }
+      if (categoriesResult.success) setCategories(categoriesResult.data);
+      if (tagsResult.success) setAllTags(tagsResult.data);
+      if (mediaResult.success) setAllMedia(mediaResult.data.media);
+
+      if (isEditing) {
+        const postResult = await authenticatedFetch(
+          `http://localhost/calcpro-api/api/admin/get_post.php?id=${postId}`
+        );
+        if (postResult.success) {
+          const postData = postResult.data;
+          setActiveRedirect(postData.active_redirect || null);
+
+          // Robots Inheritance
+          const gIndex = globalSet.seo_robots_global_noindex === 'true';
+          const isRobotsNull = 
+              postData.no_index === null &&
+              postData.no_follow === null &&
+              postData.no_archive === null &&
+              postData.no_image_index === null &&
+              postData.no_snippet === null;
+          const isAdvancedNull = 
+              postData.max_snippet === null && 
+              postData.max_video_preview === null && 
+              postData.max_image_preview === null;
+          setIsRobotsDefault(isRobotsNull && isAdvancedNull);
+
+          let parsedSchema = [];
+          if (postData.schema_json) {
+            parsedSchema = Array.isArray(postData.schema_json) ? postData.schema_json : [postData.schema_json];
+          }
+          
+          delete postData.active_redirect;
+
+          const normalizedData = { 
+             ...postData, 
+             title: postData.title || "",
+             slug: postData.slug || "",
+             content: postData.content || "",
+             excerpt: postData.excerpt || "",
+
+             metaTitle: postData.meta_title || "",
+             metaDescription: postData.meta_description || "",
+             focusKeywords: postData.focus_keywords || "",
+             canonical_url: postData.canonical_url || "",
+
+             ogTitle: postData.og_title || "",
+             ogDescription: postData.og_description || "",
+             og_image: postData.og_image || "",
+
+             twitterTitle: postData.twitter_title || "",
+             twitterDescription: postData.twitter_description || "",
+             twitterImage: postData.twitter_image || "",
+             
+             no_index: postData.no_index === null ? gIndex : Boolean(postData.no_index),
+             no_follow: postData.no_follow === null ? (globalSet.seo_robots_global_nofollow === 'true') : Boolean(postData.no_follow),
+             no_archive: postData.no_archive === null ? (globalSet.seo_robots_global_noarchive === 'true') : Boolean(postData.no_archive),
+             no_image_index: postData.no_image_index === null ? (globalSet.seo_robots_global_noimageindex === 'true') : Boolean(postData.no_image_index),
+             no_snippet: postData.no_snippet === null ? (globalSet.seo_robots_global_nosnippet === 'true') : Boolean(postData.no_snippet),
+             
+             maxSnippet: postData.max_snippet,
+             maxVideoPreview: postData.max_video_preview,
+             maxImagePreview: postData.max_image_preview,
+             schema_json: parsedSchema
+          };
+
+          setFormData(normalizedData);
+          setInitialData({ ...normalizedData });
+          setOriginalSlug(postData.slug);
+
+          if (postData.featuredImageId) {
+            const image = mediaResult.data.media.find(
+              (item) => item.id === postData.featuredImageId
+            );
+            if (image) setFeaturedImage(image);
+          }
+        } else {
+          toast.error("Failed to load post data.");
+          navigate("/admin/content/posts");
+        }
+      } else {
+          if(globalSet) {
+             setFormData(prev => ({
+                 ...prev,
+                 no_index: globalSet.seo_robots_global_noindex === 'true',
+                 no_follow: globalSet.seo_robots_global_nofollow === 'true',
+                 no_archive: globalSet.seo_robots_global_noarchive === 'true',
+                 no_image_index: globalSet.seo_robots_global_noimageindex === 'true',
+                 no_snippet: globalSet.seo_robots_global_nosnippet === 'true',
+                 maxSnippet: null,
+                 maxVideoPreview: null,
+                 maxImagePreview: null
+             }));
+         }
+         setIsRobotsDefault(true);
+         setInitialData(formData);
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error("Error loading data.");
+    } finally {
+      setLoading(false);
+      setInitialLoad(false);
+    }
+  }, [postId, isEditing, navigate]);
+
+  useEffect(() => {
+    fetchPostAndDependencies();
+  }, [postId]);
+
+  useEffect(() => {
+    if (!isEditing && !initialData) {
+      setInitialData(formData);
+    }
+  }, [isEditing, initialData, formData]);
+
+  useEffect(() => {
+    if (titleTextareaRef.current) {
+      titleTextareaRef.current.style.height = "auto";
+      titleTextareaRef.current.style.height = titleTextareaRef.current.scrollHeight + "px";
+    }
+  }, [formData.title]);
+
+  // --- Handlers ---
+  
+  const toggleRobotsDefault = () => {
+      if (!globalSettings) return;
+      if (!isRobotsDefault) {
+          setFormData(prev => ({
+              ...prev,
+              no_index: globalSettings.seo_robots_global_noindex === 'true',
+              no_follow: globalSettings.seo_robots_global_nofollow === 'true',
+              no_archive: globalSettings.seo_robots_global_noarchive === 'true',
+              no_image_index: globalSettings.seo_robots_global_noimageindex === 'true',
+              no_snippet: globalSettings.seo_robots_global_nosnippet === 'true',
+              maxSnippet: null,
+              maxVideoPreview: null,
+              maxImagePreview: null
+          }));
+          setIsRobotsDefault(true);
+          toast.success("Restored to global defaults.");
+      } else {
+          setFormData(prev => ({
+            ...prev,
+            no_index: globalSettings.seo_robots_global_noindex === 'true',
+            no_follow: globalSettings.seo_robots_global_nofollow === 'true',
+            no_archive: globalSettings.seo_robots_global_noarchive === 'true',
+            no_image_index: globalSettings.seo_robots_global_noimageindex === 'true',
+            no_snippet: globalSettings.seo_robots_global_nosnippet === 'true',
+            maxSnippet: parseInt(globalSettings.seo_robots_global_max_snippet),
+            maxVideoPreview: parseInt(globalSettings.seo_robots_global_max_video_preview),
+            maxImagePreview: globalSettings.seo_robots_global_max_image_preview
+          }));
+          setIsRobotsDefault(false);
+      }
+  };
+
+  // --- AUTO EXCERPT LOGIC ---
+  const generateExcerptText = (htmlContent) => {
+    if (!htmlContent) return "";
+    const tempDiv = document.createElement("div");
+    tempDiv.innerHTML = htmlContent;
+    let plainText = tempDiv.textContent || tempDiv.innerText || "";
+    plainText = plainText.replace(/\s+/g, " ").trim();
+    if (plainText.length <= 150) return plainText;
+    
+    // Smart truncation without breaking words
+    const truncated = plainText.substring(0, 150);
+    return truncated.substring(0, Math.min(truncated.length, truncated.lastIndexOf(" "))) + "...";
+  };
+
+  const handleAutoGenerateExcerpt = () => {
+      const generated = generateExcerptText(formData.content);
+      if (!generated) {
+          // Add { id } to prevent toast spamming
+          toast.error("Content is empty. Cannot generate excerpt.", { id: "excerpt-toast" });
+          return;
+      }
+      
+      // Smart check to see if the content is already up-to-date
+      if (formData.excerpt === generated) {
+          toast.success("Excerpt is already up to date.", { id: "excerpt-toast" });
+          return;
+      }
+
+      setFormData(prev => ({ ...prev, excerpt: generated }));
+      toast.success("Excerpt auto-generated!", { id: "excerpt-toast" });
+  };
+
+  const executeSave = async () => {
+    setIsSubmitting(true);
+    const toastId = "post-save-toast";
+    toast.loading(isEditing ? "Updating..." : "Creating...", { id: toastId });
+
+    let dataToSend = { ...formData };
+
+    // PRE-SAVE FAILSAFE: Auto-Fill Blank Excerpts
+    if (!dataToSend.excerpt || dataToSend.excerpt.trim() === "") {
+        dataToSend.excerpt = generateExcerptText(dataToSend.content);
+    }
+
+    if (isRobotsDefault) {
+        dataToSend.no_index = null;
+        dataToSend.no_follow = null;
+        dataToSend.no_archive = null;
+        dataToSend.no_image_index = null;
+        dataToSend.no_snippet = null;
+        dataToSend.max_snippet = null;
+        dataToSend.max_video_preview = null;
+        dataToSend.max_image_preview = null;
+    }
+
+    if (isEditing) dataToSend.id = postId;
+    if (isEditing && isMinorEdit) dataToSend.is_minor_edit = true;
+
+    const url = isEditing
+      ? "http://localhost/calcpro-api/api/admin/update_post.php"
+      : "http://localhost/calcpro-api/api/admin/add_post.php";
+
+    const minDelay = new Promise((resolve) => setTimeout(resolve, 800));
+
+    try {
+      const apiCall = authenticatedFetch(url, {
+        method: "POST",
+        body: JSON.stringify(dataToSend),
+      });
+
+      const [result] = await Promise.all([apiCall, minDelay]);
+
+      if (result.success) {
+        toast.success(result.message, { id: toastId });
+        setIsMinorEdit(true); 
+        setPublishConfirmInput(""); 
+
+        if (!isEditing && result.data && result.data.id) {
+          setPostId(result.data.id);
+          navigate(`/admin/content/posts/edit/${result.data.id}`, { replace: true });
+        } else if (isEditing) {
+          await fetchPostAndDependencies();
+        }
+      } else {
+        toast.error(result.message, { id: toastId });
+      }
+    } catch (error) {
+      toast.error("Connection failed.", { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (isEditing && formData.slug !== originalSlug) {
+      setIsPermalinkModalOpen(true);
+      return;
+    }
+    if (isEditing && initialData.status === "published" && formData.status !== "published") {
+      setIsSeoHazardModalOpen(true);
+      return;
+    }
+    setShowSaveConfirmation(true);
+  };
+
+  // --- Editor & Media Handlers ---
+  const imageHandler = useCallback(() => setIsEditorMediaLibraryOpen(true), []);
+
+  const handleEditorMediaSelect = (media) => {
+    if (quillRef.current) {
+      const editor = quillRef.current.getEditor();
+      const range = editor.getSelection(true);
+      editor.insertEmbed(range.index, "image", {
+        src: media.full_url,
+        alt: media.alt_text || media.file_name,
+        "data-id": media.id,
+        "data-filename": media.file_name,
+        "data-filesize": media.file_size,
+        "data-dimensions": media.dimensions,
+      });
+      editor.setSelection(range.index + 1);
+    }
+    setIsEditorMediaLibraryOpen(false);
+  };
+  
+  // Toolbar Actions
+  useEffect(() => {
+    if (!quillRef.current) return;
+    const editor = quillRef.current.getEditor();
+    
+    const hideToolbar = () => setToolbarState((prev) => ({ ...prev, visible: false }));
+    
+    const handleClick = (e) => {
+      const editorRoot = editorWrapperRef.current;
+      if (!editorRoot || !editorRoot.contains(e.target) || e.target.closest(".ql-image-toolbar")) {
+        hideToolbar();
+        return;
+      }
+      if (e.target.tagName !== "IMG") {
+        hideToolbar();
+        return;
+      }
+      const imageNode = e.target;
+      const rect = imageNode.getBoundingClientRect();
+      setToolbarState({
+        visible: true,
+        top: rect.top + window.scrollY + 5,
+        left: rect.right + window.scrollX - 74 - 5,
+        imageNode: imageNode,
+      });
+    };
+    document.addEventListener("click", handleClick);
+    window.addEventListener("scroll", hideToolbar, true);
+    editor.on("text-change", hideToolbar);
+    return () => {
+      document.removeEventListener("click", handleClick);
+      window.removeEventListener("scroll", hideToolbar, true);
+      editor.off("text-change", hideToolbar);
+    };
+  }, [quillRef.current]);
+
+  const handleImageEdit = () => {
+    const img = toolbarState.imageNode;
+    if (img) {
+      setSelectedImageData({
+        src: img.getAttribute("src"),
+        alt: img.getAttribute("alt"),
+        metadata: {
+           file_name: img.getAttribute("data-filename"),
+           file_size: img.getAttribute("data-filesize"),
+           dimensions: img.getAttribute("data-dimensions"),
+           full_url: img.getAttribute("src")
+        }
+      });
+      setIsImageEditorModalOpen(true);
+    }
+  };
+
+  const handleImageRemove = () => {
+     const img = toolbarState.imageNode;
+     if (img && quillRef.current) {
+        const quill = quillRef.current.getEditor();
+        const blot = Quill.find(img);
+        if (blot) {
+            const index = quill.getIndex(blot);
+            quill.deleteText(index, 1);
+            setToolbarState({ visible: false, top: 0, left: 0, imageNode: null });
+            setFormData(prev => ({...prev, content: quill.root.innerHTML}));
+        }
+     }
+  };
+
+  const handleSaveImageDetails = (newAltText) => {
+    const img = toolbarState.imageNode;
+    if (img && quillRef.current) {
+        img.setAttribute("alt", newAltText);
+        const quill = quillRef.current.getEditor();
+        const blot = Quill.find(img);
+        if (blot && blot.domNode) {
+            blot.domNode.setAttribute("alt", newAltText);
+        }
+        setFormData(prev => ({...prev, content: quill.root.innerHTML}));
+    }
+    setIsImageEditorModalOpen(false);
+  };
+
+  const quillModules = useMemo(() => ({
+    toolbar: {
+      container: [
+        [{ header: [1, 2, 3, false] }],
+        ["bold", "italic", "underline", "strike"],
+        [{ list: "ordered" }, { list: "bullet" }],
+        [{ indent: "-1" }, { indent: "+1" }],
+        [{ align: [] }],
+        ["link", "image", "blockquote", "code-block"],
+        ["clean"],
+      ],
+      handlers: { image: imageHandler },
+    },
+  }), [imageHandler]);
+
+  const handleCopyPath = () => {
+    navigator.clipboard.writeText(`blog/${originalSlug}`);
+    toast.success("Path copied to clipboard!");
+  };
+
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setFormData((prev) => {
+      const newValues = {
+        ...prev,
+        [name]: type === "checkbox" ? checked : value,
+      };
+      if (name === "title" && !isEditing) {
+        newValues.slug = value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+        newValues.metaTitle = value;
+      }
+      return newValues;
+    });
+    if (name === "title") {
+      e.target.style.height = "auto";
+      e.target.style.height = e.target.scrollHeight + "px";
+    }
+  };
+  
+  const handleSlugChange = (e) => {
+    const cleanSlug = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    setFormData((prev) => ({ ...prev, slug: cleanSlug }));
+  };
+  
+  const handleCategoryChange = (id) => {
+    setFormData((prev) => ({
+      ...prev,
+      categories: prev.categories.includes(id)
+        ? prev.categories.filter((c) => c !== id)
+        : [...prev.categories, id],
+    }));
+  };
+
+  const handleTagsChange = (ids) =>
+    setFormData((prev) => ({ ...prev, tags: ids }));
+
+  const handleStatusChange = (newStatus) =>
+    setFormData((prev) => ({ ...prev, status: newStatus }));
+
+  const handleSelectFeaturedMedia = (media) => {
+    setFeaturedImage(media);
+    setFormData((prev) => ({ ...prev, featuredImageId: media.id }));
+    setIsFeaturedMediaLibraryOpen(false);
+  };
+
+  const handleRemoveFeaturedImage = () => {
+    setFeaturedImage(null);
+    setFormData((prev) => ({ ...prev, featuredImageId: null }));
+  };
+
+  const handleKeywordsChange = (keywordsArray) => {
+    const keywordsString = keywordsArray.join(", ");
+    setFormData((prev) => ({ ...prev, focusKeywords: keywordsString }));
+  };
+  
+  const getKeywordsArray = () => {
+    if (!formData.focusKeywords) return [];
+    return formData.focusKeywords
+      .split(",")
+      .map((k) => k.trim())
+      .filter((k) => k);
+  };
+  
+  const getButtonLabel = () => {
+    if (isSubmitting) return "Saving...";
+    if (formData.status === "draft") return "Save Draft";
+    return isEditing ? "Update" : "Save & Publish";
+  };
+
+  const toggleSection = (section) => {
+    setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
+  };
+
+  const handleEditSchema = (index) => {
+    setEditingSchemaIndex(index);
+    setTempSchemaData(formData.schema_json[index]);
+    setIsSchemaModalOpen(true);
+  };
+
+  const handleDeleteSchemaClick = (index) => {
+    setSchemaToDeleteIndex(index);
+    setIsDeleteSchemaModalOpen(true);
+  };
+
+  const handleSelectFromCatalog = (type) => {
+    setIsSchemaCatalogOpen(false);
+    const newSchema = {
+      type,
+      headline: "%seo_title%",
+      description: "%seo_description%",
+      keywords: "%keywords%",
+    };
+    const currentSchemas = [...(formData.schema_json || [])];
+    const newIndex = currentSchemas.push(newSchema) - 1;
+    setFormData((prev) => ({ ...prev, schema_json: currentSchemas }));
+    setTempSchemaData(newSchema);
+    setEditingSchemaIndex(newIndex);
+    setIsSchemaModalOpen(true);
+  };
+
+  if (loading && initialLoad)
+    return <LoadingSpinner size="xl" className="h-64" />;
+
+  return (
+    <>
+      <MediaLibrary
+        isOpen={isFeaturedMediaLibraryOpen}
+        onClose={() => setIsFeaturedMediaLibraryOpen(false)}
+        onSelectMedia={handleSelectFeaturedMedia}
+        disableAnimation={true}
+        initialSelectedUrl={featuredImage ? featuredImage.full_url : ""} 
+      />
+      <MediaLibrary
+        isOpen={isEditorMediaLibraryOpen}
+        onClose={() => setIsEditorMediaLibraryOpen(false)}
+        onSelectMedia={handleEditorMediaSelect}
+        zIndexClass="z-[60]"
+        disableAnimation={true}
+      />
+      <ImageEditorModal
+        isOpen={isImageEditorModalOpen}
+        onClose={() => setIsImageEditorModalOpen(false)}
+        imageData={selectedImageData}
+        onSave={handleSaveImageDetails}
+        isSubmitting={isUpdatingImage}
+      />
+      <SchemaCatalogModal
+        isOpen={isSchemaCatalogOpen}
+        onClose={() => setIsSchemaCatalogOpen(false)}
+        onSelect={handleSelectFromCatalog} 
+      />
+      <SchemaBuilderModal
+        isOpen={isSchemaModalOpen}
+        onClose={() => setIsSchemaModalOpen(false)}
+        schemaData={tempSchemaData}
+        onChange={(newSchema) => {
+             const currentSchemas = [...(formData.schema_json || [])];
+             if (editingSchemaIndex !== null && editingSchemaIndex < currentSchemas.length) {
+                 currentSchemas[editingSchemaIndex] = newSchema;
+             } else {
+                 currentSchemas.push(newSchema);
+             }
+             setFormData(prev => ({ ...prev, schema_json: currentSchemas }));
+             setEditingSchemaIndex(null);
+        }}
+        postType="post"
+      />
+      
+      <PreviewSnippetEditor
+        isOpen={isSnippetModalOpen}
+        onClose={() => setIsSnippetModalOpen(false)}
+        formData={formData}
+        onFormDataChange={handleChange}
+        basePath="blog/"
+        featuredImage={featuredImage}
+      />
+
+      {/* --- Confirmation Modals --- */}
+      <Modal
+        isOpen={isSeoHazardModalOpen}
+        onClose={() => setIsSeoHazardModalOpen(false)}
+        title="SEO Warning: Unpublishing Content"
+        type="warning"
+      >
+        <div className="space-y-4">
+            <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-lg border border-amber-200 dark:border-amber-800 flex gap-3">
+                <SafeIcon icon={FiAlertTriangle} className="w-6 h-6 text-amber-600 shrink-0" />
+                <div>
+                    <h4 className="font-bold text-amber-900 dark:text-amber-100">Potential 404 Error</h4>
+                    <p className="text-xs text-amber-800 dark:text-amber-200">You are changing a published post to draft. This will break existing links.</p>
+                </div>
+            </div>
+            <div className="flex justify-end gap-2">
+                <button onClick={() => setIsSeoHazardModalOpen(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Cancel</button>
+                <button onClick={() => { setIsSeoHazardModalOpen(false); executeSave(); }} className="px-4 py-2 bg-amber-600 text-white rounded">Proceed</button>
+            </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showSaveConfirmation}
+        onClose={() => setShowSaveConfirmation(false)}
+        title={formData.status === 'draft' ? "Save Draft" : (isEditing ? "Update Live Post" : "Publish Post")}
+        type="default"
+      >
+        <div className="space-y-4">
+            <div className="flex items-start space-x-3">
+                 <div className={`p-2 rounded-full ${formData.status === "published" ? "bg-green-100 text-green-600" : "bg-blue-100 text-blue-600"}`}>
+                      <SafeIcon icon={formData.status === "published" ? FiCheckCircle : FiFileText} className="w-5 h-5" />
+                 </div>
+                 <div>
+                      <p className="text-gray-800 dark:text-gray-200 font-medium">
+                          {formData.status === 'draft' ? "Your post will be saved as a draft." : "This content will be visible to the public."}
+                      </p>
+                 </div>
+            </div>
+            {formData.status !== 'draft' && (
+                <div className="mt-3">
+                     <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Type PUBLISH to confirm:</label>
+                     <input 
+                        type="text" 
+                        placeholder="PUBLISH" 
+                        value={publishConfirmInput} 
+                        onChange={(e) => setPublishConfirmInput(e.target.value)} 
+                        className="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:text-white" 
+                     />
+                </div>
+            )}
+            
+            {isEditing && formData.status === "published" && (
+                <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800">
+                    <label className="flex items-start gap-3 cursor-pointer select-none">
+                        <div className="flex items-center h-5">
+                            <input type="checkbox" checked={isMinorEdit} onChange={(e) => setIsMinorEdit(e.target.checked)} className="w-4 h-4 text-blue-600 rounded" />
+                        </div>
+                        <div>
+                            <span className="block text-sm font-semibold text-blue-800 dark:text-blue-300">Minor Update</span>
+                            <span className="block text-xs text-blue-600 dark:text-blue-400">Preserve original publish date.</span>
+                        </div>
+                    </label>
+                </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-3">
+                <button onClick={() => setShowSaveConfirmation(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Cancel</button>
+                <button 
+                    onClick={() => { setShowSaveConfirmation(false); executeSave(); }}
+                    disabled={formData.status !== 'draft' && publishConfirmInput !== 'PUBLISH'}
+                    className={`px-5 py-2 text-white rounded-lg disabled:opacity-50 ${formData.status === 'published' ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+                >
+                    Confirm
+                </button>
+            </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={isPermalinkModalOpen}
+        onClose={() => { setIsPermalinkModalOpen(false); setConfirmationInput(""); }}
+        title="Danger Zone: URL Change"
+        type="danger"
+      >
+        <div className="space-y-4">
+             <p className="text-red-600 dark:text-red-400">Changing the slug will break existing links. Type CONFIRM to proceed.</p>
+             <input type="text" value={confirmationInput} onChange={(e) => setConfirmationInput(e.target.value)} className="w-full border p-2 rounded dark:bg-gray-700 dark:text-white" />
+             <div className="flex justify-end gap-2">
+                 <button onClick={() => setIsPermalinkModalOpen(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Cancel</button>
+                 <button onClick={() => { if(confirmationInput==='CONFIRM') { setIsPermalinkModalOpen(false); executeSave(); } }} disabled={confirmationInput !== 'CONFIRM'} className="px-4 py-2 bg-red-600 text-white rounded disabled:opacity-50">Change</button>
+             </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={isDeleteSchemaModalOpen}
+        onClose={() => setIsDeleteSchemaModalOpen(false)}
+        title="Delete Schema"
+        type="danger"
+        size="sm"
+      >
+        <div className="space-y-4">
+            <p className="text-gray-600 dark:text-gray-300">Are you sure you want to remove this schema?</p>
+            <div className="flex justify-end gap-2">
+                <button onClick={() => setIsDeleteSchemaModalOpen(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Cancel</button>
+                <button onClick={() => {
+                    const newSchemas = [...formData.schema_json];
+                    newSchemas.splice(schemaToDeleteIndex, 1);
+                    setFormData(prev => ({...prev, schema_json: newSchemas}));
+                    setIsDeleteSchemaModalOpen(false);
+                    toast.success("Schema removed.");
+                }} className="px-4 py-2 bg-red-600 text-white rounded">Delete</button>
+            </div>
+        </div>
+      </Modal>
+      
+      <AnimatePresence>
+        {toolbarState.visible && (
+          <ImageToolbar
+            top={toolbarState.top}
+            left={toolbarState.left}
+            onEdit={handleImageEdit}
+            onRemove={handleImageRemove}
+          />
+        )}
+      </AnimatePresence>
+
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            <button onClick={() => navigate("/admin/content/posts")} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-gray-500 dark:text-gray-400">
+               <SafeIcon icon={FiArrowLeft} className="w-5 h-5" />
+            </button>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{isEditing ? "Edit Post" : "New Post"}</h1>
+          </div>
+          <button
+            onClick={handleSave}
+            disabled={isSubmitting || !hasChanges}
+            className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl shadow-sm font-semibold transition-all ${!hasChanges ? "bg-gray-200 text-gray-500 dark:bg-gray-700 cursor-not-allowed" : formData.status === "published" ? "bg-green-600 text-white hover:bg-green-700" : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 dark:bg-gray-800 dark:text-white dark:border-gray-700 dark:hover:bg-gray-700"}`}
+          >
+            <SafeIcon icon={FiSave} className="w-4 h-4" />
+            <span>{getButtonLabel()}</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          
+          {/* LEFT: Main Content */}
+          <div className="lg:col-span-9 space-y-6">
+            
+            {activeRedirect && (
+              <div className="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-xl p-4 flex items-start gap-4">
+                <div className="p-2 bg-indigo-100 dark:bg-indigo-800/50 rounded-lg text-indigo-600 dark:text-indigo-400 shrink-0"><SafeIcon icon={FiCornerUpRight} className="w-6 h-6" /></div>
+                <div className="flex-1">
+                    <h4 className="text-sm font-bold text-indigo-900 dark:text-indigo-100">Active Redirect Detected</h4>
+                    <p className="text-sm text-indigo-800 dark:text-indigo-300 mt-1">Traffic is being redirected to: {activeRedirect.target_url}</p>
+                </div>
+                <button onClick={() => window.open("/#/admin/seo/redirects", "_blank")} className="px-4 py-2 bg-white border border-indigo-200 rounded-lg text-sm text-indigo-600">Manage</button>
+              </div>
+            )}
+
+            <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm border border-gray-200 dark:border-gray-700 space-y-4">
+              <textarea
+                ref={titleTextareaRef}
+                name="title"
+                value={formData.title}
+                onChange={handleChange}
+                rows={1}
+                placeholder="Enter post title..."
+                className="w-full text-3xl font-bold border-none focus:ring-0 bg-transparent dark:text-white p-0 placeholder-gray-300 resize-none overflow-hidden leading-snug"
+                style={{ minHeight: "42px" }}
+              />
+              {formData.slug && (
+                <div className="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-1 mb-4 mt-1">
+                  <span className="font-medium text-gray-400">Permalink:</span>
+                  <a href={`https://calcpro.com/blog/${formData.slug}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline flex items-center gap-1">
+                    https://calcpro.com/blog/{formData.slug} <SafeIcon icon={FiExternalLink} className="w-3.5 h-3.5 opacity-75" />
+                  </a>
+                  <button onClick={handleCopyPath} className="ml-2 text-gray-400 hover:text-gray-600" title="Copy Slug"><SafeIcon icon={FiCopy} className="w-3.5 h-3.5" /></button>
+                </div>
+              )}
+              
+              <div ref={editorWrapperRef} className="relative min-h-[500px] border-t border-gray-100 dark:border-gray-700 pt-4">
+                <ReactQuill
+                  ref={quillRef}
+                  theme="snow"
+                  value={formData.content}
+                  onChange={(val) => setFormData(prev => ({ ...prev, content: val }))}
+                  modules={quillModules}
+                  className="dark:text-white h-[450px]"
+                  placeholder="Write your masterpiece..."
+                />
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm border border-gray-200 dark:border-gray-700">
+              <div className="flex justify-between items-center mb-3">
+                  <label className="block text-sm font-bold text-gray-700 dark:text-gray-300">Excerpt</label>
+                  <button 
+                      type="button" 
+                      onClick={handleAutoGenerateExcerpt}
+                      className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 flex items-center gap-1 bg-indigo-50 dark:bg-indigo-900/30 px-3 py-1.5 rounded-full transition-colors focus:outline-none"
+                  >
+                      <SafeIcon icon={FiZap} className="w-3.5 h-3.5" /> 
+                      Auto-Generate
+                  </button>
+              </div>
+              <textarea
+                name="excerpt"
+                value={formData.excerpt || ""}
+                onChange={(e) => setFormData(prev => ({ ...prev, excerpt: e.target.value }))}
+                rows={3}
+                className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-transparent dark:text-white focus:ring-2 focus:ring-indigo-500 text-sm outline-none"
+                placeholder="A short summary for your blog grid... If left empty, it will be automatically extracted from your content upon saving."
+              />
+            </div>
+          </div>
+
+          {/* RIGHT: Sidebar */}
+          <div className="lg:col-span-3 space-y-6">
+             <PostSidebar 
+                formData={formData}
+                initialData={initialData}
+                categoryTree={categoryTree}
+                allTags={allTags}
+                globalSettings={globalSettings}
+                featuredImage={featuredImage}
+                
+                expandedSections={expandedSections}
+                toggleSection={toggleSection}
+                isRobotsDefault={isRobotsDefault}
+                
+                handleChange={handleChange}
+                handleSlugChange={handleSlugChange}
+                handleStatusChange={(val) => setFormData(prev => ({ ...prev, status: val }))}
+                handleCategoryChange={handleCategoryChange}
+                
+                handleTagsChange={(newTags) => setFormData(prev => ({...prev, tags: newTags}))}
+                
+                getKeywordsArray={() => formData.focusKeywords ? formData.focusKeywords.split(',').filter(Boolean) : []}
+                handleKeywordsChange={(newKeywords) => setFormData(prev => ({ ...prev, focusKeywords: newKeywords.join(',') }))}
+                
+                toggleRobotsDefault={toggleRobotsDefault}
+                setIsSnippetModalOpen={setIsSnippetModalOpen}
+                handleOpenCatalog={() => setIsSchemaCatalogOpen(true)}
+                handleEditSchema={(idx) => {
+                     setEditingSchemaIndex(idx);
+                     setTempSchemaData(formData.schema_json[idx]);
+                     setIsSchemaModalOpen(true);
+                }}
+                handleDeleteSchemaClick={(idx) => {
+                     setSchemaToDeleteIndex(idx);
+                     setIsDeleteSchemaModalOpen(true);
+                }}
+                
+                setIsFeaturedMediaLibraryOpen={setIsFeaturedMediaLibraryOpen}
+                handleRemoveFeaturedImage={handleRemoveFeaturedImage}
+                
+                onMaxSnippetChange={(val) => setFormData(prev => ({...prev, maxSnippet: val}))}
+                onMaxVideoChange={(val) => setFormData(prev => ({...prev, maxVideoPreview: val}))}
+                onMaxImageChange={(val) => setFormData(prev => ({...prev, maxImagePreview: val}))}
+             />
+          </div>
+
+        </div>
+      </div>
+    </>
+  );
+};
+
+export default PostEditor;

@@ -1,0 +1,130 @@
+import React from "react";
+import SafeIcon from "../../../../common/SafeIcon";
+import SmartInput from "../common/SmartInput";
+import * as FiIcons from "react-icons/fi";
+
+const { FiShare2 } = FiIcons;
+
+const SocialTab = ({ settings, handleCustomChange }) => {
+  return (
+    <div className="animate-fade-in">
+        {/* --- Standardized Header Card --- */}
+        <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+            <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+                <SafeIcon icon={FiShare2} className="w-5 h-5" />
+            </div>
+            <div>
+                <h4 className="font-bold text-gray-900 dark:text-white">Social Meta</h4>
+                <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                    Configure your social media profile URLs. These are added to your site's Schema to link your brand across platforms.
+                </p>
+            </div>
+        </div>
+
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+        Facebook
+      </h3>
+      
+      <SmartInput 
+        label="Facebook Page URL" 
+        value={settings.seo_social_facebook} 
+        onChange={(e) => handleCustomChange('seo_social_facebook', e.target.value)} 
+        helpText={<>Enter your complete Facebook page URL here. eg: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">https://www.facebook.com/RankMath/</code></>}
+      />
+      
+      <SmartInput 
+        label="Facebook Authorship" 
+        value={settings.seo_social_fb_authorship} 
+        onChange={(e) => handleCustomChange('seo_social_fb_authorship', e.target.value)} 
+        helpText={<>Insert personal Facebook profile URL to show Facebook Authorship when your articles are being shared on Facebook. eg: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">https://www.facebook.com/zuck</code></>}
+      />
+      
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+        <div className="w-full md:w-1/4 pt-2">
+          <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">Facebook Admin</label>
+        </div>
+        <div className="w-full md:w-3/4">
+          <input 
+            type="text" 
+            value={settings.seo_social_fb_admin_id || ''} 
+            onChange={(e) => handleCustomChange('seo_social_fb_admin_id', e.target.value)} 
+            className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-white dark:bg-gray-800 focus:ring-blue-500 focus:border-blue-500" 
+          />
+          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+            Enter <a href="https://lookup-id.com/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">numeric user ID</a>. Use a comma to separate multiple IDs. Alternatively, you can enter an app ID below.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+        <div className="w-full md:w-1/4 pt-2">
+          <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">Facebook App ID</label>
+        </div>
+        <div className="w-full md:w-3/4">
+          <input 
+            type="text" 
+            value={settings.seo_social_fb_app_id || ''} 
+            onChange={(e) => handleCustomChange('seo_social_fb_app_id', e.target.value)} 
+            className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-white dark:bg-gray-800 focus:ring-blue-500 focus:border-blue-500" 
+          />
+          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+            Enter <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">numeric app ID</a>. Alternatively, you can enter a user ID above.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+        <div className="w-full md:w-1/4 pt-2">
+          <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">Facebook Secret</label>
+        </div>
+        <div className="w-full md:w-3/4">
+          <input 
+            type="text" 
+            value={settings.seo_social_fb_secret || ''} 
+            onChange={(e) => handleCustomChange('seo_social_fb_secret', e.target.value)} 
+            className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-white dark:bg-gray-800 focus:ring-blue-500 focus:border-blue-500" 
+          />
+          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+            Enter alphanumeric secret ID. <a href="https://www.youtube.com/watch?v=-XME8Q25omQ" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">Learn more</a>.
+          </p>
+        </div>
+      </div>
+
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 mt-8 border-b border-gray-200 dark:border-gray-700 pb-2">
+        Twitter
+      </h3>
+
+      <SmartInput 
+        label="Twitter Username" 
+        value={settings.seo_social_twitter} 
+        onChange={(e) => handleCustomChange('seo_social_twitter', e.target.value)} 
+        helpText={<>Enter the Twitter username of the author to add <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">twitter:creator</code> tag to posts. eg: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">RankMathSEO</code></>}
+      />
+      
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 mt-8 border-b border-gray-200 dark:border-gray-700 pb-2">
+        Other Profiles
+      </h3>
+
+      {/* Additional Profiles */}
+      <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700">
+        <div className="w-full md:w-1/4 pt-2">
+          <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">Additional Profiles</label>
+        </div>
+        <div className="w-full md:w-3/4">
+          <textarea 
+            value={settings.seo_social_additional_profiles || ''} 
+            onChange={(e) => handleCustomChange('seo_social_additional_profiles', e.target.value)} 
+            rows={5} 
+            placeholder="https://instagram.com/yourbrand&#10;https://linkedin.com/in/yourbrand"
+            className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-white dark:bg-gray-800 focus:ring-blue-500 focus:border-blue-500"
+          />
+           <p className="mt-2 text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+            Additional Profiles to add in the <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">sameAs</code> Schema property. One per line.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default SocialTab;

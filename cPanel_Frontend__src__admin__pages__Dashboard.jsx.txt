@@ -1,0 +1,330 @@
+import React, { useState, useEffect } from "react";
+import { motion } from "framer-motion";
+import { Line, Bar } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler,
+} from "chart.js";
+import StatCard from "../components/common/StatCard";
+import LoadingSpinner from "../components/common/LoadingSpinner";
+import SafeIcon from "../../common/SafeIcon";
+import * as IoIcons from "react-icons/io5";
+import * as BiIcons from "react-icons/bi";
+import * as HiIcons from "react-icons/hi";
+import * as AiIcons from "react-icons/ai";
+// --- NEW: Import our secure fetch service and mock API for charts ---
+import { authenticatedFetch } from "../utils/apiService";
+import { mockApi } from "../utils/mockApi";
+import toast from "react-hot-toast";
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler
+);
+
+const Dashboard = () => {
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  // Chart data will still come from mock for now
+  const [signupData, setSignupData] = useState(null);
+  const [topCalculators, setTopCalculators] = useState(null);
+  const [timeRange, setTimeRange] = useState("30d");
+
+  useEffect(() => {
+    const fetchDashboardData = async () => {
+      setLoading(true);
+      try {
+        // --- UPDATED: Fetch main stats from our new secure PHP backend ---
+        const statsResult = await authenticatedFetch(
+          "http://localhost/calcpro-api/api/admin/dashboard_stats.php"
+        );
+
+        if (statsResult.success) {
+          setStats(statsResult.data.stats);
+        } else {
+          toast.error(
+            statsResult.message || "Failed to fetch dashboard stats."
+          );
+        }
+
+        // Fetch other data from the mock API for now
+        const [signupRes, calculatorsRes] = await Promise.all([
+          mockApi.getSignupChart(),
+          mockApi.getTopCalculators(),
+        ]);
+        setSignupData(signupRes);
+        setTopCalculators(calculatorsRes);
+      } catch (error) {
+        if (error.message !== "Unauthorized") {
+          toast.error("Could not connect to the server for dashboard data.");
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchDashboardData();
+  }, []);
+
+  const signupChartData = signupData
+    ? {
+        labels: signupData.map((item) =>
+          new Date(item.date).toLocaleDateString()
+        ),
+        datasets: [
+          {
+            label: "Daily Signups",
+            data: signupData.map((item) => item.signups),
+            borderColor: "rgb(79, 70, 229)",
+            backgroundColor: "rgba(79, 70, 229, 0.1)",
+            borderWidth: 2,
+            tension: 0.4,
+            fill: true,
+            pointBackgroundColor: "rgb(79, 70, 229)",
+            pointBorderColor: "#fff",
+            pointBorderWidth: 1,
+            pointRadius: 4,
+            pointHoverRadius: 6,
+          },
+        ],
+      }
+    : null;
+
+  const calculatorChartData = topCalculators
+    ? {
+        labels: topCalculators.map((item) => item.name),
+        datasets: [
+          {
+            label: "Uses",
+            data: topCalculators.map((item) => item.uses),
+            backgroundColor: [
+              "rgba(59, 130, 246, 0.8)",
+              "rgba(16, 185, 129, 0.8)",
+              "rgba(139, 92, 246, 0.8)",
+              "rgba(236, 72, 153, 0.8)",
+              "rgba(245, 158, 11, 0.8)",
+            ],
+            borderWidth: 0,
+            borderRadius: 6,
+          },
+        ],
+      }
+    : null;
+
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: false,
+      },
+      tooltip: {
+        backgroundColor: "rgba(17, 24, 39, 0.8)",
+        titleColor: "#fff",
+        bodyColor: "#fff",
+        padding: 12,
+        borderColor: "rgba(255, 255, 255, 0.1)",
+        borderWidth: 1,
+        usePointStyle: true,
+        boxPadding: 6,
+        boxWidth: 8,
+        boxHeight: 8,
+        cornerRadius: 8,
+      },
+    },
+    scales: {
+      y: {
+        beginAtZero: true,
+        grid: {
+          color: "rgba(156, 163, 175, 0.1)",
+          drawBorder: false,
+        },
+        ticks: {
+          font: {
+            size: 11,
+          },
+          color: "#9CA3AF",
+        },
+      },
+      x: {
+        grid: {
+          display: false,
+          drawBorder: false,
+        },
+        ticks: {
+          font: {
+            size: 11,
+          },
+          color: "#9CA3AF",
+          maxRotation: 0,
+        },
+      },
+    },
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+            Dashboard
+          </h1>
+          <p className="text-gray-600 dark:text-gray-400 mt-1">
+            Welcome back! Here's what's happening with CalcPro.
+          </p>
+        </div>
+        <div className="flex items-center space-x-2 p-1 bg-gray-100 dark:bg-gray-700 rounded-lg">
+          <button
+            onClick={() => setTimeRange("7d")}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium ${
+              timeRange === "7d"
+                ? "bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm"
+                : "text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+            }`}
+          >
+            7 days
+          </button>
+          <button
+            onClick={() => setTimeRange("30d")}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium ${
+              timeRange === "30d"
+                ? "bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm"
+                : "text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+            }`}
+          >
+            30 days
+          </button>
+          <button
+            onClick={() => setTimeRange("90d")}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium ${
+              timeRange === "90d"
+                ? "bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm"
+                : "text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+            }`}
+          >
+            90 days
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
+        <StatCard
+          loading={loading}
+          title="Total Users"
+          value={stats?.users?.count || 0}
+          change={stats?.users?.change || 0}
+          icon={IoIcons.IoPeopleOutline}
+          color="indigo"
+        />
+        <StatCard
+          loading={loading}
+          title="Calculations"
+          value={stats?.calculations?.count || 0}
+          change={stats?.calculations?.change || 0}
+          icon={BiIcons.BiCalculator}
+          color="green"
+        />
+        <StatCard
+          loading={loading}
+          title="Posts"
+          value={stats?.posts?.count || 0}
+          change={stats?.posts?.change || 0}
+          icon={BiIcons.BiNews}
+          color="purple"
+        />
+        <StatCard
+          loading={loading}
+          title="Bookmarks"
+          value={stats?.bookmarks?.count || 0}
+          change={stats?.bookmarks?.change || 0}
+          icon={IoIcons.IoBookmarkOutline}
+          color="blue"
+        />
+        <StatCard
+          loading={loading}
+          title="Categories"
+          value={stats?.categories?.count || 0}
+          change={stats?.categories?.change || 0}
+          icon={IoIcons.IoFolderOutline}
+          color="amber"
+        />
+        <StatCard
+          loading={loading}
+          title="Monthly Traffic"
+          value={stats?.traffic?.count || 0}
+          change={stats?.traffic?.change || 0}
+          icon={AiIcons.AiOutlineLineChart}
+          color="cyan"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.1 }}
+          className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden"
+        >
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center space-x-2">
+              <SafeIcon
+                icon={IoIcons.IoPeopleOutline}
+                className="text-indigo-500 dark:text-indigo-400"
+              />
+              <span>User Signups</span>
+            </h3>
+          </div>
+          <div className="p-6">
+            <div className="h-72">
+              {signupChartData && (
+                <Line data={signupChartData} options={chartOptions} />
+              )}
+            </div>
+          </div>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.2 }}
+          className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden"
+        >
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center space-x-2">
+              <SafeIcon
+                icon={BiIcons.BiCalculator}
+                className="text-green-500 dark:text-green-400"
+              />
+              <span>Top Calculators</span>
+            </h3>
+          </div>
+          <div className="p-6">
+            <div className="h-72">
+              {calculatorChartData && (
+                <Bar data={calculatorChartData} options={chartOptions} />
+              )}
+            </div>
+          </div>
+        </motion.div>
+      </div>
+    </div>
+  );
+};
+
+export default Dashboard;

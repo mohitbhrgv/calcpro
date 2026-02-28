@@ -1,0 +1,123 @@
+import React from "react";
+import SmartInput from "../common/SmartInput";
+import RobotsRow from "../common/RobotsRow";
+import AdvancedRobotsRow from "../common/AdvancedRobotsRow";
+import InheritanceControl from "../common/InheritanceControl";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiLock, FiAlertCircle } = FiIcons;
+
+const AuthPagesTab = ({ settings, handleChange, handleCustomChange }) => {
+  const vars = [
+    { label: "Site Name", value: "%sitename%" },
+    { label: "Separator", value: "%sep%" },
+    { label: "Current Year", value: "%currentyear%" },
+  ];
+
+  // Helper to handle the toggle logic for a specific section prefix
+  const handleToggleInheritance = (prefix, shouldEnable) => {
+      const customEnabledKey = `${prefix}robots_custom_enabled`;
+      handleCustomChange(customEnabledKey, shouldEnable);
+
+      if (shouldEnable) {
+          const keysToCopy = [
+              'index', 'noindex', 'nofollow', 'noarchive', 'noimageindex', 'nosnippet',
+              'max_snippet', 'max_video_preview', 'max_image_preview'
+          ];
+          
+          keysToCopy.forEach(key => {
+             const globalValue = settings[`seo_robots_global_${key}`];
+             handleCustomChange(`${prefix}robots_${key}`, globalValue);
+          });
+      }
+  };
+
+  // Helper to render a complete section (DRY principle)
+  const RenderAuthSection = ({ label, prefix, helpText }) => {
+      const isCustomEnabled = settings[`${prefix}robots_custom_enabled`] === true;
+
+      return (
+        <div className="mb-8">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+                {label}
+            </h3>
+            
+            <SmartInput
+                label={`${label} Title`}
+                value={settings[`${prefix}title`]}
+                onChange={(e) => handleCustomChange(`${prefix}title`, e.target.value)}
+                helpText={helpText}
+                placeholder={`${label} %sep% %sitename%`}
+                variables={vars}
+            />
+
+            <InheritanceControl 
+                isCustom={isCustomEnabled} 
+                onToggle={(val) => handleToggleInheritance(prefix, val)} 
+                label={`${label} Robots`} 
+            />
+
+            <RobotsRow
+                label={`${label} Robots Meta`}
+                prefix={`${prefix}robots_`}
+                settings={settings}
+                onChange={handleChange}
+                disabled={!isCustomEnabled}
+            />
+
+            <AdvancedRobotsRow
+                prefix={`${prefix}robots_`}
+                settings={settings}
+                onChange={handleChange}
+                disabled={!isCustomEnabled}
+            />
+        </div>
+      );
+  };
+
+  return (
+    <div className="animate-fade-in">
+      {/* --- Standardized Header Card --- */}
+      <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={FiLock} className="w-5 h-5" />
+        </div>
+        <div>
+          <h4 className="font-bold text-gray-900 dark:text-white">Authentication Pages</h4>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            Manage browser titles and indexing rules for your secure access points like Login, Register, and Password Reset pages.
+          </p>
+        </div>
+      </div>
+      
+      <div className="mb-6 p-3 bg-amber-50 dark:bg-amber-900/20 border-l-4 border-amber-400 text-amber-800 dark:text-amber-200 text-sm flex gap-3 items-start">
+        <SafeIcon icon={FiAlertCircle} className="w-5 h-5 shrink-0 mt-0.5" />
+        <div>
+            <strong>SEO Best Practice:</strong> It is highly recommended to set these pages to <code>noindex</code> to prevent search engines from indexing login forms.
+        </div>
+      </div>
+
+      <RenderAuthSection 
+        label="Login Page" 
+        prefix="seo_auth_login_" 
+        helpText="The browser tab title for the Sign In page."
+      />
+
+      <RenderAuthSection 
+        label="Register Page" 
+        prefix="seo_auth_register_" 
+        helpText="The browser tab title for the Registration page."
+      />
+
+      <RenderAuthSection 
+        label="Password Reset" 
+        prefix="seo_auth_reset_" 
+        helpText="The browser tab title for the Password Reset flow."
+      />
+
+    </div>
+  );
+};
+
+export default AuthPagesTab;

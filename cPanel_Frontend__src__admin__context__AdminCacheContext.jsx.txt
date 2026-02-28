@@ -1,0 +1,126 @@
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { authenticatedFetch } from '../utils/apiService';
+import { useAuth } from './AuthContext';
+
+const AdminCacheContext = createContext();
+
+export const useAdminCache = () => {
+  const context = useContext(AdminCacheContext);
+  if (!context) {
+    throw new Error('useAdminCache must be used within an AdminCacheProvider');
+  }
+  return context;
+};
+
+export const AdminCacheProvider = ({ children }) => {
+  const [cache, setCache] = useState({});
+  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false);
+  
+  const { token } = useAuth();
+
+  useEffect(() => {
+    if (!token) {
+        setCache({});
+        setIsInitialLoadComplete(false);
+        return;
+    }
+
+    const initialFetch = async () => {
+        try {
+            const [
+                pagesResult, 
+                postsResult, 
+                calculatorsResult,
+                categoriesResult,
+                tagsResult,
+                calcCategoriesResult,
+                usersResult,
+                mediaResult,
+                settingsResult,
+                sysConfigResult,
+                // --- NEW FETCH: Security Logs ---
+                securityLogsResult
+            ] = await Promise.all([
+                authenticatedFetch('http://localhost/calcpro-api/api/admin/get_pages.php?status=all'),
+                authenticatedFetch('http://localhost/calcpro-api/api/admin/get_posts.php?status=all'),
+                authenticatedFetch('http://localhost/calcpro-api/api/admin/get_calculators.php?status=all'),
+                authenticatedFetch('http://localhost/calcpro-api/api/admin/get_categories.php'),
+                authenticatedFetch('http://localhost/calcpro-api/api/admin/get_tags.php'),
+                authenticatedFetch('http://localhost/calcpro-api/api/admin/get_calculator_categories.php'),
+                authenticatedFetch('http://localhost/calcpro-api/api/admin/get_users.php?page=1&limit=10'),
+                authenticatedFetch('http://localhost/calcpro-api/api/admin/get_media.php?page=1&limit=50'),
+                authenticatedFetch('http://localhost/calcpro-api/api/admin/get_settings.php'),
+                authenticatedFetch('http://localhost/calcpro-api/api/admin/get_sys_config.php'),
+                // --- Security Logs (Page 1) ---
+                authenticatedFetch('http://localhost/calcpro-api/api/admin/get_security_logs.php?page_unknown=1&page_admin=1')
+            ]);
+            
+            setCache(prev => ({
+                ...prev,
+                'pages_all': pagesResult.success ? { data: pagesResult.data.pages, counts: pagesResult.data.counts } : null,
+                'posts_all__': postsResult.success ? { data: postsResult.data.posts, counts: postsResult.data.counts } : null,
+                'calculators_all': calculatorsResult.success ? { data: calculatorsResult.data.calculators, counts: calculatorsResult.data.counts } : null,
+                'content_categories': categoriesResult.success ? categoriesResult.data : [],
+                'content_tags': tagsResult.success ? tagsResult.data : [],
+                'calculator_categories': calcCategoriesResult.success ? calcCategoriesResult.data : [],
+                'users_page_1': usersResult.success ? usersResult.data : null,
+                'media_page_1': mediaResult.success ? mediaResult.data : null,
+                'settings_general': settingsResult.success ? settingsResult.data : {},
+                'settings_env': sysConfigResult.success ? sysConfigResult.data : null,
+                // --- Security Cache ---
+                'security_logs_1_1': securityLogsResult.success ? securityLogsResult.data : null
+            }));
+
+        } catch (error) {
+            console.error("Initial cache pre-fetch failed:", error);
+        } finally {
+            setIsInitialLoadComplete(true);
+        }
+    };
+    
+    initialFetch();
+  }, [token]);
+
+  const getCache = useCallback((key) => {
+    return cache[key] || null;
+  }, [cache]);
+
+  const setCacheData = useCallback((key, data) => {
+    setCache(prev => ({
+      ...prev,
+      [key]: data
+    }));
+  }, []);
+
+  const invalidateCache = useCallback((keyPrefix) => {
+    setCache(prev => {
+      const newCache = { ...prev };
+      Object.keys(newCache).forEach(key => {
+        if (key.startsWith(keyPrefix)) {
+          delete newCache[key];
+        }
+      });
+      return newCache;
+    });
+  }, []);
+
+  const clearCache = useCallback(() => {
+    setCache({});
+    setIsInitialLoadComplete(false);
+  }, []);
+
+  const value = {
+    getCache,
+    setCacheData,
+    invalidateCache,
+    clearCache,
+    isInitialLoadComplete,
+    setIsInitialLoadComplete
+  };
+
+  return (
+    <AdminCacheContext.Provider value={value}>
+      {children}
+    </AdminCacheContext.Provider>
+  );
+};

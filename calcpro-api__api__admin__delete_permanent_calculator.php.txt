@@ -1,0 +1,47 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // 1. Get Incoming Data
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // 2. Validation
+    if (!isset($data->id) || !is_numeric($data->id)) {
+        sendResponse(false, null, 'A valid Calculator ID is required.', 400, 'INVALID_INPUT');
+    }
+    $calculatorId = (int)$data->id;
+
+    // 3. The Permanent Delete Logic
+    // This is a destructive action. The "WHERE status = 'trash'" clause is a
+    // crucial safety check to ensure we only delete items already in the trash.
+    $sql = "DELETE FROM calculators WHERE id = ? AND status = 'trash'";
+    
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("i", $calculatorId);
+
+    if ($stmt->execute()) {
+        if ($stmt->affected_rows > 0) {
+            sendResponse(true, null, 'Calculator content permanently deleted.', 200);
+        } else {
+            sendResponse(false, null, 'Calculator content not found in trash.', 404, 'NOT_FOUND');
+        }
+    } else {
+        throw new Exception("Database query failed: " . $stmt->error);
+    }
+    
+    $stmt->close();
+
+} catch (Exception $e) {
+    error_log("Error in delete_permanent_calculator.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

@@ -1,0 +1,48 @@
+<?php
+// Include the core configuration and response helper files
+require '../../core/config.php';
+require_once '../../core/response.php';
+
+// Get the data sent from the frontend
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// Basic Validation
+if (!isset($data->id) || !is_numeric($data->id)) {
+    sendResponse(false, null, 'A valid Tag ID is required.', 400, 'INVALID_INPUT');
+}
+
+// Sanitize Input
+$id = (int)$data->id;
+
+try {
+    // The DELETE statement will also automatically remove related entries in `post_tags`
+    // because of the ON DELETE CASCADE constraint we set up in the database.
+    $sql = "DELETE FROM tags WHERE id = ?";
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        throw new Exception('Failed to prepare the SQL statement: ' . $conn->error);
+    }
+
+    $stmt->bind_param("i", $id);
+
+    if ($stmt->execute()) {
+        if ($stmt->affected_rows > 0) {
+            sendResponse(true, null, 'Tag deleted successfully.', 200);
+        } else {
+            sendResponse(false, null, 'Tag not found or already deleted.', 404, 'NOT_FOUND');
+        }
+    } else {
+        throw new Exception("Database delete failed: " . $stmt->error);
+    }
+
+    $stmt->close();
+
+} catch (Exception $e) {
+    error_log("Error in delete_tag.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

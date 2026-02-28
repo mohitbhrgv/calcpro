@@ -1,0 +1,48 @@
+<?php
+require '../../core/config.php';
+require_once '../../core/response.php';
+
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// Basic validation
+if (!isset($data->userId) || !is_numeric($data->userId)) {
+    sendResponse(false, null, 'A valid User ID is required.', 400, 'INVALID_INPUT');
+}
+
+$userIdToDelete = (int)$data->userId;
+
+// Critical Safety Feature: Prevent the primary admin (ID = 1) from being deleted.
+if ($userIdToDelete === 1) {
+    sendResponse(false, null, 'The primary administrator cannot be deleted.', 403, 'ACTION_NOT_ALLOWED');
+}
+
+try {
+    // With "ON DELETE CASCADE", the database will also delete this user's calculations and bookmarks.
+    $sql = "DELETE FROM users WHERE id = ?";
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        throw new Exception('Failed to prepare the SQL statement.');
+    }
+
+    $stmt->bind_param("i", $userIdToDelete);
+
+    if ($stmt->execute()) {
+        if ($stmt->affected_rows > 0) {
+            sendResponse(true, null, 'User and all associated data have been deleted successfully.', 200);
+        } else {
+            sendResponse(false, null, 'User not found or already deleted.', 404, 'NOT_FOUND');
+        }
+    } else {
+        throw new Exception("Database delete failed: " . $stmt->error);
+    }
+    $stmt->close();
+    
+} catch (Exception $e) {
+    error_log("Error in delete_user.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

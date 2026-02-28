@@ -1,0 +1,41 @@
+<?php
+// File: calcpro-api/api/admin/delete_tags_bulk.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    if (!isset($data->ids) || !is_array($data->ids) || empty($data->ids)) {
+        sendResponse(false, null, 'No items selected.', 400, 'INVALID_INPUT');
+    }
+
+    $ids = array_map('intval', $data->ids);
+    $id_list = implode(',', $ids);
+
+    // Tags usually have ON DELETE CASCADE on the pivot tables (post_tags, calculator_tags),
+    // so we don't strictly need to check usage, but it is destructive.
+    
+    $sql = "DELETE FROM tags WHERE id IN ($id_list)";
+
+    if ($conn->query($sql) === TRUE) {
+         $affected = $conn->affected_rows;
+         sendResponse(true, ['affected' => $affected], "{$affected} tags deleted successfully.", 200);
+    } else {
+         throw new Exception("Database query failed: " . $conn->error);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in delete_tags_bulk.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

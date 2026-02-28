@@ -1,0 +1,111 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->log_type) || !isset($data->ids) || !is_array($data->ids)) {
+        sendResponse(false, null, 'A log type and an array of numeric IDs are required.', 400, 'INVALID_INPUT');
+    }
+
+    $log_type = $data->log_type;
+    $ids = $data->ids;
+
+    if (empty($ids)) {
+        sendResponse(true, null, 'No items were selected for deletion.', 200);
+    }
+
+    // --- 3. Whitelist of allowed tables for security ---
+    $allowed_tables = [
+        'ip_blacklist' => 'IP Blacklist',
+        'temporary_blocks' => 'Temporary Block Log',
+        'login_attempts' => 'Failed Email Log',
+        'admin_login_failures' => 'Failed Password Log'
+    ];
+
+    if (!array_key_exists($log_type, $allowed_tables)) {
+        sendResponse(false, null, 'Invalid log type specified.', 400, 'INVALID_LOG_TYPE');
+    }
+    
+    $table_name = $log_type;
+    
+    // --- 4. Sanitize all IDs to ensure they are integers ---
+    $sanitized_ids = array_map('intval', $ids);
+    $placeholders = implode(',', array_fill(0, count($sanitized_ids), '?'));
+    $types = str_repeat('i', count($sanitized_ids));
+
+    // --- 5. Begin Transaction for Data Integrity ---
+    $conn->begin_transaction();
+
+    // --- 6. Cascading Deletion Logic ---
+    $sql_get_ips = "SELECT DISTINCT ip_address FROM `{$table_name}` WHERE id IN ($placeholders)";
+    $stmt_get_ips = $conn->prepare($sql_get_ips);
+    $stmt_get_ips->bind_param($types, ...$sanitized_ids);
+    $stmt_get_ips->execute();
+    $result_ips = $stmt_get_ips->get_result();
+    $ips_to_clear = [];
+    while($row = $result_ips->fetch_assoc()) {
+        $ips_to_clear[] = $row['ip_address'];
+    }
+    $stmt_get_ips->close();
+
+    if (!empty($ips_to_clear)) {
+        $ip_placeholders = implode(',', array_fill(0, count($ips_to_clear), '?'));
+        $ip_types = str_repeat('s', count($ips_to_clear));
+
+        if ($table_name === 'temporary_blocks' || $table_name === 'ip_blacklist') {
+            // --- THIS IS THE CORRECTED, SAFE SYNTAX ---
+            $stmt_clear_attempts = $conn->prepare("DELETE FROM login_attempts WHERE ip_address IN ($ip_placeholders)");
+            $stmt_clear_attempts->bind_param($ip_types, ...$ips_to_clear);
+            $stmt_clear_attempts->execute();
+            $stmt_clear_attempts->close();
+
+            $stmt_clear_failures = $conn->prepare("DELETE FROM admin_login_failures WHERE ip_address IN ($ip_placeholders)");
+            $stmt_clear_failures->bind_param($ip_types, ...$ips_to_clear);
+            $stmt_clear_failures->execute();
+            $stmt_clear_failures->close();
+        }
+        
+        if ($table_name === 'login_attempts' || $table_name === 'admin_login_failures') {
+             $stmt_clear_blocks = $conn->prepare("DELETE FROM temporary_blocks WHERE ip_address IN ($ip_placeholders)");
+             $stmt_clear_blocks->bind_param($ip_types, ...$ips_to_clear);
+             $stmt_clear_blocks->execute();
+             $stmt_clear_blocks->close();
+        }
+    }
+
+    // --- 7. Main Deletion Query ---
+    $sql_delete = "DELETE FROM `{$table_name}` WHERE id IN ($placeholders)";
+    $stmt_delete = $conn->prepare($sql_delete);
+    $stmt_delete->bind_param($types, ...$sanitized_ids);
+    $stmt_delete->execute();
+    
+    $affected_rows = $stmt_delete->affected_rows;
+    $stmt_delete->close();
+    
+    $conn->commit();
+    
+    if ($affected_rows > 0) {
+        // --- THIS IS THE REFINED SUCCESS MESSAGE ---
+        sendResponse(true, null, "{$affected_rows} item(s) have been deleted successfully.");
+    } else {
+        sendResponse(false, null, 'No matching items found to delete. They may have been removed already.', 404, 'NOT_FOUND');
+    }
+
+} catch (Exception $e) {
+    $conn->rollback();
+    error_log("Error in delete_security_logs_bulk.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

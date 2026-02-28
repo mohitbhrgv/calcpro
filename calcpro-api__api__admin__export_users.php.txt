@@ -1,0 +1,75 @@
+<?php
+require '../../core/config.php';
+
+// --- MOCK SECURITY CHECK for admin access ---
+// session_start();
+// if (!isset($_SESSION['admin_id'])) {
+//     http_response_code(403);
+//     echo "Unauthorized Access";
+//     exit();
+// }
+
+// Handle the status filter from the URL
+$status_filter = isset($_GET['status']) ? $_GET['status'] : 'all';
+$where_clause = "";
+$params = [];
+$types = "";
+
+if (in_array($status_filter, ['active', 'banned'])) {
+    $where_clause = "WHERE status = ?";
+    $params[] = $status_filter;
+    $types .= "s";
+}
+
+try {
+    // Set HTTP Headers to trigger a file download
+    $filename = "calcpro-users-" . $status_filter . "-" . date('Y-m-d') . ".csv";
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+
+    // Fetch User Data based on the filter
+    $sql = "SELECT id, name, email, created_at, status FROM users " . $where_clause . " ORDER BY created_at DESC";
+    $stmt = $conn->prepare($sql);
+
+    // Add a check to ensure the statement was prepared successfully
+    if ($stmt === false) {
+        throw new Exception('Database prepare statement failed: ' . $conn->error);
+    }
+    
+    if (!empty($params)) {
+        $stmt->bind_param($types, ...$params);
+    }
+    
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+    // Use a PHP output stream to build the CSV file
+    $output = fopen('php://output', 'w');
+
+    // Write the Header Row
+    fputcsv($output, array('ID', 'Name', 'Email', 'Date Joined', 'Status'));
+
+    // Loop through the results and write each row
+    if ($result->num_rows > 0) {
+        while ($row = $result->fetch_assoc()) {
+            fputcsv($output, [
+                $row['id'],
+                $row['name'],
+                $row['email'],
+                $row['created_at'],
+                $row['status']
+            ]);
+        }
+    }
+    
+    fclose($output);
+    $stmt->close();
+    $conn->close();
+    exit();
+
+} catch (Exception $e) {
+    error_log("Error in export_users.php: " . $e->getMessage());
+    http_response_code(500);
+    echo "An error occurred while generating the export file. Please check server logs.";
+}
+?>

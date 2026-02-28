@@ -1,0 +1,87 @@
+import React from "react";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiShield, FiClock, FiActivity, FiAlertOctagon } = FiIcons;
+
+const BruteForceHelpModal = ({ isOpen, onClose, disableAnimation = false }) => {
+  return (
+    <Modal 
+      isOpen={isOpen} 
+      onClose={onClose} 
+      title="Brute Force Protection Guide" 
+      size="lg"
+      disableAnimation={disableAnimation}
+    >
+      <div className="space-y-6 font-sans text-gray-600 dark:text-gray-300 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
+        <p className="text-sm leading-relaxed">
+          This module protects your application from unauthorized access attempts. It tracks failed logins and automatically blocks suspicious IP addresses based on your configuration.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* IP Blacklist */}
+          <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-100 dark:border-red-800/50">
+            <div className="flex items-center gap-2 mb-2">
+              <SafeIcon icon={FiAlertOctagon} className="w-4 h-4 text-red-600" />
+              <h4 className="font-bold text-red-900 dark:text-red-100 text-sm">IP Blacklist</h4>
+            </div>
+            <ul className="text-xs space-y-1.5 list-disc pl-4 text-red-800 dark:text-red-200/80">
+              <li><strong>Permanent Bans:</strong> IPs listed here are blocked indefinitely.</li>
+              <li><strong>Origin:</strong> Can be added manually or automatically via system escalation.</li>
+              <li><strong>Effect:</strong> Users from these IPs cannot access the admin login page.</li>
+            </ul>
+          </div>
+
+          {/* Temporary Blocks */}
+          <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-100 dark:border-amber-800/50">
+             <div className="flex items-center gap-2 mb-2">
+              <SafeIcon icon={FiClock} className="w-4 h-4 text-amber-600" />
+              <h4 className="font-bold text-amber-900 dark:text-amber-100 text-sm">Temporary Blocks</h4>
+            </div>
+            <ul className="text-xs space-y-1.5 list-disc pl-4 text-amber-800 dark:text-amber-200/80">
+              <li><strong>Short-term Bans:</strong> Triggered after excessive failed attempts (default 3).</li>
+              <li><strong>Duration:</strong> Configurable in Settings (default 24 hours).</li>
+              <li><strong>Purpose:</strong> Slows down brute-force attacks without permanently banning legitimate users who forgot passwords.</li>
+            </ul>
+          </div>
+        </div>
+
+        {/* Logs Explanation */}
+        <div className="space-y-3">
+             <h4 className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-2 bg-gray-50 dark:bg-gray-700/50 p-2 rounded-lg">
+                <SafeIcon icon={FiActivity} className="w-4 h-4 text-blue-500" />
+                Security Logs
+            </h4>
+            <div className="grid grid-cols-1 gap-3 ml-2 text-xs">
+                <div>
+                    <strong className="block text-gray-800 dark:text-gray-200 mb-1">Failed Email Log</strong>
+                    <p>Tracks attempts using unknown email addresses. High volume here indicates a "username enumeration" or "spraying" attack.</p>
+                </div>
+                <div>
+                     <strong className="block text-gray-800 dark:text-gray-200 mb-1">Failed Password Log</strong>
+                    <p>Tracks correct emails but wrong passwords. This is critical as it targets specific admin accounts.</p>
+                </div>
+            </div>
+        </div>
+        
+        {/* Escalation Logic */}
+        <div className="p-4 bg-purple-50 dark:bg-purple-900/10 border border-purple-100 dark:border-purple-800/30 rounded-lg flex gap-3 items-start">
+             <SafeIcon icon={FiShield} className="w-5 h-5 text-purple-600 shrink-0 mt-0.5" />
+             <div>
+                 <h5 className="text-sm font-bold text-purple-900 dark:text-purple-100 mb-1">Intelligent Escalation</h5>
+                 <p className="text-xs text-purple-800 dark:text-purple-200/80 leading-relaxed">
+                     If an IP address receives multiple Temporary Blocks within a short period (configurable in settings), the system will automatically <strong>Escalate</strong> it to the Permanent Blacklist to stop persistent attackers.
+                 </p>
+             </div>
+        </div>
+
+        <div className="flex justify-end pt-2">
+          <button onClick={onClose} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors shadow">Close Guide</button>
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+export default BruteForceHelpModal;

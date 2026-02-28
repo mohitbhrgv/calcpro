@@ -1,0 +1,383 @@
+import React from "react";
+import { NavLink, useLocation } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import * as HiIcons from "react-icons/hi";
+import * as IoIcons from "react-icons/io5";
+import * as BiIcons from "react-icons/bi";
+import * as AiIcons from "react-icons/ai";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+const Sidebar = ({ isOpen }) => {
+  const location = useLocation();
+
+  // --- Dynamic Identity Logic ---
+  const { getCache } = useAdminCache();
+  const settings = getCache("settings_general") || {};
+  const siteName = settings.siteName || "CalcPro";
+  const firstLetter = siteName.charAt(0).toUpperCase();
+  // -----------------------------------
+
+  // Initialize expanded state based on current URL
+  const [expandedMenus, setExpandedMenus] = React.useState(() => {
+    const currentPath = location.pathname;
+    if (currentPath.startsWith("/admin/content")) return { content: true };
+    if (currentPath.startsWith("/admin/security")) return { security: true };
+    if (currentPath.startsWith("/admin/seo")) return { seo: true };
+    if (currentPath.startsWith("/admin/settings")) return { settings: true };
+    return {};
+  });
+
+  const menuItems = [
+    {
+      path: "/admin/dashboard",
+      icon: HiIcons.HiOutlineChartSquareBar,
+      label: "Dashboard",
+      color: "text-indigo-500 dark:text-indigo-400",
+    },
+    {
+      label: "Content",
+      icon: BiIcons.BiEditAlt,
+      key: "content",
+      color: "text-emerald-500 dark:text-emerald-400",
+      children: [
+        { isHeader: true, label: "Website Pages" },
+        {
+          path: "/admin/content/pages",
+          icon: IoIcons.IoDocumentOutline,
+          label: "Pages",
+          color: "text-emerald-400",
+        },
+        { isHeader: true, label: "Blog Content" },
+        {
+          path: "/admin/content/posts",
+          icon: BiIcons.BiNews,
+          label: "Posts",
+          color: "text-emerald-400",
+        },
+        {
+          path: "/admin/content/categories",
+          icon: IoIcons.IoFolderOutline,
+          label: "Categories",
+          color: "text-emerald-400",
+        },
+        {
+          path: "/admin/content/tags?context=post",
+          icon: HiIcons.HiOutlineTag,
+          label: "Tags",
+          color: "text-emerald-400",
+        },
+        { isHeader: true, label: "Calculator Content" },
+        {
+          path: "/admin/content/calculators",
+          icon: BiIcons.BiCalculator,
+          label: "Calculators",
+          color: "text-emerald-400",
+          end: true,
+        },
+        {
+          path: "/admin/content/calculators/categories",
+          icon: IoIcons.IoPricetagsOutline,
+          label: "Categories",
+          color: "text-emerald-400",
+        },
+        {
+          path: "/admin/content/tags?context=calculator",
+          icon: HiIcons.HiOutlineTag,
+          label: "Tags",
+          color: "text-emerald-400",
+        },
+      ],
+    },
+    {
+      path: "/admin/media",
+      icon: IoIcons.IoImagesOutline,
+      label: "Media",
+      color: "text-sky-500 dark:text-sky-400",
+    },
+    {
+      path: "/admin/users",
+      icon: IoIcons.IoPeopleOutline,
+      label: "Users",
+      color: "text-violet-500 dark:text-violet-400",
+    },
+    {
+      label: "SEO & Analytics",
+      icon: AiIcons.AiOutlineLineChart,
+      key: "seo",
+      color: "text-blue-500 dark:text-blue-400",
+      children: [
+        {
+          path: "/admin/seo/general",
+          icon: FiIcons.FiSettings,
+          label: "General Settings",
+          color: "text-blue-400",
+        },
+        {
+          path: "/admin/seo/titles-meta",
+          icon: FiIcons.FiGlobe,
+          label: "Titles & Meta",
+          color: "text-blue-400",
+        },
+        {
+          path: "/admin/seo/redirects",
+          icon: FiIcons.FiCornerUpRight,
+          label: "Redirection Manager",
+          color: "text-blue-400",
+        },
+        {
+          path: "/admin/seo/404-monitor",
+          icon: FiIcons.FiActivity,
+          label: "404 Monitor",
+          color: "text-blue-400",
+        },
+      ],
+    },
+    {
+      label: "Security",
+      icon: IoIcons.IoShieldOutline,
+      key: "security",
+      color: "text-red-500 dark:text-red-400",
+      children: [
+        {
+          path: "/admin/security/brute-force",
+          icon: IoIcons.IoLockOpenOutline,
+          label: "Brute Force",
+          color: "text-red-400",
+        },
+        {
+          path: "/admin/security/2fa",
+          icon: IoIcons.IoKeyOutline,
+          label: "Two-Factor Auth",
+          color: "text-red-400",
+        },
+        {
+          path: "/admin/security/inactivity",
+          icon: IoIcons.IoTimerOutline,
+          label: "Auto-Logout",
+          color: "text-red-400",
+        },
+        {
+          path: "/admin/security/backup-restore",
+          icon: FiIcons.FiDatabase,
+          label: "Backup & Restore",
+          color: "text-red-400",
+        },
+      ],
+    },
+    {
+      label: "Settings",
+      icon: IoIcons.IoSettingsOutline,
+      key: "settings",
+      color: "text-amber-500 dark:text-amber-400",
+      children: [
+        {
+          path: "/admin/settings/general",
+          icon: FiIcons.FiLayout,
+          label: "Site Configuration",
+          color: "text-amber-400",
+        },
+        {
+          path: "/admin/settings/integrations",
+          icon: FiIcons.FiCpu,
+          label: "Integrations",
+          color: "text-amber-400",
+        },
+        {
+          path: "/admin/settings/permalinks",
+          icon: FiIcons.FiLink,
+          label: "Permalinks",
+          color: "text-amber-400",
+        },
+        {
+          path: "/admin/settings/environment",
+          icon: FiIcons.FiServer,
+          label: "System Env",
+          color: "text-amber-400",
+        },
+      ],
+    },
+  ];
+
+  const toggleSubmenu = (key) => {
+    setExpandedMenus((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const getGradient = (key) => {
+    const gradients = {
+      content: "bg-gradient-to-r from-emerald-500 to-teal-500",
+      security: "bg-gradient-to-r from-red-600 to-pink-500",
+      seo: "bg-gradient-to-r from-blue-600 to-cyan-500",
+      settings: "bg-gradient-to-r from-amber-600 to-yellow-500",
+      "/admin/dashboard": "bg-gradient-to-r from-indigo-600 to-blue-500",
+      "/admin/media": "bg-gradient-to-r from-sky-600 to-cyan-500",
+      "/admin/users": "bg-gradient-to-r from-violet-600 to-purple-500",
+    };
+    return gradients[key] || "bg-gray-100 dark:bg-gray-700";
+  };
+
+  const isParentActive = (key) => location.pathname.startsWith(`/admin/${key}`);
+
+  const isLinkActive = (path) => {
+    const [linkPath, linkQuery] = path.split("?");
+    if (linkQuery) {
+      return (
+        location.pathname === linkPath && location.search === `?${linkQuery}`
+      );
+    }
+    return location.pathname === path;
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.aside
+          initial={{ x: -256 }}
+          animate={{ x: 0 }}
+          exit={{ x: -256 }}
+          transition={{ duration: 0.3, ease: "easeInOut" }}
+          className="w-64 bg-white dark:bg-gray-800 shadow-lg border-r border-gray-200 dark:border-gray-700 flex flex-col shrink-0 h-screen sticky top-0 z-30"
+        >
+          {/* Header - Fixed at Top */}
+          <div className="p-6 border-b border-gray-200 dark:border-gray-700 shrink-0">
+            <div className="flex items-center space-x-3">
+              
+              {/* Distinct Admin Panel Icon (Replaces Public Site Logo) */}
+              <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-blue-500 rounded-lg flex items-center justify-center shrink-0 shadow-sm">
+                <span className="text-white font-bold text-lg">{firstLetter}</span>
+              </div>
+              
+              <div className="min-w-0 overflow-hidden">
+                <h1 className="text-xl font-montserrat font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-blue-500 truncate">
+                  {siteName}
+                </h1>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  Admin Panel
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Navigation - Scrollable Area */}
+          <nav className="flex-1 overflow-y-auto py-4 custom-scrollbar">
+            <ul className="space-y-1 px-3">
+              {menuItems.map((item) => (
+                <li key={item.key || item.path}>
+                  {item.children ? (
+                    <div>
+                      <button
+                        onClick={() => toggleSubmenu(item.key)}
+                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                          isParentActive(item.key)
+                            ? `${getGradient(item.key)} text-white shadow-md`
+                            : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                        }`}
+                      >
+                        <div className="flex items-center space-x-3">
+                          <SafeIcon
+                            icon={item.icon}
+                            className={`w-5 h-5 ${isParentActive(item.key) ? "text-white" : item.color}`}
+                          />
+                          <span>{item.label}</span>
+                        </div>
+                        <SafeIcon
+                          icon={FiIcons.FiChevronDown}
+                          className={`w-4 h-4 transition-transform ${expandedMenus[item.key] ? "rotate-180" : ""}`}
+                        />
+                      </button>
+                      <AnimatePresence>
+                        {expandedMenus[item.key] && (
+                          <motion.ul
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="ml-4 mt-2 space-y-1 overflow-hidden border-l border-gray-200 dark:border-gray-700"
+                          >
+                            {item.children.map((child, index) => (
+                              <li
+                                key={child.path || `header-${index}`}
+                                className="pl-4"
+                              >
+                                {child.isHeader ? (
+                                  <h4 className="px-3 pt-3 pb-1 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                                    {child.label}
+                                  </h4>
+                                ) : (
+                                  <NavLink
+                                    to={child.path}
+                                    end={child.end || false}
+                                  >
+                                    {({ isActive }) => {
+                                      const active = isLinkActive(child.path);
+                                      return (
+                                        <div
+                                          className={`flex items-center space-x-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${active ? "bg-gray-200 dark:bg-gray-700/50 text-gray-900 dark:text-white" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                                        >
+                                          <SafeIcon
+                                            icon={child.icon}
+                                            className={`w-4 h-4 ${child.color}`}
+                                          />
+                                          <span>{child.label}</span>
+                                        </div>
+                                      );
+                                    }}
+                                  </NavLink>
+                                )}
+                              </li>
+                            ))}
+                          </motion.ul>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  ) : (
+                    <NavLink to={item.path}>
+                      {({ isActive }) => (
+                        <div
+                          className={`flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${isActive ? `${getGradient(item.path)} text-white shadow-md` : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                        >
+                          <SafeIcon
+                            icon={item.icon}
+                            className={`w-5 h-5 ${isActive ? "text-white" : item.color}`}
+                          />
+                          <span>{item.label}</span>
+                        </div>
+                      )}
+                    </NavLink>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </nav>
+
+          {/* Footer / System Identity - Fixed at Bottom */}
+          <div className="p-4 border-t border-gray-200 dark:border-gray-700 shrink-0 bg-gray-50 dark:bg-gray-800/50">
+             <div className="flex items-center justify-between">
+                 <div className="flex flex-col">
+                      <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">
+                          Release
+                      </span>
+                      <div className="flex items-center gap-2 mt-0.5">
+                          <span className="relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                          </span>
+                          <span className="text-xs font-bold text-gray-700 dark:text-gray-200 font-montserrat tracking-tight">
+                              Prism
+                          </span>
+                      </div>
+                 </div>
+                 {/* Decorative Icon */}
+                 <div className="px-2 py-1 rounded bg-indigo-100 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800">
+                     <SafeIcon icon={FiIcons.FiZap} className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                 </div>
+             </div>
+          </div>
+        </motion.aside>
+      )}
+    </AnimatePresence>
+  );
+};
+
+export default Sidebar;

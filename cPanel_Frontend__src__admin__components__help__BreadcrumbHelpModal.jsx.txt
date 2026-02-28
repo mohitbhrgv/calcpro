@@ -1,0 +1,144 @@
+import React from "react";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiLayout, FiHome, FiEye, FiSettings, FiSearch, FiLayers } = FiIcons;
+
+const BreadcrumbHelpModal = ({ isOpen, onClose, disableAnimation = false }) => {
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="How to Use: Breadcrumbs Settings"
+      size="lg"
+      disableAnimation={disableAnimation}
+    >
+      {/* 
+          Main Container: Responsive max-height with custom scrollbar 
+          Ensures visibility on all screen sizes.
+      */}
+      <div className="space-y-6 font-sans text-gray-300 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
+        
+        {/* Intro text */}
+        <p className="text-sm leading-relaxed text-gray-400">
+          Breadcrumbs help users navigate your site's hierarchy and allow Google to display a clean trail in search results. 
+          Use this module to define the global visual and semantic rules for these links.
+        </p>
+
+        {/* Operational Steps Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          
+          {/* Step 1: Visual Branding */}
+          <div className="p-5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 1
+                </span>
+                <h4 className="font-bold text-white text-sm">Visual Styling</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                  Choose your **Separator Character** (e.g., <code>»</code> or <code>/</code>) and optional **Prefix Text** like <em>"You are here:"</em> to match your site's design.
+                </p>
+            </div>
+            <div className="text-[10px] text-emerald-400/80 italic border-t border-emerald-500/20 pt-2">
+              Tip: <code>»</code> is the industry standard for readability.
+            </div>
+          </div>
+
+          {/* Step 2: Homepage Logic */}
+          <div className="p-5 rounded-xl border border-blue-500/30 bg-blue-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 2
+                </span>
+                <h4 className="font-bold text-white text-sm">Root Configuration</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                  Toggle whether to show the **Home Link**. You can change the label from <em>"Home"</em> to your brand name or <em>"Start"</em>.
+                </p>
+            </div>
+            <div className="text-[10px] text-blue-400/80 italic border-t border-blue-500/20 pt-2">
+              Action: Keeping this enabled helps reduce bounce rates.
+            </div>
+          </div>
+
+          {/* Step 3: Global Visibility */}
+          <div className="p-5 rounded-xl border border-orange-500/30 bg-orange-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-orange-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 3
+                </span>
+                <h4 className="font-bold text-white text-sm">Content Visibility</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                  Use the **Visibility Toggles** to decide which sections of your site should display the trail (Posts, Pages, or Calculators).
+                </p>
+            </div>
+            <div className="text-[10px] text-orange-400/80 italic border-t border-orange-500/20 pt-2">
+              Best Practice: Display on all deep-level content.
+            </div>
+          </div>
+
+          {/* Step 4: Hierarchy Rules */}
+          <div className="p-5 rounded-xl border border-red-500/30 bg-red-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 4
+                </span>
+                <h4 className="font-bold text-white text-sm">Taxonomy Logic</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                  Enable **Show Category** to include the item's primary category in the path for a richer internal linking structure.
+                </p>
+            </div>
+            <div className="text-[10px] text-red-400/80 italic border-t border-red-500/20 pt-2">
+              Advanced: Use Archive formats like "Topic: %s".
+            </div>
+          </div>
+        </div>
+
+        {/* Maintenance / Technical Section */}
+        <div className="bg-white/5 rounded-xl p-5 border border-white/10">
+            <h4 className="text-xs font-bold text-gray-200 uppercase tracking-widest mb-4 flex items-center gap-2">
+                <SafeIcon icon={FiSettings} className="text-indigo-400" /> Technical Details
+            </h4>
+            <div className="grid grid-cols-1 gap-4 text-[11px] text-gray-400">
+                <div className="flex gap-3">
+                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1 shrink-0" />
+                    <p><strong className="text-gray-300">Schema Generation:</strong> Enabling breadcrumbs automatically generates <code>BreadcrumbList</code> JSON-LD schema, helping Google show your URL structure in search results.</p>
+                </div>
+                <div className="flex gap-3">
+                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1 shrink-0" />
+                    <p><strong className="text-gray-300">Hide Post Title:</strong> Useful if you display your main H1 title immediately below the breadcrumbs and want to avoid repeating the text twice.</p>
+                </div>
+            </div>
+        </div>
+
+        {/* SEO Impact Banner */}
+        <div className="flex items-start gap-3 p-4 rounded-lg bg-indigo-600/10 border border-indigo-500/20 text-indigo-400">
+          <SafeIcon icon={FiLayers} className="w-5 h-5 shrink-0 mt-0.5 animate-pulse" />
+          <p className="text-xs leading-relaxed">
+            <strong className="text-indigo-300">SEO Value:</strong> Breadcrumbs are a high-value signal for search engines. They establish a clear site architecture, distribute internal link authority, and improve click-through rates (CTR) from Google.
+          </p>
+        </div>
+
+        {/* Footer Action */}
+        <div className="flex justify-end pt-2">
+          <button
+            onClick={onClose}
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold rounded-lg transition-all shadow-lg active:scale-95"
+          >
+            Finish Configuration
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+export default BreadcrumbHelpModal;

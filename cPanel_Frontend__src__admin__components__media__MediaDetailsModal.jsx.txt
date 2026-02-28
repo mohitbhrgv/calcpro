@@ -1,0 +1,404 @@
+// (Update) cPanel_Frontend/src/admin/components/media/MediaDetailsModal.jsx
+
+import React, { useState, useEffect, useRef } from "react";
+import Modal from "../common/Modal";
+import SafeIcon from "@/common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import { authenticatedFetch } from "@/admin/utils/apiService";
+import toast from "react-hot-toast";
+import { motion } from "framer-motion";
+
+const {
+  FiSave, FiFileText, FiType, FiMaximize, FiCalendar, 
+  FiGlobe, FiClipboard, FiUpload, FiRefreshCw, FiAlertTriangle, FiCheck, FiTrash2
+} = FiIcons;
+
+const InfoBlock = ({ label, value, icon }) => (
+  <div className="flex flex-col p-2.5 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-100 dark:border-gray-700/50">
+    <span className="text-[10px] uppercase tracking-wider font-bold text-gray-400 dark:text-gray-500 mb-0.5 flex items-center gap-1.5">
+      <SafeIcon icon={icon} className="w-3 h-3" /> {label}
+    </span>
+    <span className="text-xs font-medium text-gray-900 dark:text-gray-200 truncate" title={value}>
+      {value}
+    </span>
+  </div>
+);
+
+const RadioCard = ({ title, desc, value, selected, onChange }) => (
+  <div 
+    onClick={() => onChange(value)}
+    className={`relative p-3 rounded-lg border-2 cursor-pointer transition-all duration-200 group ${
+      selected === value
+        ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/10' 
+        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800'
+    }`}
+  >
+    <div className="flex items-start gap-3">
+      <div className={`mt-0.5 w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 transition-colors ${
+          selected === value 
+          ? 'border-indigo-500 bg-indigo-500 text-white' 
+          : 'border-gray-400 dark:border-gray-500'
+      }`}>
+        {selected === value && <SafeIcon icon={FiCheck} className="w-2.5 h-2.5" />}
+      </div>
+      <div>
+        <h4 className={`text-sm font-bold ${selected === value ? 'text-indigo-700 dark:text-indigo-300' : 'text-gray-900 dark:text-gray-200'}`}>
+            {title}
+        </h4>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-tight">
+            {desc}
+        </p>
+      </div>
+    </div>
+  </div>
+);
+
+const MediaDetailsModal = ({ 
+  mediaItem, 
+  isOpen, 
+  onClose, 
+  onUpdate, 
+  onDelete,
+  disableAnimation = false,
+  zIndexClass = "z-[60]" 
+}) => {
+  const [activeTab, setActiveTab] = useState("details"); // 'details' | 'replace'
+  const[altText, setAltText] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [newFile, setNewFile] = useState(null);
+  
+  // Replacement Options
+  const [replacementType, setReplacementType] = useState("replace_only");
+  const [dateOption, setDateOption] = useState("keep");
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    if (mediaItem) {
+      setAltText(mediaItem.alt_text || "");
+    }
+    setActiveTab("details");
+    setNewFile(null);
+    setReplacementType("replace_only");
+    setDateOption("keep");
+  }, [mediaItem, isOpen]);
+
+  if (!mediaItem) return null;
+
+  const handleAltTextSave = async () => {
+    if (isSubmitting) return; // Prevent double clicks
+    
+    setIsSubmitting(true);
+    const toastId = "media-alt-save"; // Static ID for deduplication
+    toast.loading("Saving metadata...", { id: toastId });
+    
+    try {
+      const result = await authenticatedFetch(
+        "http://localhost/calcpro-api/api/admin/sync_media_alt_text.php",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            media_id: mediaItem.id,
+            new_alt_text: altText,
+            full_url: mediaItem.full_url,
+          }),
+        }
+      );
+      if (result.success) {
+        toast.success(result.message, { id: toastId });
+        onUpdate({ ...mediaItem, alt_text: altText });
+      } else {
+        toast.error(result.message, { id: toastId });
+      }
+    } catch (error) {
+       toast.error("Connection failed.", { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleFileChange = (event) => {
+    const file = event.target.files[0];
+    if (file) setNewFile(file);
+  };
+
+  const handleReplace = async () => {
+    if (isSubmitting) return; // Prevent double clicks
+    
+    const errorToastId = "media-replace-error";
+    if (!newFile) return toast.error("Please select a file.", { id: errorToastId });
+
+    if (replacementType === "replace_only" && newFile.name !== mediaItem.original_name) {
+        return toast.error(`Filename mismatch! Must be '${mediaItem.original_name}'`, { id: errorToastId });
+    }
+
+    if (!window.confirm("This is a permanent action. Overwrite file?")) return;
+
+    setIsSubmitting(true);
+    const toastId = "media-replace-save"; // Static ID for deduplication
+    toast.loading("Processing replacement...", { id: toastId });
+    
+    const formData = new FormData();
+    formData.append("media_id", mediaItem.id);
+    formData.append("replacement_type", replacementType);
+    formData.append("alt_text", altText);
+    formData.append("date_option", dateOption);
+    formData.append("newMediaFile", newFile);
+
+    try {
+      const token = localStorage.getItem("calcpro-admin-token");
+      const response = await fetch(
+        "http://localhost/calcpro-api/api/admin/replace_media.php",
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+        }
+      );
+      const result = await response.json();
+      
+      if (result.success) {
+        toast.success(result.message, { id: toastId });
+        onUpdate({ ...mediaItem, needs_refresh: true });
+        onClose();
+      } else {
+        toast.error(result.message || "Upload failed.", { id: toastId });
+      }
+    } catch (error) {
+      toast.error("Network error.", { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const formatSize = (bytes) => {
+    if (!bytes) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+  };
+
+  return (
+    <Modal 
+      isOpen={isOpen} 
+      onClose={onClose} 
+      title="Media Details" 
+      size="xl" 
+      zIndexClass={zIndexClass} 
+      disableAnimation={disableAnimation}
+    >
+      <div className="flex flex-col md:flex-row h-[70vh] md:h-[500px] overflow-hidden -mx-6 -mb-4 bg-white dark:bg-gray-900">
+        
+        {/* --- LEFT: PREVIEW AREA --- */}
+        <div className="w-full md:w-5/12 bg-gray-100 dark:bg-black/40 border-r border-gray-200 dark:border-gray-700/50 flex flex-col relative group">
+            
+            {/* Subtle Grid Background */}
+            <div className="absolute inset-0 opacity-[0.03] dark:opacity-[0.08]" 
+                 style={{ 
+                     backgroundImage: `linear-gradient(#000 1px, transparent 1px), linear-gradient(90deg, #000 1px, transparent 1px)`, 
+                     backgroundSize: '20px 20px' 
+                 }} 
+            />
+
+            <div className="flex-1 flex items-center justify-center p-6 relative z-10 overflow-hidden">
+                <motion.img 
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    src={mediaItem.full_url} 
+                    alt={altText} 
+                    className="max-w-full max-h-full object-contain shadow-lg rounded-lg" 
+                />
+            </div>
+            
+            <div className="p-4 flex justify-center relative z-10 border-t border-gray-200/50 dark:border-white/5">
+                <a 
+                    href={mediaItem.full_url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 text-[10px] uppercase font-bold tracking-wider text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-white transition-colors"
+                >
+                    <SafeIcon icon={FiMaximize} className="w-3 h-3" /> Open Original
+                </a>
+            </div>
+        </div>
+
+        {/* --- RIGHT: CONTROL PANEL --- */}
+        <div className="w-full md:w-7/12 flex flex-col bg-white dark:bg-gray-900">
+            
+            {/* Tabs */}
+            <div className="px-5 pt-5 pb-3 border-b border-gray-100 dark:border-gray-800">
+                <div className="bg-gray-100 dark:bg-gray-800 p-1 rounded-lg flex">
+                    <button 
+                        onClick={() => setActiveTab('details')}
+                        className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-md transition-all ${
+                            activeTab === 'details' 
+                            ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm' 
+                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                        }`}
+                    >
+                        Metadata
+                    </button>
+                    <button 
+                        onClick={() => setActiveTab('replace')}
+                        className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wide rounded-md transition-all ${
+                            activeTab === 'replace' 
+                            ? 'bg-white dark:bg-gray-700 text-indigo-600 dark:text-indigo-400 shadow-sm' 
+                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                        }`}
+                    >
+                        Replace File
+                    </button>
+                </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5 custom-scrollbar">
+                
+                {/* === METADATA TAB === */}
+                {activeTab === 'details' && (
+                    <div className="space-y-5 animate-fade-in">
+                         {/* Alt Text Input */}
+                         <div>
+                            <div className="flex justify-between items-center mb-1.5">
+                                <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Alt Text</label>
+                            </div>
+                            <textarea 
+                                value={altText}
+                                onChange={(e) => setAltText(e.target.value)}
+                                rows={2}
+                                className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white resize-none transition-shadow focus:bg-white dark:focus:bg-gray-900"
+                                placeholder="Describe this image..."
+                            />
+                         </div>
+
+                         {/* File Info Grid */}
+                         <div>
+                            <h4 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2.5">Properties</h4>
+                            <div className="grid grid-cols-2 gap-2">
+                                <InfoBlock icon={FiFileText} label="Name" value={mediaItem.file_name} />
+                                <InfoBlock icon={FiType} label="Type" value={mediaItem.file_type} />
+                                <InfoBlock icon={FiMaximize} label="Size" value={formatSize(mediaItem.file_size)} />
+                                <InfoBlock icon={FiCalendar} label="Date" value={new Date(mediaItem.created_at).toLocaleDateString()} />
+                            </div>
+                         </div>
+
+                         {/* URL Copy */}
+                         <div>
+                            <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">Public URL</label>
+                            <div className="flex items-center gap-2 p-1.5 pl-3 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+                                <span className="flex-1 text-[11px] font-mono text-gray-600 dark:text-gray-300 truncate">{mediaItem.full_url}</span>
+                                <button 
+                                    onClick={() => { navigator.clipboard.writeText(mediaItem.full_url); toast.success("Link copied!", { id: "copy-url" }); }}
+                                    className="p-1.5 hover:bg-white dark:hover:bg-gray-700 rounded-md text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400 transition-colors shadow-sm"
+                                    title="Copy Link"
+                                >
+                                    <SafeIcon icon={FiClipboard} className="w-3.5 h-3.5" />
+                                </button>
+                            </div>
+                         </div>
+                    </div>
+                )}
+
+                {/* === REPLACE TAB === */}
+                {activeTab === 'replace' && (
+                    <div className="space-y-4 animate-fade-in">
+                         {/* Warning Box */}
+                         <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 flex gap-3 items-start">
+                             <SafeIcon icon={FiAlertTriangle} className="w-4 h-4 text-amber-600 dark:text-amber-500 shrink-0 mt-0.5" />
+                             <div>
+                                 <h5 className="text-xs font-bold text-amber-900 dark:text-amber-100">Permanent Action</h5>
+                                 <p className="text-[11px] text-amber-800 dark:text-amber-200/80 leading-snug">
+                                     Replacing an image cannot be undone. Ensure dimensions match if layout critical.
+                                 </p>
+                             </div>
+                         </div>
+
+                         {/* File Upload */}
+                         <div>
+                             <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-1.5">New File</label>
+                             <div 
+                                onClick={() => fileInputRef.current.click()}
+                                className="border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-4 text-center hover:border-indigo-500 dark:hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/10 cursor-pointer transition-all group"
+                             >
+                                 <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
+                                 <div className="flex items-center justify-center gap-2 text-gray-500 dark:text-gray-400 group-hover:text-indigo-600 dark:group-hover:text-indigo-400">
+                                     <SafeIcon icon={FiUpload} className="w-4 h-4" />
+                                     <span className="text-xs font-bold">{newFile ? newFile.name : "Select File"}</span>
+                                 </div>
+                             </div>
+                         </div>
+
+                         {/* Mode Selection */}
+                         <div>
+                            <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-2">Mode</label>
+                            <div className="space-y-2">
+                                <RadioCard 
+                                    title="Strict Replace" 
+                                    desc="Exact filename match only. Safest."
+                                    value="replace_only"
+                                    selected={replacementType}
+                                    onChange={setReplacementType}
+                                />
+                                <RadioCard 
+                                    title="Update Everything" 
+                                    desc="New filename allowed. Updates all posts."
+                                    value="replace_and_update_links"
+                                    selected={replacementType}
+                                    onChange={setReplacementType}
+                                />
+                            </div>
+                         </div>
+                    </div>
+                )}
+            </div>
+
+            {/* Footer Actions */}
+            <div className="px-5 py-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 flex justify-between items-center gap-3">
+                
+                {/* --- Left: Delete Button --- */}
+                {onDelete && (
+                    <button 
+                        onClick={() => onDelete(mediaItem.id)}
+                        disabled={isSubmitting}
+                        className="flex items-center gap-2 px-4 py-2 text-red-600 hover:bg-red-100 dark:text-red-400 dark:hover:bg-red-900/20 text-xs font-bold rounded-lg transition-colors disabled:opacity-50"
+                        title="Move to Trash"
+                    >
+                        <SafeIcon icon={FiTrash2} className="w-3.5 h-3.5" /> Trash
+                    </button>
+                )}
+
+                {/* --- Right: Primary Actions --- */}
+                <div className="flex gap-3 ml-auto">
+                    <button
+                        onClick={onClose}
+                        className="px-4 py-2 text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-700 text-xs font-bold rounded-lg transition-colors border border-transparent hover:border-gray-200 dark:hover:border-gray-600"
+                    >
+                        Cancel
+                    </button>
+
+                    {activeTab === 'details' ? (
+                        <button 
+                            onClick={handleAltTextSave}
+                            disabled={isSubmitting}
+                            className="flex items-center gap-2 px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm hover:shadow-md transition-all transform active:scale-95 disabled:opacity-50"
+                        >
+                            {isSubmitting ? "Saving..." : <> <SafeIcon icon={FiSave} className="w-3.5 h-3.5" /> Save </>}
+                        </button>
+                    ) : (
+                        <button 
+                            onClick={handleReplace}
+                            disabled={!newFile || isSubmitting}
+                            className="flex items-center gap-2 px-5 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg shadow-sm hover:shadow-md transition-all transform active:scale-95 disabled:opacity-50"
+                        >
+                            <SafeIcon icon={FiRefreshCw} className={`w-3.5 h-3.5 ${isSubmitting ? 'animate-spin' : ''}`} />
+                            {isSubmitting ? "Processing..." : "Confirm"}
+                        </button>
+                    )}
+                </div>
+            </div>
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+export default MediaDetailsModal;

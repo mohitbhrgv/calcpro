@@ -1,0 +1,198 @@
+import React from "react";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const {
+  FiGlobe,
+  FiImage,
+  FiClock,
+  FiAlertOctagon,
+  FiSettings,
+  FiLayout,
+  FiActivity,
+  FiCheckCircle,
+} = FiIcons;
+
+const SettingsHelpModal = ({
+  isOpen,
+  onClose,
+  section = "general",
+  disableAnimation = false,
+}) => {
+  const getTitle = () => {
+    switch (section) {
+      case "permalinks":
+        return "How to Use: Permalinks";
+      case "environment":
+        return "How to Use: System Environment";
+      case "integrations":
+        return "How to Use: Integrations & Scripts";
+      default:
+        return "How to Use: Site Configuration";
+    }
+  };
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={getTitle()}
+      size="lg"
+      disableAnimation={disableAnimation}
+    >
+      {/* 
+          Main Container: Responsive max-height with custom scrollbar 
+          Ensures visibility on all screen sizes.
+      */}
+      <div className="space-y-6 font-sans text-gray-300 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
+        {/* Intro text */}
+        <p className="text-sm leading-relaxed text-gray-400">
+          Site Configuration controls the global identity and look-and-feel of
+          your application. Follow this guide to ensure your brand is
+          represented correctly across all devices and search results.
+        </p>
+
+        {/* Operational Steps Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Step 1: Identity */}
+          <div className="p-5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center gap-3 mb-3">
+                <span className="bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                  STEP 1
+                </span>
+                <h4 className="font-bold text-white text-sm">
+                  Global Identity
+                </h4>
+              </div>
+              <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                Set your **Site Name** and **Description**. These values are
+                used in browser tabs, emails, and as the fallback SEO
+                description.
+              </p>
+            </div>
+            <div className="text-[10px] text-emerald-400/80 italic border-t border-emerald-500/20 pt-2">
+              Tip: Keep the description under 160 characters for SEO.
+            </div>
+          </div>
+
+          {/* Step 2: Branding */}
+          <div className="p-5 rounded-xl border border-blue-500/30 bg-blue-500/5 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center gap-3 mb-3">
+                <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                  STEP 2
+                </span>
+                <h4 className="font-bold text-white text-sm">
+                  Visual Branding
+                </h4>
+              </div>
+              <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                Upload your **Site Logo** and **Icon (Favicon)**. Use the
+                responsive sliders to fine-tune logo heights for Desktop,
+                Tablet, and Mobile.
+              </p>
+            </div>
+            <div className="text-[10px] text-blue-400/80 italic border-t border-blue-500/20 pt-2">
+              Action: Use 'Visual Styles' to adjust dark mode visibility.
+            </div>
+          </div>
+
+          {/* Step 3: Regional */}
+          <div className="p-5 rounded-xl border border-orange-500/30 bg-orange-500/5 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center gap-3 mb-3">
+                <span className="bg-orange-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                  STEP 3
+                </span>
+                <h4 className="font-bold text-white text-sm">Regional Logic</h4>
+              </div>
+              <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                Configure your **Timezone** and **Date/Time formats**. This
+                ensures all logs and published posts show the correct local
+                time.
+              </p>
+            </div>
+            <div className="text-[10px] text-orange-400/80 italic border-t border-orange-500/20 pt-2">
+              Note: Changing timezone affects scheduled content.
+            </div>
+          </div>
+
+          {/* Step 4: Visibility */}
+          <div className="p-5 rounded-xl border border-red-500/30 bg-red-500/5 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center gap-3 mb-3">
+                <span className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                  STEP 4
+                </span>
+                <h4 className="font-bold text-white text-sm">
+                  Maintenance Mode
+                </h4>
+              </div>
+              <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                Toggle **Maintenance Mode** to hide the public site during
+                updates. Only administrators will have access to the dashboard.
+              </p>
+            </div>
+            <div className="text-[10px] text-red-400/80 italic border-t border-red-500/20 pt-2">
+              Caution: Logged out users will see a "Coming Soon" screen.
+            </div>
+          </div>
+        </div>
+
+        {/* Maintenance / Technical Section */}
+        <div className="bg-white/5 rounded-xl p-5 border border-white/10">
+          <h4 className="text-xs font-bold text-gray-200 uppercase tracking-widest mb-4 flex items-center gap-2">
+            <SafeIcon icon={FiSettings} className="text-indigo-400" /> Dynamic
+            Variables
+          </h4>
+          <div className="grid grid-cols-1 gap-4 text-[11px] text-gray-400">
+            <div className="flex gap-3">
+              <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1 shrink-0" />
+              <p>
+                <strong className="text-gray-300">%sitename%:</strong> Replaces
+                the placeholder with your defined Site Name in the footer or
+                meta titles.
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1 shrink-0" />
+              <p>
+                <strong className="text-gray-300">%currentyear%:</strong>{" "}
+                Automatically keeps your copyright dates up to date (e.g.,{" "}
+                {new Date().getFullYear()}).
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Branding Impact Banner */}
+        <div className="flex items-start gap-3 p-4 rounded-lg bg-blue-600/10 border border-blue-500/20 text-blue-400">
+          <SafeIcon
+            icon={FiLayout}
+            className="w-5 h-5 shrink-0 mt-0.5 animate-pulse"
+          />
+          <p className="text-xs leading-relaxed">
+            <strong className="text-blue-300">Identity Strategy:</strong>{" "}
+            Consistent branding increases trust. Ensure your logo has enough
+            contrast in both Light and Dark modes by using the **Brightness**
+            and **Grayscale** filters provided.
+          </p>
+        </div>
+
+        {/* Footer Action */}
+        <div className="flex justify-end pt-2">
+          <button
+            onClick={onClose}
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold rounded-lg transition-all shadow-lg active:scale-95"
+          >
+            I Understand
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+export default SettingsHelpModal;

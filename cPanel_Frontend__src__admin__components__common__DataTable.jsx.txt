@@ -1,0 +1,359 @@
+import React from "react";
+import { motion } from "framer-motion";
+import SafeIcon from "../../../common/SafeIcon";
+import * as HiIcons from "react-icons/fi";
+import * as IoIcons from "react-icons/io5";
+
+const DataTable = ({
+  columns,
+  data,
+  loading = false,
+  searchable = true,
+  pagination = true,
+  onEdit,
+  onDelete,
+  onView,
+  onRestore,
+  customActions = [],
+  deleteIcon = HiIcons.FiTrash2,
+  deleteTooltip = "Delete",
+  currentPage = 1,
+  totalPages = 1,
+  onPageChange,
+  exportUrl = null,
+  searchTerm,
+  onSearchChange,
+  // Slot props
+  headerLeftControls,
+  headerRightControls,
+  // Selection props
+  selectable = false,
+  selectedIds = [],
+  onSelectRow,
+  onSelectAll,
+  // --- NEW: Custom Class for Table Container (enables scroll) ---
+  tableContainerClass = "",
+}) => {
+  const [sortConfig, setSortConfig] = React.useState({
+    key: null,
+    direction: null,
+  });
+
+  const sortedData = React.useMemo(() => {
+    if (!sortConfig.key) return data;
+    return [...data].sort((a, b) => {
+      if (a[sortConfig.key] < b[sortConfig.key])
+        return sortConfig.direction === "ascending" ? -1 : 1;
+      if (a[sortConfig.key] > b[sortConfig.key])
+        return sortConfig.direction === "ascending" ? 1 : -1;
+      return 0;
+    });
+  }, [data, sortConfig]);
+
+  const handleSort = (key) => {
+    let direction = "ascending";
+    if (sortConfig.key === key && sortConfig.direction === "ascending") {
+      direction = "descending";
+    }
+    setSortConfig({ key, direction });
+  };
+
+  const handleExport = () => {
+    if (exportUrl) window.location.href = exportUrl;
+  };
+
+  if (loading) {
+    return (
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+        <div className="animate-pulse space-y-4">
+          <div className="h-10 bg-gray-300 dark:bg-gray-600 rounded w-1/3 mb-6"></div>
+          <div className="h-12 bg-gray-300 dark:bg-gray-600 rounded mb-6"></div>
+          {[...Array(5)].map((_, i) => (
+            <div key={i} className="flex space-x-4">
+              <div className="h-4 bg-gray-300 dark:bg-gray-600 rounded w-1/4"></div>
+              <div className="h-4 bg-gray-300 dark:bg-gray-600 rounded w-1/4"></div>
+              <div className="h-4 bg-gray-300 dark:bg-gray-600 rounded w-1/4"></div>
+              <div className="h-4 bg-gray-300 dark:bg-gray-600 rounded w-1/4"></div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3 }}
+      className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col h-full"
+    >
+      {/* --- HEADER AREA --- */}
+      <div className="p-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          {/* Left Side */}
+          <div className="flex items-center gap-4 flex-wrap flex-1 min-w-0">
+            {searchable && (
+              <div className="relative">
+                <SafeIcon
+                  icon={IoIcons.IoSearchOutline}
+                  className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5"
+                />
+                <input
+                  type="text"
+                  placeholder="Search..."
+                  value={searchTerm}
+                  onChange={(e) => onSearchChange(e.target.value)}
+                  className="w-full sm:w-64 pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition-all"
+                />
+              </div>
+            )}
+            {headerLeftControls}
+          </div>
+
+          {/* Right Side */}
+          <div className="flex items-center space-x-2 justify-end shrink-0">
+            {headerRightControls}
+            {exportUrl && (
+              <button
+                onClick={handleExport}
+                className="px-3 py-1.5 bg-indigo-50 text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-400 rounded-lg text-sm font-medium flex items-center space-x-1 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors"
+              >
+                <SafeIcon
+                  icon={HiIcons.FiDownload}
+                  className="w-4 h-4"
+                />
+                <span>Export</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* --- SCROLLABLE TABLE AREA --- */}
+      {/* 
+          - overflow-x-auto handles horizontal scroll for small screens
+          - tableContainerClass handles vertical scroll (e.g. max-h-[600px] overflow-y-auto)
+      */}
+      <div className={`overflow-x-auto w-full flex-1 ${tableContainerClass}`}>
+        <table className="w-full table-auto align-middle relative border-collapse">
+          <thead className="bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600 sticky top-0 z-20 shadow-sm">
+            <tr>
+              {selectable && (
+                <th className="px-6 py-3 text-left w-12 bg-gray-50 dark:bg-gray-700">
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      checked={
+                        data.length > 0 && selectedIds.length === data.length
+                      }
+                      onChange={onSelectAll}
+                      className="rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 bg-white dark:bg-gray-700"
+                    />
+                  </div>
+                </th>
+              )}
+              {columns.map((column) => (
+                <th
+                  key={column.key}
+                  className={`px-6 py-3 text-left text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider cursor-pointer transition-colors hover:text-gray-700 dark:hover:text-white bg-gray-50 dark:bg-gray-700 ${
+                    column.wrap ? 'min-w-[250px]' : ''
+                  }`}
+                  onClick={() => handleSort(column.key)}
+                >
+                  <div className="flex items-center gap-1">
+                    <span>{column.label}</span>
+                    {sortConfig.key === column.key && (
+                      <SafeIcon
+                        icon={
+                          sortConfig.direction === "ascending"
+                            ? HiIcons.FiChevronUp
+                            : HiIcons.FiChevronDown
+                        }
+                        className="w-3.5 h-3.5"
+                      />
+                    )}
+                  </div>
+                </th>
+              ))}
+              <th className="px-6 py-3 text-right text-xs font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider sticky right-0 bg-gray-50 dark:bg-gray-700 z-30 shadow-l">
+                Actions
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+            {sortedData.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={columns.length + (selectable ? 2 : 1)}
+                  className="px-6 py-10 text-center text-gray-500 dark:text-gray-400"
+                >
+                  <div className="flex flex-col items-center">
+                    <SafeIcon
+                      icon={IoIcons.IoSearchOutline}
+                      className="w-10 h-10 mb-2 opacity-40"
+                    />
+                    <p className="text-lg font-medium">No results found</p>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              sortedData.map((item) => (
+                <tr
+                  key={item.id}
+                  className={`hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors ${
+                    selectedIds.includes(item.id)
+                      ? "bg-blue-50/50 dark:bg-blue-900/20"
+                      : ""
+                  }`}
+                >
+                  {selectable && (
+                    <td className="px-6 py-4">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(item.id)}
+                        onChange={() => onSelectRow(item.id)}
+                        className="rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 bg-white dark:bg-gray-700"
+                      />
+                    </td>
+                  )}
+                  {columns.map((c) => (
+                    <td
+                      key={c.key}
+                      className={`px-6 py-4 text-sm text-gray-900 dark:text-white align-top ${
+                        c.wrap ? "whitespace-normal break-words" : "whitespace-nowrap"
+                      }`}
+                    >
+                      {c.render ? c.render(item[c.key], item) : item[c.key]}
+                    </td>
+                  ))}
+                  {/* Actions Column - Sticky Right */}
+                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium align-top sticky right-0 bg-white dark:bg-gray-800 group-hover:bg-gray-50 dark:group-hover:bg-gray-700/40 transition-colors z-10 border-l border-transparent dark:border-gray-700/50 shadow-l">
+                    <div className="flex items-center justify-end gap-1">
+                      {onRestore && (
+                        <button
+                          onClick={() => onRestore(item)}
+                          className="p-1.5 text-green-600 rounded-md hover:bg-green-100 dark:hover:bg-green-900/30 transition-colors"
+                          title="Restore"
+                        >
+                          <SafeIcon
+                            icon={HiIcons.FiCornerUpLeft}
+                            className="w-4 h-4"
+                          />
+                        </button>
+                      )}
+                      {onView && (
+                        <button
+                          onClick={() => onView(item)}
+                          className="p-1.5 text-blue-600 rounded-md hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+                          title="View"
+                        >
+                          <SafeIcon
+                            icon={HiIcons.FiEye}
+                            className="w-4 h-4"
+                          />
+                        </button>
+                      )}
+                      {onEdit && (
+                        <button
+                          onClick={() => onEdit(item)}
+                          className="p-1.5 text-amber-600 rounded-md hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
+                          title="Edit"
+                        >
+                          <SafeIcon
+                            icon={HiIcons.FiEdit2}
+                            className="w-4 h-4"
+                          />
+                        </button>
+                      )}
+                      {customActions.map((action, index) => (
+                        <button
+                          key={index}
+                          onClick={() => action.handler(item)}
+                          className={`p-1.5 rounded-md transition-colors ${
+                            action.className ||
+                            "text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-600 hover:text-gray-700 dark:hover:text-white"
+                          }`}
+                          title={action.tooltip}
+                        >
+                          <SafeIcon icon={action.icon} className="w-4 h-4" />
+                        </button>
+                      ))}
+                      {onDelete && (
+                        <button
+                          onClick={() => onDelete(item)}
+                          className="p-1.5 text-red-600 rounded-md hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+                          title={deleteTooltip}
+                        >
+                          <SafeIcon icon={deleteIcon} className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {pagination && totalPages > 1 && (
+        <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-b-xl shrink-0">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="text-sm text-gray-700 dark:text-gray-400">
+              Page <span className="font-medium text-gray-900 dark:text-white">{currentPage}</span> of <span className="font-medium text-gray-900 dark:text-white">{totalPages}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onPageChange(1)}
+                disabled={currentPage === 1}
+                className="p-2 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="First Page"
+              >
+                <SafeIcon
+                  icon={HiIcons.FiChevronsLeft}
+                  className="w-4 h-4 text-gray-600 dark:text-gray-300"
+                />
+              </button>
+              <button
+                onClick={() => onPageChange(currentPage - 1)}
+                disabled={currentPage === 1}
+                className="p-2 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Previous"
+              >
+                <SafeIcon
+                  icon={HiIcons.FiChevronLeft}
+                  className="w-4 h-4 text-gray-600 dark:text-gray-300"
+                />
+              </button>
+              <button
+                onClick={() => onPageChange(currentPage + 1)}
+                disabled={currentPage === totalPages}
+                className="p-2 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Next"
+              >
+                <SafeIcon
+                  icon={HiIcons.FiChevronRight}
+                  className="w-4 h-4 text-gray-600 dark:text-gray-300"
+                />
+              </button>
+              <button
+                onClick={() => onPageChange(totalPages)}
+                disabled={currentPage === totalPages}
+                className="p-2 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Last Page"
+              >
+                <SafeIcon
+                  icon={HiIcons.FiChevronsRight}
+                  className="w-4 h-4 text-gray-600 dark:text-gray-300"
+                />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </motion.div>
+  );
+};
+
+export default DataTable;

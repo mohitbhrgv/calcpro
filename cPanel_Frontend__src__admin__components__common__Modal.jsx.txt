@@ -1,0 +1,123 @@
+
+import React from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import SafeIcon from "../../../common/SafeIcon";
+import * as IoIcons from "react-icons/fi";
+
+const Modal = ({
+  isOpen,
+  onClose,
+  title,
+  children,
+  size = "md",
+  type = "default",
+  zIndexClass = "z-50",
+  showCloseButton = true,
+  disableAnimation = false, // New prop
+}) => {
+  const sizeClasses = {
+    sm: "max-w-md",
+    md: "max-w-lg",
+    lg: "max-w-2xl",
+    xl: "max-w-4xl",
+    full: "max-w-6xl",
+  };
+
+  const typeStyles = {
+    default: {
+      header: "border-gray-200 dark:border-gray-700",
+      title: "text-gray-900 dark:text-white",
+    },
+    success: {
+      header:
+        "border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20",
+      title: "text-green-700 dark:text-green-400",
+    },
+    danger: {
+      header: "border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20",
+      title: "text-red-700 dark:text-red-400",
+    },
+    warning: {
+      header:
+        "border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20",
+      title: "text-amber-700 dark:text-amber-400",
+    },
+    info: {
+      header:
+        "border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20",
+      title: "text-blue-700 dark:text-blue-400",
+    },
+  };
+
+  const modalStyle = typeStyles[type] || typeStyles.default;
+
+  const handleBackdropClick = (e) => {
+    if (showCloseButton && e.target === e.currentTarget) {
+      onClose();
+    }
+  };
+
+  // Animation config based on disableAnimation prop
+  const transitionConfig = disableAnimation
+    ? { duration: 0 }
+    : { duration: 0.2 };
+
+  const contentTransition = disableAnimation
+    ? { duration: 0 }
+    : { duration: 0.3, type: "spring", stiffness: 400, damping: 30 };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div
+          className={`fixed inset-0 overflow-y-auto flex items-center justify-center p-4 ${zIndexClass}`}
+          aria-modal="true"
+          role="dialog"
+          onClick={handleBackdropClick}
+        >
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={transitionConfig}
+            className="fixed inset-0 bg-gray-900/75 backdrop-blur-sm"
+          />
+
+          <motion.div
+            initial={disableAnimation ? { opacity: 1, scale: 1, y: 0 } : { opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={disableAnimation ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 20 }}
+            transition={contentTransition}
+            className={`relative bg-white dark:bg-gray-800 rounded-xl text-left overflow-hidden shadow-xl transform transition-all w-full ${sizeClasses[size]}`}
+          >
+            <div
+              className={`flex items-center justify-between px-6 py-4 border-b ${modalStyle.header}`}
+            >
+              <h3
+                className={`text-lg font-medium ${modalStyle.title} flex items-center space-x-2`}
+              >
+                {title}
+              </h3>
+              {showCloseButton && (
+                <button
+                  onClick={onClose}
+                  className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors focus:outline-none focus:ring-2 focus:ring-gray-400 dark:focus:ring-gray-600"
+                  aria-label="Close modal"
+                >
+                  <SafeIcon
+                    icon={IoIcons.FiX} // Ensure FiX is used correctly (mapped from FiIcons in parent usually, but IoIcons here)
+                    name="FiX" // Fallback name
+                    className="w-5 h-5 text-gray-500 dark:text-gray-400"
+                  />
+                </button>
+              )}
+            </div>
+            <div className="px-6 py-4">{children}</div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+};
+
+export default Modal;

@@ -1,0 +1,145 @@
+import React from "react";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiCornerUpRight, FiActivity, FiSettings, FiCheckCircle, FiInfo } = FiIcons;
+
+const RedirectHelpModal = ({ isOpen, onClose, disableAnimation = false }) => {
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="How to Use: Redirection Manager"
+      size="lg"
+      disableAnimation={disableAnimation}
+    >
+      {/* 
+          Main Container: Responsive max-height with custom scrollbar 
+          Ensures visibility on all screen sizes.
+      */}
+      <div className="space-y-6 font-sans text-gray-300 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
+        
+        {/* Intro text */}
+        <p className="text-sm leading-relaxed text-gray-400">
+          Redirects are instructions that tell browsers and search engines where content has moved. 
+          Use this manager to prevent 404 errors and preserve your "Link Juice" (SEO Authority).
+        </p>
+
+        {/* Operational Steps Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          
+          {/* Step 1: Source Path */}
+          <div className="p-5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 1
+                </span>
+                <h4 className="font-bold text-white text-sm">Define Source</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                  Enter the **Original Path** (relative URL) that you want to move. 
+                  Example: <code>old-calculator-path</code>.
+                </p>
+            </div>
+            <div className="text-[10px] text-emerald-400/80 italic border-t border-emerald-500/20 pt-2">
+              Tip: Do not include the domain name, only the slug.
+            </div>
+          </div>
+
+          {/* Step 2: Target Destination */}
+          <div className="p-5 rounded-xl border border-blue-500/30 bg-blue-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 2
+                </span>
+                <h4 className="font-bold text-white text-sm">Set Destination</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                  Provide the **Target URL**. This can be an absolute link <code>https://google.com</code> or another internal path <code>/new-tool</code>.
+                </p>
+            </div>
+            <div className="text-[10px] text-blue-400/80 italic border-t border-blue-500/20 pt-2">
+              Action: Ensure the target page is live before saving.
+            </div>
+          </div>
+
+          {/* Step 3: Action Type */}
+          <div className="p-5 rounded-xl border border-orange-500/30 bg-orange-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-orange-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 3
+                </span>
+                <h4 className="font-bold text-white text-sm">Choose Status</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                  Select <strong className="text-gray-200">301 Permanent</strong> for moved content to pass SEO ranking. Use <strong className="text-gray-200">302/307</strong> for temporary moves.
+                </p>
+            </div>
+            <div className="text-[10px] text-orange-400/80 italic border-t border-orange-500/20 pt-2">
+              Rule: 410 Gone tells Google to remove the link from Index.
+            </div>
+          </div>
+
+          {/* Step 4: Monitoring */}
+          <div className="p-5 rounded-xl border border-red-500/30 bg-red-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 4
+                </span>
+                <h4 className="font-bold text-white text-sm">Manage & Toggle</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                  Use the <strong className="text-gray-200">Active/Inactive</strong> toggle to enable or disable rules without deleting them. 
+                </p>
+            </div>
+            <div className="text-[10px] text-red-400/80 italic border-t border-red-500/20 pt-2">
+              Bulk: Use checkboxes to Delete or Restore multiple rules.
+            </div>
+          </div>
+        </div>
+
+        {/* Maintenance / Technical Section */}
+        <div className="bg-white/5 rounded-xl p-5 border border-white/10">
+            <h4 className="text-xs font-bold text-gray-200 uppercase tracking-widest mb-4 flex items-center gap-2">
+                <SafeIcon icon={FiSettings} className="text-indigo-400" /> Technical Details
+            </h4>
+            <div className="grid grid-cols-1 gap-4 text-[11px] text-gray-400">
+                <div className="flex gap-3">
+                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1 shrink-0" />
+                    <p><strong className="text-gray-300">Automatic Redirects:</strong> In the Site Settings, you can enable auto-redirects which creates rules here automatically when you change a Post or Calculator slug.</p>
+                </div>
+                <div className="flex gap-3">
+                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1 shrink-0" />
+                    <p><strong className="text-gray-300">451 Legal:</strong> Use this specific code if you are required by law to block content in certain jurisdictions.</p>
+                </div>
+            </div>
+        </div>
+
+        {/* SEO Impact Banner */}
+        <div className="flex items-start gap-3 p-4 rounded-lg bg-indigo-600/10 border border-indigo-500/20 text-indigo-400">
+          <SafeIcon icon={FiCornerUpRight} className="w-5 h-5 shrink-0 mt-0.5 animate-pulse" />
+          <p className="text-xs leading-relaxed">
+            <strong className="text-indigo-300">Strategy:</strong> Always check the **404 Monitor** first. If you see a path with many hits, add a redirect for it here immediately to recover lost traffic.
+          </p>
+        </div>
+
+        {/* Footer Action */}
+        <div className="flex justify-end pt-2">
+          <button
+            onClick={onClose}
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold rounded-lg transition-all shadow-lg active:scale-95"
+          >
+            Got it, thanks!
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+export default RedirectHelpModal;

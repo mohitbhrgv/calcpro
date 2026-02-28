@@ -1,0 +1,533 @@
+import React, { useState } from "react";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import MediaLibrary from "../../media/MediaLibrary"; 
+import Toggle from "../../seo/common/Toggle"; // Imported Toggle
+
+const { FiTrash2, FiPlus, FiStar, FiImage, FiX } = FiIcons;
+
+const HomeEditor = ({ content, onContentChange }) => {
+  // --- Local State for Media Library ---
+  const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
+  const [activeTestimonialIndex, setActiveTestimonialIndex] = useState(null);
+
+  // --- Handlers ---
+
+  const handleTextChange = (e) => {
+    const { name, value } = e.target;
+    onContentChange({ ...content, [name]: value });
+  };
+
+  const handleToggleChange = (key, value) => {
+    onContentChange({ ...content, [key]: value });
+  };
+
+  const handleFeatureChange = (index, field, value) => {
+    const newFeatures = content.features ? [...content.features] : [];
+    if (!newFeatures[index]) newFeatures[index] = {};
+    newFeatures[index][field] = value;
+    onContentChange({ ...content, features: newFeatures });
+  };
+
+  // --- Testimonial Handlers ---
+  const handleTestimonialChange = (index, field, value) => {
+    const newTestimonials = content.testimonials ? [...content.testimonials] : [];
+    if (!newTestimonials[index]) newTestimonials[index] = {};
+    newTestimonials[index][field] = value;
+    onContentChange({ ...content, testimonials: newTestimonials });
+  };
+
+  const addTestimonial = () => {
+    const newTestimonials = [
+      ...(content.testimonials || []),
+      { name: "", role: "", rating: "5", text: "", image: "" }
+    ];
+    onContentChange({ ...content, testimonials: newTestimonials });
+  };
+
+  const removeTestimonial = (index) => {
+    if (window.confirm("Remove this testimonial?")) {
+      const newTestimonials = content.testimonials.filter((_, i) => i !== index);
+      onContentChange({ ...content, testimonials: newTestimonials });
+    }
+  };
+
+  // --- Image Handling ---
+  const openMediaForTestimonial = (index) => {
+    setActiveTestimonialIndex(index);
+    setIsMediaLibraryOpen(true);
+  };
+
+  const handleMediaSelect = (media) => {
+    if (activeTestimonialIndex !== null) {
+      handleTestimonialChange(activeTestimonialIndex, "image", media.full_url);
+    }
+    setIsMediaLibraryOpen(false);
+    setActiveTestimonialIndex(null);
+  };
+
+  const removeTestimonialImage = (index) => {
+    handleTestimonialChange(index, "image", "");
+  };
+
+  // --- Helper: Get Initials for Preview ---
+  const getInitials = (name) => {
+    if (!name) return "??";
+    const parts = name.split(" ");
+    if (parts.length === 1) return parts[0].charAt(0).toUpperCase();
+    return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
+  };
+
+  // --- Classes ---
+  const inputClass = "w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 transition-colors";
+  const labelClass = "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1";
+  const sectionClass = "p-5 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-700/30 space-y-4";
+  const headingClass = "font-bold text-lg text-gray-900 dark:text-white mb-2 flex items-center gap-2";
+
+  // Pre-defined defaults for features placeholders
+  const defaultFeatures = [
+      { title: "Institutional Precision", desc: "Verified formulas ensured for 100% accuracy in every result." },
+      { title: "Visual Intelligence", desc: "Interactive charts and reports that turn complex data into visual stories." },
+      { title: "Privacy-First Security", desc: "We use bank-level encryption to keep your private data and history secure." },
+      { title: "Cloud-Synced History", desc: "Save your calculation history and access your data on any device, anytime." }
+  ];
+
+  const featuresToEdit = [0, 1, 2, 3];
+
+  return (
+    <div className="space-y-8">
+      
+      {/* Local Media Library Instance */}
+      <MediaLibrary 
+        isOpen={isMediaLibraryOpen}
+        onClose={() => setIsMediaLibraryOpen(false)}
+        onSelectMedia={handleMediaSelect}
+        zIndexClass="z-[9999]"
+      />
+      
+      {/* 1. Hero Section */}
+      <div className={sectionClass}>
+        <h3 className={headingClass}>Hero Section</h3>
+        <div>
+          <label className={labelClass}>Badge Text</label>
+          <input
+            type="text"
+            name="heroBadge"
+            value={content.heroBadge || ""}
+            onChange={handleTextChange}
+            className={inputClass}
+            placeholder="Professional Grade"
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Main Heading</label>
+          <input
+            type="text"
+            name="mainHeading"
+            value={content.mainHeading || ""}
+            onChange={handleTextChange}
+            className={inputClass}
+            placeholder="Professional Calculators for Every Need"
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Subheading</label>
+          <textarea
+            name="subheading"
+            value={content.subheading || ""}
+            onChange={handleTextChange}
+            rows="3"
+            className={inputClass}
+            placeholder="Access 20+ premium calculators..."
+          />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+             <div>
+                <label className={labelClass}>Primary Button</label>
+                <input
+                    type="text"
+                    name="heroBtnStart"
+                    value={content.heroBtnStart || ""}
+                    onChange={handleTextChange}
+                    className={inputClass}
+                    placeholder="Start Calculating"
+                />
+             </div>
+             <div>
+                <label className={labelClass}>Dashboard Button</label>
+                <input
+                    type="text"
+                    name="heroBtnDashboard"
+                    value={content.heroBtnDashboard || ""}
+                    onChange={handleTextChange}
+                    className={inputClass}
+                    placeholder="Go to Dashboard"
+                />
+             </div>
+             <div>
+                <label className={labelClass}>Register Button</label>
+                <input
+                    type="text"
+                    name="heroBtnRegister"
+                    value={content.heroBtnRegister || ""}
+                    onChange={handleTextChange}
+                    className={inputClass}
+                    placeholder="Create Free Account"
+                />
+             </div>
+        </div>
+      </div>
+
+      {/* 2. Popular Calculators */}
+      <div className={sectionClass}>
+        <h3 className={headingClass}>Popular Calculators</h3>
+        <div>
+          <label className={labelClass}>Badge Text</label>
+          <input
+            type="text"
+            name="popCalcBadge"
+            value={content.popCalcBadge || ""}
+            onChange={handleTextChange}
+            className={inputClass}
+            placeholder="Most Used Tools"
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Section Heading</label>
+          <input
+            type="text"
+            name="popularCalculatorsHeading"
+            value={content.popularCalculatorsHeading || ""}
+            onChange={handleTextChange}
+            className={inputClass}
+            placeholder="Popular Calculators"
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Section Subheading</label>
+          <textarea
+            name="popularCalculatorsSubheading"
+            value={content.popularCalculatorsSubheading || ""}
+            onChange={handleTextChange}
+            rows="2"
+            className={inputClass}
+            placeholder="Choose from our most used professional calculators..."
+          />
+        </div>
+         <div>
+          <label className={labelClass}>Button Label</label>
+          <input
+            type="text"
+            name="popCalcBtn"
+            value={content.popCalcBtn || ""}
+            onChange={handleTextChange}
+            className={inputClass}
+            placeholder="View All Tools"
+          />
+        </div>
+      </div>
+
+      {/* 3. Features (Why Choose Us) */}
+      <div className={sectionClass}>
+        <h3 className={headingClass}>Features Section</h3>
+        <div>
+          <label className={labelClass}>Badge Text</label>
+          <input
+            type="text"
+            name="featuresBadge"
+            value={content.featuresBadge || ""}
+            onChange={handleTextChange}
+            className={inputClass}
+            placeholder="Why Choose CalcPro"
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Section Heading</label>
+          <input
+            type="text"
+            name="whyChooseUsHeading"
+            value={content.whyChooseUsHeading || ""}
+            onChange={handleTextChange}
+            className={inputClass}
+            placeholder="Engineered for Real-World Use"
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Section Subheading</label>
+          <textarea
+            name="whyChooseUsSubheading"
+            value={content.whyChooseUsSubheading || ""}
+            onChange={handleTextChange}
+            rows="2"
+            className={inputClass}
+            placeholder="From daily estimates to critical decisions..."
+          />
+        </div>
+        
+        <div className="space-y-4 pt-2">
+            {featuresToEdit.map((index) => {
+                const feat = content.features?.[index] || {};
+                const placeholder = defaultFeatures[index];
+                return (
+                    <div key={index} className="pl-4 border-l-2 border-indigo-200 dark:border-indigo-800 space-y-2">
+                        <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase">Feature {index + 1}</label>
+                        <input
+                            type="text"
+                            value={feat.title || ""}
+                            onChange={(e) => handleFeatureChange(index, "title", e.target.value)}
+                            placeholder={placeholder.title}
+                            className={inputClass}
+                        />
+                        <textarea
+                            value={feat.description || ""}
+                            onChange={(e) => handleFeatureChange(index, "description", e.target.value)}
+                            placeholder={placeholder.desc}
+                            rows="2"
+                            className={inputClass}
+                        />
+                    </div>
+                );
+            })}
+        </div>
+      </div>
+
+      {/* 4. Testimonials (Updated for Toggle and Dynamic List) */}
+      <div className={sectionClass}>
+        <div className="flex items-center justify-between mb-2">
+            <h3 className="font-bold text-lg text-gray-900 dark:text-white flex items-center gap-2">
+                Testimonials Section
+            </h3>
+            {/* Toggle Switch */}
+            <div className="flex items-center gap-3">
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                    {content.showTestimonials !== false ? 'Shown' : 'Hidden'}
+                </span>
+                <Toggle 
+                    checked={content.showTestimonials !== false} 
+                    onChange={(val) => handleToggleChange('showTestimonials', val)} 
+                />
+            </div>
+        </div>
+
+        {/* Gray out section if disabled */}
+        <div className={content.showTestimonials === false ? "opacity-50 pointer-events-none grayscale transition-all" : "transition-all"}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className={labelClass}>Badge Text</label>
+                  <input
+                    type="text"
+                    name="testimonialsBadge"
+                    value={content.testimonialsBadge || ""}
+                    onChange={handleTextChange}
+                    className={inputClass}
+                    placeholder="Trusted by Pros"
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>Section Heading</label>
+                  <input
+                    type="text"
+                    name="testimonialsHeading"
+                    value={content.testimonialsHeading || ""}
+                    onChange={handleTextChange}
+                    className={inputClass}
+                    placeholder="What Our Users Say"
+                  />
+                </div>
+            </div>
+            <div className="mt-4">
+              <label className={labelClass}>Section Subheading</label>
+              <textarea
+                name="testimonialsSubheading"
+                value={content.testimonialsSubheading || ""}
+                onChange={handleTextChange}
+                rows="2"
+                className={inputClass}
+                placeholder="Join thousands of professionals..."
+              />
+            </div>
+
+            {/* Dynamic Testimonials List */}
+            <div className="space-y-4 pt-4 border-t border-gray-200 dark:border-gray-600 mt-4">
+                <h4 className="font-bold text-sm text-gray-700 dark:text-gray-200 flex items-center gap-2">
+                    User Reviews <span className="text-xs font-normal text-gray-500">({content.testimonials?.length || 0})</span>
+                </h4>
+                
+                {(content.testimonials || []).map((t, index) => (
+                    <div key={index} className="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 relative group">
+                        <button
+                            type="button"
+                            onClick={() => removeTestimonial(index)}
+                            className="absolute top-2 right-2 p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors z-10"
+                            title="Remove Testimonial"
+                        >
+                            <SafeIcon icon={FiTrash2} className="w-4 h-4" />
+                        </button>
+                        
+                        <div className="flex flex-col md:flex-row gap-6">
+                            {/* Image / Avatar Section */}
+                            <div className="flex-shrink-0 flex flex-col items-center gap-2 w-full md:w-auto">
+                                <div className="w-16 h-16 rounded-full overflow-hidden border-2 border-gray-100 dark:border-gray-700 bg-gray-100 dark:bg-gray-700 relative group/avatar">
+                                    {t.image ? (
+                                        <img src={t.image} alt={t.name} className="w-full h-full object-cover" />
+                                    ) : (
+                                        <div className="w-full h-full flex items-center justify-center text-gray-400 font-bold text-lg bg-gray-100 dark:bg-gray-700">
+                                            {getInitials(t.name)}
+                                        </div>
+                                    )}
+                                    
+                                    {/* Hover Overlay for Change/Remove */}
+                                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover/avatar:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                                         <button 
+                                            type="button"
+                                            onClick={() => openMediaForTestimonial(index)}
+                                            className="text-white hover:text-indigo-300"
+                                            title="Change Image"
+                                         >
+                                             <SafeIcon icon={FiImage} className="w-4 h-4" />
+                                         </button>
+                                         {t.image && (
+                                             <button 
+                                                type="button"
+                                                onClick={() => removeTestimonialImage(index)}
+                                                className="text-white hover:text-red-400"
+                                                title="Remove Image"
+                                             >
+                                                 <SafeIcon icon={FiX} className="w-4 h-4" />
+                                             </button>
+                                         )}
+                                    </div>
+                                </div>
+                                
+                                {!t.image && (
+                                    <button
+                                        type="button"
+                                        onClick={() => openMediaForTestimonial(index)}
+                                        className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
+                                    >
+                                        Add Photo
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* Fields */}
+                            <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-3">
+                                    <div>
+                                        <label className="text-xs font-bold text-gray-500 uppercase">User Name</label>
+                                        <input
+                                            type="text"
+                                            value={t.name || ""}
+                                            onChange={(e) => handleTestimonialChange(index, "name", e.target.value)}
+                                            placeholder="Jane Doe"
+                                            className={`mt-1 ${inputClass} py-1.5 text-sm`}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-bold text-gray-500 uppercase">Profession</label>
+                                        <input
+                                            type="text"
+                                            value={t.role || ""}
+                                            onChange={(e) => handleTestimonialChange(index, "role", e.target.value)}
+                                            placeholder="Financial Analyst"
+                                            className={`mt-1 ${inputClass} py-1.5 text-sm`}
+                                        />
+                                    </div>
+                                     <div>
+                                        <label className="text-xs font-bold text-gray-500 uppercase flex items-center gap-1">
+                                            Rating <SafeIcon icon={FiStar} className="w-3 h-3 text-amber-500 fill-current" />
+                                        </label>
+                                        <select 
+                                            value={t.rating || "5"}
+                                            onChange={(e) => handleTestimonialChange(index, "rating", e.target.value)}
+                                            className={`mt-1 ${inputClass} py-1.5 text-sm`}
+                                        >
+                                            <option value="5">5 Stars</option>
+                                            <option value="4">4 Stars</option>
+                                            <option value="3">3 Stars</option>
+                                            <option value="2">2 Stars</option>
+                                            <option value="1">1 Star</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div className="h-full">
+                                    <label className="text-xs font-bold text-gray-500 uppercase">Review Text</label>
+                                    <textarea
+                                        value={t.text || ""}
+                                        onChange={(e) => handleTestimonialChange(index, "text", e.target.value)}
+                                        rows="5"
+                                        placeholder="The tools are incredibly accurate..."
+                                        className={`mt-1 ${inputClass} text-sm resize-none h-[calc(100%-24px)]`}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                ))}
+
+                <button
+                    type="button"
+                    onClick={addTestimonial}
+                    className="w-full py-2 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl text-gray-500 dark:text-gray-400 font-medium hover:border-indigo-500 hover:text-indigo-500 dark:hover:border-indigo-400 dark:hover:text-indigo-400 transition-colors flex items-center justify-center gap-2 text-sm"
+                >
+                    <SafeIcon icon={FiPlus} className="w-4 h-4" />
+                    <span>Add Testimonial</span>
+                </button>
+            </div>
+        </div>
+      </div>
+
+      {/* 5. Blog/Insights */}
+      <div className={sectionClass}>
+        <h3 className={headingClass}>Blog / Insights Section</h3>
+        <div>
+          <label className={labelClass}>Badge Text</label>
+          <input
+            type="text"
+            name="blogBadge"
+            value={content.blogBadge || ""}
+            onChange={handleTextChange}
+            className={inputClass}
+            placeholder="Knowledge Hub"
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Section Heading</label>
+          <input
+            type="text"
+            name="blogSectionHeading"
+            value={content.blogSectionHeading || ""}
+            onChange={handleTextChange}
+            className={inputClass}
+            placeholder="Latest Insights"
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Section Subheading</label>
+          <textarea
+            name="blogSectionSubheading"
+            value={content.blogSectionSubheading || ""}
+            onChange={handleTextChange}
+            rows="2"
+            className={inputClass}
+            placeholder="Stay ahead with expert financial advice..."
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Button Label</label>
+          <input
+            type="text"
+            name="blogBtn"
+            value={content.blogBtn || ""}
+            onChange={handleTextChange}
+            className={inputClass}
+            placeholder="View all articles"
+          />
+        </div>
+      </div>
+
+    </div>
+  );
+};
+
+export default HomeEditor;

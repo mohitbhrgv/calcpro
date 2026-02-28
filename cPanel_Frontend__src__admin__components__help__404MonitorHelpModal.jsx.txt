@@ -1,0 +1,143 @@
+import React from "react";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiActivity, FiShield, FiCornerUpRight, FiSearch } = FiIcons;
+
+const Monitor404HelpModal = ({ isOpen, onClose, disableAnimation = false }) => {
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="How to Use: 404 Monitor"
+      size="lg"
+      disableAnimation={disableAnimation}
+    >
+      {/* 
+          FIX: Added max-height and overflow-y-auto to the main container 
+          to ensure it fits on all laptop and mobile screens. 
+      */}
+      <div className="space-y-6 font-sans text-gray-300 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
+        {/* Intro text */}
+        <p className="text-sm leading-relaxed text-gray-400">
+          The 404 Monitor is your first line of defense against "Page Not Found" errors. 
+          Follow this guide to turn dead ends into valuable traffic.
+        </p>
+
+        {/* Operational Steps Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          
+          {/* Step 1: Identify Priority */}
+          <div className="p-5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 1
+                </span>
+                <h4 className="font-bold text-white text-sm">Spot High Traffic</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                Sort the table by <strong className="text-gray-200">Hits</strong>. A high hit count on a URI means many users are clicking a broken link.
+                </p>
+            </div>
+            <div className="text-[10px] text-emerald-400/80 italic border-t border-emerald-500/20 pt-2">
+              Action: Fix these first to immediately improve user experience.
+            </div>
+          </div>
+
+          {/* Step 2: Trace the Source */}
+          <div className="p-5 rounded-xl border border-blue-500/30 bg-blue-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 2
+                </span>
+                <h4 className="font-bold text-white text-sm">Investigate Referer</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                Check the <strong className="text-gray-200">Referer</strong> column. If the source is your own site, you have a typo in an internal link.
+                </p>
+            </div>
+            <div className="text-[10px] text-blue-400/80 italic border-t border-blue-500/20 pt-2">
+              Action: Edit the referring page and correct the broken link.
+            </div>
+          </div>
+
+          {/* Step 3: Apply Fixes */}
+          <div className="p-5 rounded-xl border border-orange-500/30 bg-orange-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-orange-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 3
+                </span>
+                <h4 className="font-bold text-white text-sm">Create Redirects</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                If the broken link is from an external site or a deleted page, click the <SafeIcon icon={FiCornerUpRight} className="inline w-3 h-3 mx-1 text-orange-400"/> icon.
+                </p>
+            </div>
+            <div className="text-[10px] text-orange-400/80 italic border-t border-orange-500/20 pt-2">
+              Action: Redirect the old path to a relevant new one (301 Permanent).
+            </div>
+          </div>
+
+          {/* Step 4: Cleanup Noise */}
+          <div className="p-5 rounded-xl border border-red-500/30 bg-red-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 4
+                </span>
+                <h4 className="font-bold text-white text-sm">Filter Bot Activity</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                Are you seeing strange files like <code>.php</code> or <code>/wp-admin/</code>? These are usually automated bots scanning your site.
+                </p>
+            </div>
+            <div className="text-[10px] text-red-400/80 italic border-t border-red-500/20 pt-2">
+              Action: Add these paths to 'Exclusions' in Settings to hide them.
+            </div>
+          </div>
+        </div>
+
+        {/* Maintenance Guide Section */}
+        <div className="bg-white/5 rounded-xl p-5 border border-white/10">
+            <h4 className="text-xs font-bold text-gray-200 uppercase tracking-widest mb-4 flex items-center gap-2">
+                <SafeIcon icon={FiShield} className="text-indigo-400" /> Maintenance Tips
+            </h4>
+            <div className="grid grid-cols-1 gap-4 text-[11px] text-gray-400">
+                <div className="flex gap-3">
+                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1 shrink-0" />
+                    <p><strong className="text-gray-300">Ignore Query Parameters:</strong> Recommended for most sites. It keeps your logs clean by ignoring everything after the '?' in a URL.</p>
+                </div>
+                <div className="flex gap-3">
+                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1 shrink-0" />
+                    <p><strong className="text-gray-300">Log Limit:</strong> Keep this around 100-500. It ensures your database stays fast by automatically deleting the oldest, irrelevant errors.</p>
+                </div>
+            </div>
+        </div>
+
+        {/* SEO Strategy Banner */}
+        <div className="flex items-start gap-3 p-4 rounded-lg bg-blue-600/10 border border-blue-500/20 text-blue-400">
+          <SafeIcon icon={FiSearch} className="w-5 h-5 shrink-0 mt-0.5" />
+          <p className="text-xs leading-relaxed">
+            <strong className="text-blue-300">SEO Strategy:</strong> A clean 404 Monitor is a sign of a healthy site. Try to resolve high-hit errors weekly to ensure Google crawlers don't waste your "crawl budget" on dead pages.
+          </p>
+        </div>
+
+        {/* Footer Action */}
+        <div className="flex justify-end pt-2">
+          <button
+            onClick={onClose}
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold rounded-lg transition-all shadow-lg active:scale-95"
+          >
+            I Understand
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+export default Monitor404HelpModal;

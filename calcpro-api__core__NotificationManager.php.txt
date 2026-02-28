@@ -1,0 +1,66 @@
+<?php
+/**
+ * NotificationManager Class
+ * 
+ * Centralizes the logic for creating system-wide notifications for administrators.
+ * Handles validation and secure database insertion.
+ */
+class NotificationManager {
+    private $conn;
+
+    public function __construct($dbConnection) {
+        $this->conn = $dbConnection;
+    }
+
+    /**
+     * Create a new notification.
+     * 
+     * @param string $type      'security', 'user', 'milestone', 'system'
+     * @param string $severity  'info', 'warning', 'critical'
+     * @param string $title     Short headline
+     * @param string $message   Detailed description
+     * @param string|null $link Optional relative URL for admin navigation
+     * @return bool True on success
+     */
+    public function create($type, $severity, $title, $message, $link = null) {
+        // 1. Strict Input Validation
+        $allowedTypes = ['security', 'user', 'milestone', 'system'];
+        $allowedSeverities = ['info', 'warning', 'critical'];
+
+        if (!in_array($type, $allowedTypes)) $type = 'system';
+        if (!in_array($severity, $allowedSeverities)) $severity = 'info';
+
+        // 2. Prepare Statement
+        $sql = "INSERT INTO admin_notifications (type, severity, title, message, link, created_at) VALUES (?, ?, ?, ?, ?, NOW())";
+        $stmt = $this->conn->prepare($sql);
+
+        if (!$stmt) {
+            error_log("NotificationManager Prepare Error: " . $this->conn->error);
+            return false;
+        }
+
+        // 3. Bind & Execute
+        $stmt->bind_param("sssss", $type, $severity, $title, $message, $link);
+        $result = $stmt->execute();
+        
+        if (!$result) {
+            error_log("NotificationManager Execute Error: " . $stmt->error);
+        }
+
+        $stmt->close();
+        return $result;
+    }
+
+    /**
+     * Optional: Prune old notifications to keep the table light.
+     * Can be called periodically via cron or probability.
+     */
+    public function pruneOldNotifications($days = 30) {
+        $sql = "DELETE FROM admin_notifications WHERE created_at < NOW() - INTERVAL ? DAY AND is_read = 1";
+        $stmt = $this->conn->prepare($sql);
+        $stmt->bind_param("i", $days);
+        $stmt->execute();
+        $stmt->close();
+    }
+}
+?>

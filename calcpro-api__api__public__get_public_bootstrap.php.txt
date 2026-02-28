@@ -1,0 +1,220 @@
+<?php
+// File: calcpro-api/api/public/get_public_bootstrap.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+// Helper to fetch Alt Text by filename
+function getMediaAlt($conn, $url) {
+    if (empty($url)) return null;
+    $filename = basename($url);
+    $stmt = $conn->prepare("SELECT alt_text FROM media WHERE file_name = ? LIMIT 1");
+    if (!$stmt) return null;
+    $stmt->bind_param("s", $filename);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $alt = null;
+    if ($row = $res->fetch_assoc()) {
+        $alt = $row['alt_text'];
+    }
+    $stmt->close();
+    return $alt;
+}
+
+try {
+    // --- 1. Fetch Public Settings ---
+    $settings_sql = "SELECT setting_key, setting_value FROM settings";
+    $settings_result = $conn->query($settings_sql);
+    $settings = [];
+    
+    if ($settings_result) {
+        while ($row = $settings_result->fetch_assoc()) {
+            $key = $row['setting_key'];
+            $val = $row['setting_value'];
+
+            if ($val === 'true') {
+                $val = true;
+            } elseif ($val === 'false') {
+                $val = false;
+            } elseif (is_numeric($val)) {
+                $val = $val + 0;
+            }
+
+            $settings[$key] = $val;
+        }
+    }
+
+    // --- ENHANCEMENT: Fetch Global OG Image Alt ---
+    if (!empty($settings['seo_social_default_og_image'])) {
+        $settings['seo_social_default_og_image_alt'] = getMediaAlt($conn, $settings['seo_social_default_og_image']);
+    }
+
+    // --- 2. Fetch All Published Page Content ---
+    $pages_sql = "
+        SELECT 
+            id, title, slug, page_key, content_json, 
+            meta_title, meta_description, focus_keywords,
+            canonical_url,
+            no_index, no_follow, no_archive, no_image_index, no_snippet,
+            max_snippet, max_video_preview, max_image_preview,
+            og_title, og_description, og_image
+        FROM pages 
+        WHERE status = 'published'
+    ";
+    $pages_result = $conn->query($pages_sql);
+    $pages_content = [];
+    if ($pages_result) {
+        while ($row = $pages_result->fetch_assoc()) {
+            if (!empty($row['page_key'])) {
+                $pages_content[$row['page_key']] = [
+                    'id' => (int)$row['id'],
+                    'title' => $row['title'],
+                    'slug' => $row['slug'],
+                    'content' => json_decode($row['content_json'] ?? '{}'),
+                    'meta_title' => $row['meta_title'],
+                    'meta_description' => $row['meta_description'],
+                    'focus_keywords' => $row['focus_keywords'],
+                    'canonical_url' => $row['canonical_url'],
+                    
+                    'no_index' => $row['no_index'] === null ? null : (bool)$row['no_index'],
+                    'no_follow' => $row['no_follow'] === null ? null : (bool)$row['no_follow'],
+                    'no_archive' => $row['no_archive'] === null ? null : (bool)$row['no_archive'],
+                    'no_image_index' => $row['no_image_index'] === null ? null : (bool)$row['no_image_index'],
+                    'no_snippet' => $row['no_snippet'] === null ? null : (bool)$row['no_snippet'],
+
+                    'max_snippet' => $row['max_snippet'] !== null ? (int)$row['max_snippet'] : null,
+                    'max_video_preview' => $row['max_video_preview'] !== null ? (int)$row['max_video_preview'] : null,
+                    'max_image_preview' => $row['max_image_preview'],
+
+                    'og_title' => $row['og_title'],
+                    'og_description' => $row['og_description'],
+                    'og_image' => $row['og_image']
+                ];
+            }
+        }
+    }
+
+    // --- 3. Fetch All Published Posts ---
+    $api_base_url = $_ENV['API_PUBLIC_URL'];
+    $posts_sql = "
+        SELECT
+            p.id, p.title, p.slug, p.excerpt, p.read_time, p.created_at as published_date, p.updated_at,
+            p.focus_keywords,
+            a.name as author_name,
+            c_prim.name as primary_category_name,
+            c_prim.slug as primary_category_slug,
+            (SELECT GROUP_CONCAT(c.slug SEPARATOR ',') FROM categories c JOIN post_categories pc ON c.id = pc.category_id WHERE pc.post_id = p.id) as category_slugs,
+            m.upload_path as featured_image_path
+        FROM posts p
+        LEFT JOIN admins a ON p.author_id = a.id
+        LEFT JOIN media m ON p.featured_image_id = m.id
+        LEFT JOIN categories c_prim ON p.primary_category_id = c_prim.id
+        WHERE p.status = 'published'
+        GROUP BY p.id
+        ORDER BY p.created_at DESC
+    ";
+    $posts_result = $conn->query($posts_sql);
+    $posts_frontend = [];
+    if ($posts_result) {
+        while ($post_db = $posts_result->fetch_assoc()) {
+            $posts_frontend[] = [
+                'id' => (int)$post_db['id'],
+                'title' => $post_db['title'],
+                'slug' => $post_db['slug'],
+                'excerpt' => $post_db['excerpt'],
+                'read_time' => (int)$post_db['read_time'],
+                'published_date' => $post_db['published_date'],
+                'updated_at' => $post_db['updated_at'],
+                'focus_keywords' => $post_db['focus_keywords'],
+                'author_name' => $post_db['author_name'],
+                'primary_category_name' => $post_db['primary_category_name'],
+                'primary_category_slug' => $post_db['primary_category_slug'],
+                'category_slugs' => $post_db['category_slugs'],
+                'featured_image_url' => !empty($post_db['featured_image_path']) ? rtrim($api_base_url, '/') . '/' . $post_db['featured_image_path'] : null
+            ];
+        }
+    }
+
+    // --- 4. Fetch Blog Categories ---
+    $blog_categories_sql = "
+        SELECT DISTINCT c.id, c.name, c.slug, c.parent_id, c.description
+        FROM categories c
+        JOIN post_categories pc ON c.id = pc.category_id
+        JOIN posts p ON pc.post_id = p.id
+        WHERE p.status = 'published'
+        ORDER BY c.parent_id ASC, c.name ASC
+    ";
+    $blog_categories_result = $conn->query($blog_categories_sql);
+    $blog_categories = [];
+    if ($blog_categories_result) {
+        while ($row = $blog_categories_result->fetch_assoc()) {
+            $row['id'] = (int)$row['id'];
+            $row['parent_id'] = $row['parent_id'] ? (int)$row['parent_id'] : null;
+            $blog_categories[] = $row;
+        }
+    }
+
+    // --- 5. Fetch All Published Calculators ---
+    $calculators_sql = "
+        SELECT c.id, c.slug, c.name, c.is_featured,
+               c.primary_category_id, c.focus_keywords,
+               c_prim.name as primary_category_name,
+               c_prim.slug as primary_category_slug,
+               GROUP_CONCAT(cc.name SEPARATOR ', ') as category_names,
+               GROUP_CONCAT(cc.slug SEPARATOR ',') as category_slugs
+        FROM calculators c
+        LEFT JOIN calculator_category_assignments cca ON c.id = cca.calculator_id
+        LEFT JOIN calculator_categories cc ON cca.category_id = cc.id
+        LEFT JOIN calculator_categories c_prim ON c.primary_category_id = c_prim.id
+        WHERE c.status = 'published'
+        GROUP BY c.id
+        ORDER BY c.name ASC
+    ";
+    $calculators_result = $conn->query($calculators_sql);
+    $calculators = [];
+    if ($calculators_result) {
+        while($calc = $calculators_result->fetch_assoc()) {
+            $calc['is_featured'] = (bool)$calc['is_featured'];
+            $calculators[] = $calc;
+        }
+    }
+
+    // --- 6. Fetch Calculator Categories ---
+    $calculator_categories_sql = "
+        SELECT DISTINCT cc.id, cc.name, cc.slug, cc.parent_id, cc.description
+        FROM calculator_categories cc
+        JOIN calculator_category_assignments cca ON cc.id = cca.category_id
+        JOIN calculators c ON cca.calculator_id = c.id
+        WHERE c.status = 'published'
+        ORDER BY cc.parent_id ASC, cc.name ASC
+    ";
+    $calculator_categories_result = $conn->query($calculator_categories_sql);
+    $calculator_categories = [];
+    if ($calculator_categories_result) {
+        while ($row = $calculator_categories_result->fetch_assoc()) {
+            $row['id'] = (int)$row['id'];
+            $row['parent_id'] = $row['parent_id'] ? (int)$row['parent_id'] : null;
+            $calculator_categories[] = $row;
+        }
+    }
+
+    // --- 7. Assemble Data ---
+    $bootstrap_data = [
+        'settings' => $settings,
+        'pages' => $pages_content,
+        'posts' => $posts_frontend,
+        'blogCategories' => $blog_categories,
+        'calculators' => $calculators,
+        'calculatorCategories' => $calculator_categories
+    ];
+    
+    sendResponse(true, $bootstrap_data, 'Public content bootstrapped successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_public_bootstrap.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching initial site data.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

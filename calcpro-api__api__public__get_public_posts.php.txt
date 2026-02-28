@@ -1,0 +1,161 @@
+<?php
+// File: calcpro-api/api/public/get_public_posts.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+try {
+    // --- 1. Parameters ---
+    $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+    $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 9;
+    $offset = ($page - 1) * $limit;
+    
+    $tagSlug = isset($_GET['tag']) ? trim($_GET['tag']) : null;
+    $tagDetails = null;
+
+    // --- 2. VALIDATION: Check if Tag Exists ---
+    if ($tagSlug) {
+        $tagCheckSql = "SELECT id, name, slug FROM tags WHERE slug = ?";
+        $stmtCheck = $conn->prepare($tagCheckSql);
+        $stmtCheck->bind_param("s", $tagSlug);
+        $stmtCheck->execute();
+        $tagResult = $stmtCheck->get_result();
+
+        if ($tagResult->num_rows === 0) {
+            $stmtCheck->close();
+            // Return 404 if tag doesn't exist
+            sendResponse(false, null, 'Tag not found.', 404, 'NOT_FOUND');
+        }
+
+        $tagDetails = $tagResult->fetch_assoc();
+        $stmtCheck->close();
+    }
+
+    // --- 3. Build Query ---
+    $whereConditions = ["p.status = 'published'"];
+    $params = [];
+    $types = "";
+    $joinClause = "";
+
+    if ($tagSlug) {
+        $joinClause = "
+            JOIN post_tags pt ON p.id = pt.post_id
+            JOIN tags t ON pt.tag_id = t.id
+        ";
+        $whereConditions[] = "t.slug = ?";
+        $params[] = $tagSlug;
+        $types .= "s";
+    }
+
+    $whereSql = implode(" AND ", $whereConditions);
+
+    // --- 4. Get Total Count ---
+    $countSql = "
+        SELECT COUNT(DISTINCT p.id) as total 
+        FROM posts p
+        {$joinClause}
+        WHERE {$whereSql}
+    ";
+    
+    $stmtCount = $conn->prepare($countSql);
+    if (!empty($params)) {
+        $stmtCount->bind_param($types, ...$params);
+    }
+    $stmtCount->execute();
+    $totalRecords = $stmtCount->get_result()->fetch_assoc()['total'];
+    $totalPages = ceil($totalRecords / $limit);
+    $stmtCount->close();
+
+    // --- 5. Main Query ---
+    // Added p.updated_at
+    $sql = "
+        SELECT
+            p.id,
+            p.title,
+            p.slug,
+            p.excerpt,
+            p.read_time,
+            p.created_at as published_date,
+            p.updated_at,
+            a.name as author_name,
+            (
+                SELECT GROUP_CONCAT(c.name SEPARATOR ', ')
+                FROM categories c
+                JOIN post_categories pc ON c.id = pc.category_id
+                WHERE pc.post_id = p.id
+            ) as category_name,
+            (
+                SELECT GROUP_CONCAT(c.slug SEPARATOR ',')
+                FROM categories c
+                JOIN post_categories pc ON c.id = pc.category_id
+                WHERE pc.post_id = p.id
+            ) as category_slugs,
+            m.upload_path as featured_image_path
+        FROM
+            posts p
+        LEFT JOIN
+            admins a ON p.author_id = a.id
+        LEFT JOIN
+            media m ON p.featured_image_id = m.id
+        {$joinClause}
+        WHERE
+            {$whereSql}
+        GROUP BY
+            p.id
+        ORDER BY
+            p.created_at DESC
+        LIMIT ? OFFSET ?
+    ";
+
+    $stmt = $conn->prepare($sql);
+    
+    // Add pagination params
+    $params[] = $limit;
+    $params[] = $offset;
+    $types .= "ii";
+
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $posts_db = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    
+    // --- 6. Transform Data ---
+    $api_base_url = $_ENV['API_PUBLIC_URL'];
+    $posts_frontend = [];
+    foreach ($posts_db as $post_db) {
+        $posts_frontend[] = [
+            'id' => (int)$post_db['id'],
+            'title' => $post_db['title'],
+            'slug' => $post_db['slug'],
+            'excerpt' => $post_db['excerpt'],
+            'read_time' => (int)$post_db['read_time'],
+            'published_date' => $post_db['published_date'],
+            'updated_at' => $post_db['updated_at'], // Include updated_at
+            'author_name' => $post_db['author_name'],
+            'category_name' => $post_db['category_name'],
+            'category_slugs' => $post_db['category_slugs'],
+            'featured_image_url' => !empty($post_db['featured_image_path']) ? rtrim($api_base_url, '/') . '/' . $post_db['featured_image_path'] : null
+        ];
+    }
+    
+    $responseData = [
+        'posts' => $posts_frontend,
+        'tag_details' => $tagDetails,
+        'pagination' => [
+            'currentPage' => $page,
+            'totalPages' => $totalPages,
+            'totalPosts' => (int)$totalRecords
+        ]
+    ];
+
+    sendResponse(true, $responseData, 'Posts fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_public_posts.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching posts.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

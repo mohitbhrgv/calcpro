@@ -1,0 +1,113 @@
+<?php
+// File: calcpro-api/api/admin/get_post.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Validation ---
+    if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
+        sendResponse(false, null, 'A valid Post ID is required.', 400, 'INVALID_INPUT');
+    }
+
+    $postId = (int)$_GET['id'];
+    
+    // --- 2. Fetch Post Data ---
+    $sql = "SELECT * FROM posts WHERE id = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("i", $postId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    if ($result->num_rows > 0) {
+        $post = $result->fetch_assoc();
+        $stmt->close();
+
+        // --- Fetch Categories (Many-to-Many) ---
+        $catSql = "SELECT category_id FROM post_categories WHERE post_id = ?";
+        $cStmt = $conn->prepare($catSql);
+        $cStmt->bind_param("i", $postId);
+        $cStmt->execute();
+        $cRes = $cStmt->get_result();
+        $categoryIds = [];
+        while($row = $cRes->fetch_assoc()) $categoryIds[] = (int)$row['category_id'];
+        $cStmt->close();
+
+        // --- Fetch Tags ---
+        $tagSql = "SELECT tag_id FROM post_tags WHERE post_id = ?";
+        $tStmt = $conn->prepare($tagSql);
+        $tStmt->bind_param("i", $postId);
+        $tStmt->execute();
+        $tRes = $tStmt->get_result();
+        $tagIds = [];
+        while($row = $tRes->fetch_assoc()) $tagIds[] = (int)$row['tag_id'];
+        $tStmt->close();
+
+        // --- Redirect Check ---
+        $activeRedirect = null;
+        $redirectSql = "SELECT target_url, status_code FROM redirects WHERE source_path = ? AND status = 'active' LIMIT 1";
+        $rStmt = $conn->prepare($redirectSql);
+        $sourcePath = 'blog/' . $post['slug'];
+        $rStmt->bind_param("s", $sourcePath);
+        $rStmt->execute();
+        $rResult = $rStmt->get_result();
+        if ($rResult->num_rows > 0) $activeRedirect = $rResult->fetch_assoc();
+        $rStmt->close();
+
+        // --- 3. Prepare Response with Strict Types ---
+        
+        // Arrays
+        $post['categories'] = $categoryIds;
+        $post['tags'] = $tagIds;
+        $post['active_redirect'] = $activeRedirect;
+
+        // JSON Fields
+        $post['schema_json'] = json_decode($post['schema_json'] ?? '[]', true);
+
+        // Explicit Field Mapping
+        $post['canonical_url'] = $post['canonical_url'];
+
+        // SEO Keywords
+        $post['focusKeywords'] = $post['focus_keywords'];
+
+        // Primary Category ID
+        $post['primary_category_id'] = $post['primary_category_id'] ? (int)$post['primary_category_id'] : null;
+
+        // Robots Meta
+        $post['no_index'] = $post['no_index'] === null ? null : (int)$post['no_index'];
+        $post['no_follow'] = $post['no_follow'] === null ? null : (int)$post['no_follow'];
+        $post['no_archive'] = $post['no_archive'] === null ? null : (int)$post['no_archive'];
+        $post['no_image_index'] = $post['no_image_index'] === null ? null : (int)$post['no_image_index'];
+        $post['no_snippet'] = $post['no_snippet'] === null ? null : (int)$post['no_snippet'];
+
+        // Advanced Robot Meta
+        $post['max_snippet'] = isset($post['max_snippet']) ? (int)$post['max_snippet'] : null;
+        $post['max_video_preview'] = isset($post['max_video_preview']) ? (int)$post['max_video_preview'] : null;
+        $post['max_image_preview'] = $post['max_image_preview'];
+
+        // Social Meta (Twitter Added)
+        $post['twitterTitle'] = $post['twitter_title'];
+        $post['twitterDescription'] = $post['twitter_description'];
+        $post['twitterImage'] = $post['twitter_image'];
+
+        // Image ID
+        $post['featuredImageId'] = $post['featured_image_id'] ? (int)$post['featured_image_id'] : null;
+
+        sendResponse(true, $post, 'Post data fetched successfully.');
+    } else {
+        $stmt->close();
+        sendResponse(false, null, 'Post not found.', 404, 'NOT_FOUND');
+    }
+
+} catch (Exception $e) {
+    error_log("Error in get_post.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching the post.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

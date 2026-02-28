@@ -1,0 +1,49 @@
+<?php
+// Include the database configuration file
+require '../../core/config.php';
+
+// Set content type to JSON
+header('Content-Type: application/json');
+
+// --- Basic Validation: Check if user ID is provided ---
+// We will get the user ID from the URL, e.g., get_bookmarks.php?userId=1
+if (!isset($_GET['userId']) || !is_numeric($_GET['userId'])) {
+    echo json_encode(['success' => false, 'message' => 'User ID is required and must be a number.']);
+    exit();
+}
+
+// --- Sanitize Input ---
+$userId = (int)$_GET['userId'];
+
+// --- Prepare SQL Statement to fetch the calculator IDs for the user ---
+$sql = "SELECT calculator_id FROM bookmarks WHERE user_id = ? ORDER BY created_at DESC";
+$stmt = $conn->prepare($sql);
+
+if ($stmt === false) {
+    echo json_encode(['success' => false, 'message' => 'Database error preparing statement: ' . $conn->error]);
+    exit();
+}
+
+$stmt->bind_param("i", $userId);
+$stmt->execute();
+$result = $stmt->get_result();
+
+// --- Fetch all rows and build a simple array of calculator IDs ---
+$bookmarkIds = [];
+if ($result->num_rows > 0) {
+    while ($row = $result->fetch_assoc()) {
+        $bookmarkIds[] = $row['calculator_id'];
+    }
+}
+
+// --- Send the response ---
+// We send back an array of strings, e.g., ['emi', 'sip', 'bmi']
+echo json_encode([
+    'success' => true,
+    'bookmarks' => $bookmarkIds
+]);
+
+// --- Close connections ---
+$stmt->close();
+$conn->close();
+?>

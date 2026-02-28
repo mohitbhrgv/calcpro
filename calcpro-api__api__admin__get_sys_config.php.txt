@@ -1,0 +1,44 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+require_once '../../core/EnvHandler.php'; // Include our new helper
+
+// --- SECURITY CHECK ---
+// Only logged-in admins can view system config
+$admin_data = verifyAdminToken();
+
+try {
+    // Initialize the handler with the path from config.php's PROJECT_ROOT constant
+    $envPath = PROJECT_ROOT . '/.env';
+    $handler = new EnvHandler($envPath);
+
+    // --- 1. Define Sensitive Keys ---
+    // These values will be replaced with "********" before sending to the browser.
+    $sensitiveKeys = [
+        'DB_PASS',
+        'JWT_SECRET',
+        'SMTP_PASS'
+    ];
+
+    // --- 2. Read and Mask Data ---
+    $configData = $handler->read($sensitiveKeys);
+
+    // --- 3. Check Server Permissions ---
+    // This tells the frontend if it should show "Save" buttons or "Read Only" mode.
+    $status = $handler->getStatus();
+
+    // --- 4. Send Response ---
+    sendResponse(true, [
+        'config' => $configData,
+        'meta' => $status
+    ], 'System configuration fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_sys_config.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

@@ -1,0 +1,44 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Fetch ALL available categories ---
+    $categorySql = "
+        SELECT id, name 
+        FROM categories
+        ORDER BY name ASC
+    ";
+    $categoryResult = $conn->query($categorySql);
+    $categories = $categoryResult->fetch_all(MYSQLI_ASSOC);
+
+    // --- 2. Fetch ALL available authors (Admins) ---
+    $authorSql = "
+        SELECT id, name 
+        FROM admins
+        ORDER BY name ASC
+    ";
+    $authorResult = $conn->query($authorSql);
+    $authors = $authorResult->fetch_all(MYSQLI_ASSOC);
+
+    // --- 3. Combine into a single response object ---
+    $filters = [
+        'categories' => $categories,
+        'authors' => $authors
+    ];
+
+    // --- 4. Send JSON Response ---
+    sendResponse(true, $filters, 'Post filters fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_post_filters.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching filter data.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

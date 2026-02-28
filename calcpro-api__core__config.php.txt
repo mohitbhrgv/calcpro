@@ -1,0 +1,217 @@
+<?php
+// ------------------------------------------------------------------
+// 1. INITIALIZE OUTPUT BUFFERING & JSON ERROR HANDLING
+// ------------------------------------------------------------------
+// Capture any stray output (whitespace, warnings) to prevent broken JSON
+ob_start();
+
+// Set default headers immediately
+header('Content-Type: application/json; charset=utf-8');
+
+// NOTE: We have REMOVED the "Access-Control-Allow-..." headers from here.
+// They are now handled strictly by your .htaccess file to prevent 
+// "Multiple Values" errors in the browser.
+
+// Custom Error Handler to force JSON output
+function jsonErrorHandler($errno, $errstr, $errfile, $errline) {
+    // Ignore suppressed errors (using @)
+    if (!(error_reporting() & $errno)) {
+        return false;
+    }
+    
+    // Clear any previous output
+    if (ob_get_length()) ob_clean();
+    
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'message' => "PHP Error: $errstr",
+        'debug' => [
+            'file' => $errfile,
+            'line' => $errline,
+            'code' => $errno
+        ]
+    ]);
+    exit();
+}
+
+// Custom Exception Handler
+function jsonExceptionHandler($e) {
+    if (ob_get_length()) ob_clean();
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'message' => "System Error: " . $e->getMessage(),
+        'debug' => [
+            'file' => $e->getFile(),
+            'line' => $e->getLine()
+        ]
+    ]);
+    exit();
+}
+
+// Custom Shutdown Function (Catches Fatal Errors)
+register_shutdown_function(function() {
+    $error = error_get_last();
+    if ($error && ($error['type'] === E_ERROR || $error['type'] === E_PARSE || $error['type'] === E_CORE_ERROR)) {
+        if (ob_get_length()) ob_clean();
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'message' => "Critical System Failure",
+            'debug' => $error
+        ]);
+    } else {
+        // Flush buffer if no error
+        ob_end_flush();
+    }
+});
+
+// Set handlers
+set_error_handler('jsonErrorHandler');
+set_exception_handler('jsonExceptionHandler');
+
+// ------------------------------------------------------------------
+// 2. COMPOSER & ENVIRONMENT
+// ------------------------------------------------------------------
+
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+define('PROJECT_ROOT', dirname(__DIR__));
+
+if (!file_exists(PROJECT_ROOT . '/vendor/autoload.php')) {
+    // Manually handle error if composer is missing
+    if (ob_get_length()) ob_clean();
+    http_response_code(500);
+    echo json_encode(['success' => false, 'message' => 'Composer vendor folder missing. Run "composer install".']);
+    exit();
+}
+
+require_once PROJECT_ROOT . '/vendor/autoload.php';
+
+try {
+    $dotenv = Dotenv\Dotenv::createImmutable(PROJECT_ROOT);
+    $dotenv->load();
+    $dotenv->required(['DB_HOST', 'DB_USER', 'DB_PASS', 'DB_NAME', 'JWT_SECRET']);
+} catch (Exception $e) {
+    if (ob_get_length()) ob_clean();
+    http_response_code(500);
+    echo json_encode(['success' => false, 'message' => "Environment Configuration Error: " . $e->getMessage()]);
+    exit();
+}
+
+// ------------------------------------------------------------------
+// 3. SECURITY CONSTANTS
+// ------------------------------------------------------------------
+define('LOGIN_ATTEMPT_LIMIT', 3);
+define('LOCKOUT_DURATION_MINUTES', 1440);
+define('PERMABLOCK_THRESHOLD', 2);
+define('PERMABLOCK_TIMEFRAME_HOURS', 168);
+
+// ------------------------------------------------------------------
+// 4. CORS HANDLING (DELEGATED TO SERVER)
+// ------------------------------------------------------------------
+// We rely entirely on Apache (.htaccess) to handle CORS Preflight and Headers.
+
+// ------------------------------------------------------------------
+// 5. DATABASE CONNECTION
+// ------------------------------------------------------------------
+// Suppress warnings for connection to handle them gracefully
+$conn = @new mysqli($_ENV['DB_HOST'], $_ENV['DB_USER'], $_ENV['DB_PASS'], $_ENV['DB_NAME']);
+
+if ($conn->connect_error) {
+    if (ob_get_length()) ob_clean();
+    http_response_code(500);
+    echo json_encode(['success' => false, 'message' => "Database Connection Failed"]);
+    exit();
+}
+
+// Ensure UTF-8 charset
+$conn->set_charset("utf8mb4");
+
+// ------------------------------------------------------------------
+// 6. TIMEZONE SYNCHRONIZATION
+// ------------------------------------------------------------------
+// Step 1: Set PHP default to UTC initially
+date_default_timezone_set('UTC');
+
+// Step 2: Force MySQL connection to UTC.
+// This is critical. The frontend expects UTC data to perform its own localization.
+// If we let MySQL convert to local time, the frontend will double-shift the time.
+$conn->query("SET time_zone = '+00:00'");
+
+// Step 3: Attempt to set PHP's internal timezone from DB settings (for logging/logic only)
+try {
+    // Check if table exists first to prevent crashes on fresh install
+    $tableCheck = $conn->query("SHOW TABLES LIKE 'settings'");
+    
+    if ($tableCheck && $tableCheck->num_rows > 0) {
+        $tz_result = $conn->query("SELECT setting_value FROM settings WHERE setting_key = 'site_timezone' LIMIT 1");
+        
+        if ($tz_result && $tz_result->num_rows > 0) {
+            $row = $tz_result->fetch_assoc();
+            $db_timezone = $row['setting_value'];
+
+            // Strict validation of the timezone string
+            if ($db_timezone && in_array($db_timezone, timezone_identifiers_list())) {
+                // We ONLY update PHP's timezone for internal logic (e.g. date() calls in scripts)
+                date_default_timezone_set($db_timezone);
+                
+                // IMPORTANT: We do NOT update the MySQL connection timezone here.
+                // The API must always return UTC dates to the frontend.
+            }
+        }
+    }
+} catch (Exception $e) {
+    // Log silently, do not break the request
+    error_log("Timezone Sync Warning: " . $e->getMessage());
+}
+
+// ------------------------------------------------------------------
+// 7. GLOBAL HELPER FUNCTIONS
+// ------------------------------------------------------------------
+
+function validatePasswordStrength($password) {
+    if (strlen($password) < 8) return false;
+    if (!preg_match('/[a-zA-Z]/', $password)) return false;
+    if (!preg_match('/\d/', $password)) return false;
+    if (!preg_match('/[\W_]/', $password)) return false;
+    return true;
+}
+
+function calculate_reading_time($htmlContent, $wordsPerMinute = 300) {
+    if (empty($htmlContent)) return 0;
+    $plainText = strip_tags($htmlContent);
+    $wordCount = str_word_count($plainText);
+    return $wordCount === 0 ? 0 : ceil($wordCount / $wordsPerMinute);
+}
+
+function sendSecurityEmail($toEmail, $toName, $subject, $htmlBody, $altBody) {
+    $mail = new PHPMailer(true);
+    try {
+        $mail->isSMTP();
+        $mail->Host       = $_ENV['SMTP_HOST'];
+        $mail->SMTPAuth   = true;
+        $mail->Username   = $_ENV['SMTP_USER'];
+        $mail->Password   = $_ENV['SMTP_PASS'];
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port       = $_ENV['SMTP_PORT'];
+        $mail->Timeout    = 30;
+
+        $mail->setFrom($_ENV['SMTP_FROM_EMAIL'], $_ENV['SMTP_FROM_NAME']);
+        $mail->addAddress($toEmail, $toName);
+        $mail->isHTML(true);
+        $mail->Subject = $subject;
+        $mail->Body    = $htmlBody;
+        $mail->AltBody = $altBody;
+
+        $mail->send();
+        return true;
+    } catch (Exception $e) {
+        // Log mail errors internally but don't crash the request
+        error_log("Mail Error: " . $e->getMessage());
+        return false;
+    }
+}
+?>

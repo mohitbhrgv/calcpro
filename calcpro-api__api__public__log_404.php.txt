@@ -1,0 +1,97 @@
+<?php
+// File: calcpro-api/api/public/log_404.php
+
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+try {
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    if (!isset($data->uri) || empty(trim($data->uri))) {
+        exit(); 
+    }
+
+    // 1. FETCH SETTINGS
+    $settings = [];
+    $res = $conn->query("SELECT setting_key, setting_value FROM settings WHERE setting_key LIKE 'seo_404_monitor_%'");
+    while($row = $res->fetch_assoc()) {
+        $settings[$row['setting_key']] = $row['setting_value'];
+    }
+
+    $mode         = $settings['seo_404_monitor_mode'] ?? 'simple';
+    $limit        = isset($settings['seo_404_monitor_limit']) ? (int)$settings['seo_404_monitor_limit'] : 100;
+    $ignoreQuery  = ($settings['seo_404_monitor_ignore_query'] ?? 'true') === 'true';
+    $excludePaths = json_decode($settings['seo_404_monitor_exclude'] ?? '[]', true);
+
+    // 2. PREPARE URI
+    $uri = trim($data->uri);
+    
+    // Logic: Ignore Query Parameters
+    if ($ignoreQuery) {
+        $uri = strtok($uri, '?');
+    }
+
+    // 3. EXCLUSION CHECK
+    foreach ($excludePaths as $exclude) {
+        if (empty($exclude['value'])) continue;
+        
+        $match = false;
+        if ($exclude['type'] === 'exact' && $uri === $exclude['value']) $match = true;
+        if ($exclude['type'] === 'contains' && strpos($uri, $exclude['value']) !== false) $match = true;
+        
+        if ($match) {
+            // Silently ignore excluded paths
+            exit();
+        }
+    }
+
+    // 4. PREPARE METADATA
+    $uri_hash = md5($uri);
+    $ip_address = $_SERVER['REMOTE_ADDR'];
+    $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? 'Unknown';
+    $referer    = ($mode === 'advanced') ? ($_SERVER['HTTP_REFERER'] ?? 'Direct / No Referer') : null;
+
+    // 5. UPSERT LOG
+    $sql = "INSERT INTO monitor_404_logs (uri, uri_hash, hits, ip_address, user_agent, referer, created_at, updated_at) 
+            VALUES (?, ?, 1, ?, ?, ?, NOW(), NOW()) 
+            ON DUPLICATE KEY UPDATE 
+            hits = hits + 1, 
+            ip_address = VALUES(ip_address), 
+            user_agent = VALUES(user_agent), 
+            referer = VALUES(referer),
+            updated_at = NOW()";
+
+    $stmt = $conn->prepare($sql);
+    if ($stmt) {
+        $stmt->bind_param("sssss", $uri, $uri_hash, $ip_address, $user_agent, $referer);
+        $stmt->execute();
+        $stmt->close();
+    }
+
+    // 6. ENFORCE LOG LIMIT (Rotation)
+    // If limit is set to 0, it means unlimited
+    if ($limit > 0) {
+        // Delete records that are NOT in the top X most recently updated
+        $cleanup_sql = "DELETE FROM monitor_404_logs 
+                        WHERE id NOT IN (
+                            SELECT id FROM (
+                                SELECT id FROM monitor_404_logs 
+                                ORDER BY updated_at DESC 
+                                LIMIT ?
+                            ) as tmp
+                        )";
+        $stmt_limit = $conn->prepare($cleanup_sql);
+        $stmt_limit->bind_param("i", $limit);
+        $stmt_limit->execute();
+        $stmt_limit->close();
+    }
+
+    echo json_encode(['success' => true]);
+
+} catch (Exception $e) {
+    error_log("404 Logging Error: " . $e->getMessage());
+}
+
+$conn->close();
+?>

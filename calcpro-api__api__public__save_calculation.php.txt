@@ -1,0 +1,108 @@
+<?php
+// Include the database configuration file
+require '../../core/config.php';
+// --- NEW: Include Notification Manager ---
+require_once '../../core/NotificationManager.php';
+
+// Set content type to JSON
+header('Content-Type: application/json');
+
+// --- Define the save limit for the free plan ---
+define('FREE_TIER_LIMIT', 10);
+
+// --- Get the request data ---
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// --- Basic Validation ---
+if (
+    !isset($data->userId) || 
+    !isset($data->calculatorType) || 
+    !isset($data->inputs) || 
+    !isset($data->results)
+) {
+    echo json_encode(['success' => false, 'message' => 'Missing required calculation data.']);
+    exit();
+}
+
+// --- Sanitize Input ---
+$userId = (int)$data->userId;
+$calculatorType = mysqli_real_escape_string($conn, $data->calculatorType);
+
+// --- 1. Check if the user has reached their save limit ---
+$countSql = "SELECT COUNT(id) as calculation_count FROM calculations WHERE user_id = ?";
+$stmt = $conn->prepare($countSql);
+$stmt->bind_param("i", $userId);
+$stmt->execute();
+$result = $stmt->get_result();
+$row = $result->fetch_assoc();
+$stmt->close();
+
+if ($row['calculation_count'] >= FREE_TIER_LIMIT) {
+    // If limit is reached, send a specific error message and stop.
+    echo json_encode([
+        'success' => false, 
+        'limit_reached' => true, 
+        'message' => 'Save limit reached. Please manage your history in the dashboard.'
+    ]);
+    $conn->close();
+    exit();
+}
+
+// --- 2. If limit is not reached, proceed to save the calculation ---
+
+// Encode inputs and results as JSON strings
+$inputsJSON = json_encode($data->inputs);
+$resultsJSON = json_encode($data->results);
+
+// Prepare and Execute SQL Statement
+$sql = "INSERT INTO calculations (user_id, calculator_type, inputs, results) VALUES (?, ?, ?, ?)";
+$stmt = $conn->prepare($sql);
+
+if ($stmt === false) {
+    echo json_encode(['success' => false, 'message' => 'Database error preparing statement: ' . $conn->error]);
+    exit();
+}
+
+// Bind the parameters (i = integer, s = string)
+$stmt->bind_param("isss", $userId, $calculatorType, $inputsJSON, $resultsJSON);
+
+// Execute and Check for Errors
+if ($stmt->execute()) {
+    
+    // --- MILESTONE TRIGGER LOGIC ---
+    try {
+        // 1. Get total calculations across the entire platform
+        $totalResult = $conn->query("SELECT COUNT(id) as total FROM calculations");
+        $totalCalculations = $totalResult ? (int)$totalResult->fetch_assoc()['total'] : 0;
+
+        // 2. Check if it's a milestone (multiple of 100)
+        if ($totalCalculations > 0 && $totalCalculations % 100 === 0) {
+            $notifier = new NotificationManager($conn);
+            $notifier->create(
+                'milestone',
+                'info',
+                'Engagement Milestone!',
+                "The platform has reached {$totalCalculations} total saved calculations.",
+                '/admin/dashboard'
+            );
+        }
+    } catch (Exception $e) {
+        // Silently fail notification so we don't break the user response
+        error_log("Milestone Notification Error: " . $e->getMessage());
+    }
+
+    // Save successful
+    echo json_encode([
+        'success' => true,
+        'message' => 'Calculation saved successfully!'
+    ]);
+} else {
+    // Save failed
+    echo json_encode(['success' => false, 'message' => 'Failed to save calculation: ' . $stmt->error]);
+}
+
+// --- Close connections ---
+$stmt->close();
+$conn->close();
+?>

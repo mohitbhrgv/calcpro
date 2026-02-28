@@ -1,0 +1,80 @@
+<?php
+// File: calcpro-api/api/admin/get_notifications.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// Helper function for "Time Ago" formatting
+function time_elapsed_string($datetime, $full = false) {
+    $now = new DateTime;
+    $ago = new DateTime($datetime);
+    $diff = $now->diff($ago);
+
+    $diff->w = floor($diff->d / 7);
+    $diff->d -= $diff->w * 7;
+
+    $string = array(
+        'y' => 'year',
+        'm' => 'month',
+        'w' => 'week',
+        'd' => 'day',
+        'h' => 'hour',
+        'i' => 'minute',
+        's' => 'second',
+    );
+    foreach ($string as $k => &$v) {
+        if ($diff->$k) {
+            $v = $diff->$k . ' ' . $v . ($diff->$k > 1 ? 's' : '');
+        } else {
+            unset($string[$k]);
+        }
+    }
+
+    if (!$full) $string = array_slice($string, 0, 1);
+    return $string ? implode(', ', $string) . ' ago' : 'just now';
+}
+
+try {
+    // 1. Fetch Unread Count
+    $countSql = "SELECT COUNT(id) as unread_count FROM admin_notifications WHERE is_read = 0";
+    $countResult = $conn->query($countSql);
+    $unreadCount = $countResult ? (int)$countResult->fetch_assoc()['unread_count'] : 0;
+
+    // 2. Fetch Latest Notifications (Limit 20)
+    $sql = "SELECT id, type, severity, title, message, link, is_read, created_at FROM admin_notifications ORDER BY created_at DESC LIMIT 20";
+    $result = $conn->query($sql);
+    
+    $notifications = [];
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $notifications[] = [
+                'id' => (int)$row['id'],
+                'type' => $row['type'],         // 'security', 'user', 'milestone', 'system'
+                'severity' => $row['severity'], // 'info', 'warning', 'critical'
+                'title' => $row['title'],
+                'message' => $row['message'],
+                'link' => $row['link'],
+                'read' => (bool)$row['is_read'],
+                'time' => time_elapsed_string($row['created_at']), // Formatted string
+                'created_at' => $row['created_at'] // Raw timestamp
+            ];
+        }
+    }
+
+    sendResponse(true, [
+        'notifications' => $notifications,
+        'unreadCount' => $unreadCount
+    ], 'Notifications fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_notifications.php: " . $e->getMessage());
+    sendResponse(false, null, 'Failed to fetch notifications.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

@@ -1,0 +1,113 @@
+<?php
+require '../../core/config.php';
+// --- NEW: Include Notification Manager ---
+require_once '../../core/NotificationManager.php';
+
+header('Content-Type: application/json');
+
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// --- Validation ---
+if (!isset($data->email) || !isset($data->code)) {
+    echo json_encode(['success' => false, 'message' => 'Email and verification code are required.']);
+    exit();
+}
+
+// --- Sanitize Input ---
+$email = mysqli_real_escape_string($conn, trim($data->email));
+$code = mysqli_real_escape_string($conn, trim($data->code));
+
+// --- 1. Find the pending verification record ---
+$sql_find = "SELECT * FROM pending_verifications WHERE email = ?";
+$stmt_find = $conn->prepare($sql_find);
+$stmt_find->bind_param("s", $email);
+$stmt_find->execute();
+$result = $stmt_find->get_result();
+$pending_user = $result->fetch_assoc();
+$stmt_find->close();
+
+// --- 2. Validate the record and the code ---
+if (!$pending_user) {
+    echo json_encode(['success' => false, 'message' => 'Invalid request. Please try signing up again.']);
+    $conn->close();
+    exit();
+}
+
+if ($pending_user['verification_code'] !== $code) {
+    echo json_encode(['success' => false, 'message' => 'Invalid verification code.']);
+    $conn->close();
+    exit();
+}
+
+if (strtotime($pending_user['expires_at']) < time()) {
+    echo json_encode(['success' => false, 'message' => 'Verification code has expired. Please sign up again.']);
+    // Also delete the expired code so the user can re-register immediately
+    $sql_delete_expired = "DELETE FROM pending_verifications WHERE email = ?";
+    $stmt_delete_expired = $conn->prepare($sql_delete_expired);
+    $stmt_delete_expired->bind_param("s", $email);
+    $stmt_delete_expired->execute();
+    $stmt_delete_expired->close();
+    $conn->close();
+    exit();
+}
+
+// --- 3. Verification is successful. Create the user in the main `users` table ---
+$sql_insert_user = "INSERT INTO users (name, email, password, is_verified) VALUES (?, ?, ?, 1)";
+$stmt_insert = $conn->prepare($sql_insert_user);
+$stmt_insert->bind_param("sss", $pending_user['name'], $pending_user['email'], $pending_user['password_hash']);
+
+if ($stmt_insert->execute()) {
+    $new_user_id = $stmt_insert->insert_id;
+    $stmt_insert->close();
+
+    // --- NOTIFICATION TRIGGER: New User ---
+    try {
+        $notifier = new NotificationManager($conn);
+        $notifier->create(
+            'user',
+            'info',
+            'New User Registration',
+            "{$pending_user['name']} ({$pending_user['email']}) has verified their account.",
+            '/admin/users'
+        );
+    } catch (Exception $e) {
+        // Silently fail notification to not block user registration
+        error_log("Notification Error: " . $e->getMessage());
+    }
+
+    // --- 4. Clean up the pending verifications table ---
+    $sql_delete = "DELETE FROM pending_verifications WHERE email = ?";
+    $stmt_delete = $conn->prepare($sql_delete);
+    $stmt_delete->bind_param("s", $email);
+    $stmt_delete->execute();
+    $stmt_delete->close();
+    
+    // --- 5. Fetch the new user's data to log them in ---
+    $sql_fetch = "SELECT id, name, email, created_at FROM users WHERE id = ?";
+    $stmt_fetch = $conn->prepare($sql_fetch);
+    $stmt_fetch->bind_param("i", $new_user_id);
+    $stmt_fetch->execute();
+    $verifiedUser = $stmt_fetch->get_result()->fetch_assoc();
+    $stmt_fetch->close();
+    
+    // Add our first-login flag for the dashboard welcome message
+    $verifiedUser['is_first_login'] = true;
+
+    echo json_encode([
+        'success' => true,
+        'message' => 'Email verified successfully! Welcome to CalcPro.',
+        'user' => $verifiedUser
+    ]);
+
+} else {
+    // This could happen if, in a rare race condition, the email was registered by another process.
+    if ($conn->errno == 1062) {
+        echo json_encode(['success' => false, 'message' => 'This email address is already registered.']);
+    } else {
+        echo json_encode(['success' => false, 'message' => 'Failed to create account. Please try again.']);
+    }
+}
+
+$conn->close();
+?>

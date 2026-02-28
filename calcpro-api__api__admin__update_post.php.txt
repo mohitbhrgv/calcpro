@@ -1,0 +1,198 @@
+<?php
+// File: calcpro-api/api/admin/update_post.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+    
+    // --- 2. Validation ---
+    if (!isset($data->id) || !is_numeric($data->id)) {
+        sendResponse(false, null, 'A valid Post ID is required.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->title) || empty(trim($data->title))) {
+        sendResponse(false, null, 'Post title cannot be empty.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize and Prepare Data ---
+    $id = (int)$data->id;
+    $title = trim($data->title);
+    $slug = trim($data->slug);
+    $content = $data->content ?? '';
+    $excerpt = isset($data->excerpt) ? trim($data->excerpt) : null;
+    $status = in_array($data->status, ['published', 'draft', 'trash']) ? $data->status : 'draft';
+    
+    $read_time = function_exists('calculate_reading_time') ? calculate_reading_time($content) : 1;
+    $featuredImageId = (isset($data->featuredImageId) && is_numeric($data->featuredImageId)) ? (int)$data->featuredImageId : null;
+
+    $categoryIds = isset($data->categories) && is_array($data->categories) ? $data->categories : [];
+    $tagIds = isset($data->tags) && is_array($data->tags) ? $data->tags : [];
+
+    $primary_category_id = (isset($data->primary_category_id) && is_numeric($data->primary_category_id) && $data->primary_category_id > 0)
+                            ? (int)$data->primary_category_id
+                            : null;
+
+    $metaTitle = isset($data->metaTitle) ? trim($data->metaTitle) : null;
+    $metaDescription = isset($data->metaDescription) ? trim($data->metaDescription) : null;
+    $focusKeywords = isset($data->focusKeywords) ? trim($data->focusKeywords) : null;
+    $canonicalUrl = isset($data->canonical_url) ? trim($data->canonical_url) : null;
+
+    // Robots Meta
+    $noIndex = property_exists($data, 'no_index') && $data->no_index !== null ? (int)$data->no_index : null;
+    $noFollow = property_exists($data, 'no_follow') && $data->no_follow !== null ? (int)$data->no_follow : null;
+    $noArchive = property_exists($data, 'no_archive') && $data->no_archive !== null ? (int)$data->no_archive : null;
+    $noImageIndex = property_exists($data, 'no_image_index') && $data->no_image_index !== null ? (int)$data->no_image_index : null;
+    $noSnippet = property_exists($data, 'no_snippet') && $data->no_snippet !== null ? (int)$data->no_snippet : null;
+
+    // Advanced Meta
+    $maxSnippet = property_exists($data, 'max_snippet') && $data->max_snippet !== null ? (int)$data->max_snippet : null;
+    $maxVideoPreview = property_exists($data, 'max_video_preview') && $data->max_video_preview !== null ? (int)$data->max_video_preview : null;
+    $maxImagePreview = isset($data->max_image_preview) ? trim($data->max_image_preview) : null;
+
+    $ogTitle = isset($data->ogTitle) ? trim($data->ogTitle) : null;
+    $ogDescription = isset($data->ogDescription) ? trim($data->ogDescription) : null;
+    $og_image = isset($data->og_image) ? trim($data->og_image) : null;
+
+    // Twitter SEO
+    $twitterTitle = isset($data->twitterTitle) ? trim($data->twitterTitle) : null;
+    $twitterDescription = isset($data->twitterDescription) ? trim($data->twitterDescription) : null;
+    $twitterImage = isset($data->twitterImage) ? trim($data->twitterImage) : null;
+
+    $schemaJson = (isset($data->schema_json) && (is_array($data->schema_json) || is_object($data->schema_json)))
+        ? json_encode($data->schema_json)
+        : '[]';
+
+    $isMinorEdit = (isset($data->is_minor_edit) && $data->is_minor_edit === true);
+    $updateTimestampSql = $isMinorEdit ? "updated_at = updated_at" : "updated_at = NOW()";
+
+    // --- 4. Check for Duplicate Slug ---
+    $sql_check = "SELECT id FROM posts WHERE slug = ? AND id != ?";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->bind_param("si", $slug, $id);
+    $stmt_check->execute();
+    if ($stmt_check->get_result()->num_rows > 0) {
+        $stmt_check->close();
+        sendResponse(false, null, 'Another post with this slug already exists.', 409, 'DUPLICATE_SLUG');
+    }
+    $stmt_check->close();
+
+    // --- 5. Begin Transaction ---
+    $conn->begin_transaction();
+
+    // --- 6. Execute Update ---
+    $sql = "UPDATE posts SET 
+                title = ?, 
+                slug = ?, 
+                content = ?, 
+                excerpt = ?, 
+                status = ?, 
+                featured_image_id = ?, 
+                read_time = ?,
+                meta_title = ?, 
+                meta_description = ?, 
+                focus_keywords = ?, 
+                canonical_url = ?,
+                no_index = ?,
+                no_follow = ?,
+                no_archive = ?,
+                no_image_index = ?,
+                no_snippet = ?,
+                max_snippet = ?,
+                max_video_preview = ?,
+                max_image_preview = ?,
+                og_title = ?, 
+                og_description = ?, 
+                og_image = ?,
+                twitter_title = ?,
+                twitter_description = ?,
+                twitter_image = ?,
+                schema_json = ?,
+                primary_category_id = ?,
+                $updateTimestampSql 
+            WHERE id = ?";
+
+    $stmt = $conn->prepare($sql);
+    
+    if (!$stmt) {
+        throw new Exception("Prepare failed: " . $conn->error);
+    }
+    
+    // Bind Params Breakdown:
+    // s (title), s (slug), s (content), s (excerpt), s (status)
+    // i (featured_id), i (read_time)
+    // s (metaT), s (metaD), s (focus), s (canonical)
+    // i (noI), i (noF), i (noA), i (noImg), i (noSnip), i (maxSnip), i (maxVid)
+    // s (maxImg), s (ogT), s (ogD), s (ogI), s (twT), s (twD), s (twI), s (schema)
+    // i (primary_cat), i (id)
+    //
+    // Total: 5s + 2i + 4s + 7i + 8s + 2i
+    // String: "sssssiissssiiiiiiissssssssii" (28 chars)
+
+    $stmt->bind_param("sssssiissssiiiiiiissssssssii", 
+        $title, $slug, $content, $excerpt, $status, 
+        $featuredImageId, $read_time,
+        $metaTitle, $metaDescription, $focusKeywords, $canonicalUrl,
+        $noIndex, $noFollow, $noArchive, $noImageIndex, $noSnippet,
+        $maxSnippet, $maxVideoPreview, $maxImagePreview,
+        $ogTitle, $ogDescription, $og_image,
+        $twitterTitle, $twitterDescription, $twitterImage,
+        $schemaJson,
+        $primary_category_id,
+        $id
+    );
+
+    if (!$stmt->execute()) {
+        $conn->rollback();
+        throw new Exception("Post update failed: " . $stmt->error);
+    }
+    $stmt->close();
+
+    // --- 7. Sync Categories ---
+    $conn->query("DELETE FROM post_categories WHERE post_id = $id");
+    if (!empty($categoryIds)) {
+        $catStmt = $conn->prepare("INSERT INTO post_categories (post_id, category_id) VALUES (?, ?)");
+        foreach ($categoryIds as $catId) {
+            $cId = (int)$catId;
+            $catStmt->bind_param("ii", $id, $cId);
+            $catStmt->execute();
+        }
+        $catStmt->close();
+    }
+
+    // --- 8. Sync Tags ---
+    $conn->query("DELETE FROM post_tags WHERE post_id = $id");
+    if (!empty($tagIds)) {
+        $tagStmt = $conn->prepare("INSERT INTO post_tags (post_id, tag_id) VALUES (?, ?)");
+        foreach ($tagIds as $tId) {
+            $safeTagId = (int)$tId;
+            $tagStmt->bind_param("ii", $id, $safeTagId);
+            $tagStmt->execute();
+        }
+        $tagStmt->close();
+    }
+
+    // --- 9. Commit ---
+    $conn->commit();
+    
+    $successMsg = $isMinorEdit 
+        ? 'Post updated (Minor Edit - date preserved).' 
+        : 'Post updated successfully.';
+
+    sendResponse(true, null, $successMsg, 200);
+
+} catch (Exception $e) {
+    $conn->rollback();
+    error_log("Error in update_post.php: " . $e->getMessage());
+    sendResponse(false, null, 'Error: ' . $e->getMessage(), 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

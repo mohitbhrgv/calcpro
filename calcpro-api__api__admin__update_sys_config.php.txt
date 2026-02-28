@@ -1,0 +1,49 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+require_once '../../core/EnvHandler.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// --- 1. RBAC ENFORCEMENT (NEW) ---
+if (!isset($admin_data->adminRole) || $admin_data->adminRole !== 'super_admin') {
+    sendResponse(false, null, 'Unauthorized: Only Super Admins can modify system environment variables.', 403, 'FORBIDDEN');
+}
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json, true); // Decode as array
+
+    if (json_last_error() !== JSON_ERROR_NONE || !is_array($data)) {
+        sendResponse(false, null, 'Invalid JSON format.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 2. Initialize Handler ---
+    $envPath = PROJECT_ROOT . '/.env';
+    $handler = new EnvHandler($envPath);
+
+    // --- 3. Perform Update ---
+    $handler->update($data);
+
+    sendResponse(true, null, 'System configuration updated successfully. A backup of the previous configuration has been created on the server.', 200);
+
+} catch (Exception $e) {
+    error_log("Error in update_sys_config.php: " . $e->getMessage());
+    
+    $statusCode = 500;
+    $errorCode = 'SERVER_ERROR';
+    
+    if (strpos($e->getMessage(), 'Permission Denied') !== false) {
+        $statusCode = 403;
+        $errorCode = 'PERMISSION_DENIED';
+    }
+
+    sendResponse(false, null, $e->getMessage(), $statusCode, $errorCode);
+}
+
+$conn->close();
+?>

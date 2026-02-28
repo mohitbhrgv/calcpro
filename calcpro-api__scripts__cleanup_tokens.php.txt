@@ -1,0 +1,33 @@
+<?php
+// This script is designed to be run by a server cron job (e.g., once a day).
+// It cleans up expired, unused tokens from the admin_unblock_tokens table.
+
+// Use a robust, absolute path to the configuration file.
+require_once dirname(__DIR__) . '/core/config.php';
+
+try {
+    // SQL to delete all records from the table where the expiry time is in the past.
+    $sql = "DELETE FROM admin_unblock_tokens WHERE expires_at < NOW()";
+
+    // Execute the query
+    if ($conn->query($sql) === TRUE) {
+        $deleted_count = $conn->affected_rows;
+        $log_message = "Cron Job (cleanup_tokens): Cleaned up {$deleted_count} expired unblock tokens successfully.";
+        
+        // This log will appear in your server's configured PHP error log file.
+        error_log($log_message);
+        
+        // This output is for manual execution confirmation.
+        echo $log_message . "\n";
+    } else {
+        // Log an error if the query fails.
+        throw new Exception("Database query failed: " . $conn->error);
+    }
+
+} catch (Exception $e) {
+    $error_message = "Cron Job Error (cleanup_tokens): " . $e->getMessage();
+    error_log($error_message);
+    echo $error_message . "\n";
+}
+
+$conn->close();

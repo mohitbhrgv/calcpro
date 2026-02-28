@@ -1,0 +1,142 @@
+<?php
+// File: calcpro-api/api/admin/manage_media_bulk.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->ids) || !is_array($data->ids) || empty($data->ids)) {
+        sendResponse(false, null, 'No items selected.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->action)) {
+        sendResponse(false, null, 'No action specified.', 400, 'INVALID_INPUT');
+    }
+
+    $action = $data->action;
+    $ids = array_map('intval', $data->ids); 
+    $id_list = implode(',', $ids);
+
+    // --- 3. Execute Action ---
+    if ($action === 'trash') {
+        $sql = "UPDATE media SET status = 'trash' WHERE id IN ($id_list) AND status = 'active'";
+        if ($conn->query($sql) === TRUE) {
+            $count = $conn->affected_rows;
+            sendResponse(true, ['affected' => $count], "$count items moved to trash.", 200);
+        } else {
+            throw new Exception("Database query failed: " . $conn->error);
+        }
+
+    } elseif ($action === 'restore') {
+        $sql = "UPDATE media SET status = 'active' WHERE id IN ($id_list) AND status = 'trash'";
+        if ($conn->query($sql) === TRUE) {
+            $count = $conn->affected_rows;
+            sendResponse(true, ['affected' => $count], "$count items restored.", 200);
+        } else {
+             throw new Exception("Database query failed: " . $conn->error);
+        }
+
+    } elseif ($action === 'delete_permanent') {
+        
+        // A. Fetch file details
+        $sql_files = "SELECT id, upload_path FROM media WHERE id IN ($id_list) AND status = 'trash'";
+        $result = $conn->query($sql_files);
+        $files_to_process = [];
+        
+        if ($result) {
+            while ($row = $result->fetch_assoc()) {
+                $files_to_process[] = [
+                    'id' => $row['id'],
+                    'path' => $row['upload_path']
+                ];
+            }
+        }
+
+        if (empty($files_to_process)) {
+            sendResponse(false, null, 'No items found in trash to delete.', 404, 'NOT_FOUND');
+        }
+
+        $conn->begin_transaction();
+        
+        try {
+            $api_base_url = $_ENV['API_PUBLIC_URL'];
+
+            foreach ($files_to_process as $file) {
+                $mediaId = $file['id'];
+                $fullUrl = rtrim($api_base_url, '/') . '/' . $file['path'];
+                
+                // 1. Cleanup Body Content
+                $escapedUrl = preg_quote($fullUrl, '/');
+                $regexPattern = "<p><img src=\\\"" . $escapedUrl . "\\\"[^>]*><\\/p>|<img src=\\\"" . $escapedUrl . "\\\"[^>]*>";
+                $likePattern = '%' . $fullUrl . '%';
+
+                $conn->query("UPDATE posts SET content = REGEXP_REPLACE(content, '$regexPattern', '') WHERE content LIKE '$likePattern'");
+                $conn->query("UPDATE calculators SET content = REGEXP_REPLACE(content, '$regexPattern', '') WHERE content LIKE '$likePattern'");
+
+                // 2. Cleanup Featured Image ID
+                $conn->query("UPDATE posts SET featured_image_id = NULL WHERE featured_image_id = $mediaId");
+
+                // 3. Cleanup OG Images & Settings (Using Prepared Statements inside loop for safety)
+                $stmtOgPosts = $conn->prepare("UPDATE posts SET og_image = '' WHERE og_image = ?");
+                $stmtOgPosts->bind_param("s", $fullUrl);
+                $stmtOgPosts->execute(); $stmtOgPosts->close();
+
+                $stmtOgCalcs = $conn->prepare("UPDATE calculators SET og_image = '' WHERE og_image = ?");
+                $stmtOgCalcs->bind_param("s", $fullUrl);
+                $stmtOgCalcs->execute(); $stmtOgCalcs->close();
+
+                $stmtOgPages = $conn->prepare("UPDATE pages SET og_image = '' WHERE og_image = ?");
+                $stmtOgPages->bind_param("s", $fullUrl);
+                $stmtOgPages->execute(); $stmtOgPages->close();
+
+                $stmtSettings = $conn->prepare("UPDATE settings SET setting_value = '' WHERE setting_value = ?");
+                $stmtSettings->bind_param("s", $fullUrl);
+                $stmtSettings->execute(); $stmtSettings->close();
+            }
+
+            // 4. Delete Database Records
+            $valid_ids = implode(',', array_column($files_to_process, 'id'));
+            $sql_delete = "DELETE FROM media WHERE id IN ($valid_ids)";
+            
+            if ($conn->query($sql_delete) === TRUE) {
+                $deleted_count = $conn->affected_rows;
+                
+                // 5. Delete Physical Files
+                foreach ($files_to_process as $file) {
+                    $physical_path = PROJECT_ROOT . '/' . $file['path'];
+                    if (file_exists($physical_path)) {
+                        unlink($physical_path);
+                    }
+                }
+                
+                $conn->commit();
+                sendResponse(true, ['affected' => $deleted_count], "$deleted_count items permanently deleted and references cleaned.", 200);
+            } else {
+                throw new Exception("Database delete failed: " . $conn->error);
+            }
+
+        } catch (Exception $e) {
+            $conn->rollback();
+            throw $e;
+        }
+
+    } else {
+        sendResponse(false, null, 'Invalid action specified.', 400, 'INVALID_ACTION');
+    }
+
+} catch (Exception $e) {
+    error_log("Error in manage_media_bulk.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

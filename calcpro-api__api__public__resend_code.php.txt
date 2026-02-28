@@ -1,0 +1,94 @@
+<?php
+// --- Use PHPMailer classes ---
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+// --- Composer's autoloader and config ---
+require 'vendor/autoload.php';
+require '../../core/config.php';
+
+// --- DEFINE THE RESEND LIMIT ---
+define('MAX_RESEND_ATTEMPTS', 3);
+
+set_time_limit(60);
+header('Content-Type: application/json');
+
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// --- Validation ---
+if (!isset($data->email) || !filter_var($data->email, FILTER_VALIDATE_EMAIL)) {
+    echo json_encode(['success' => false, 'message' => 'A valid email is required.']);
+    exit();
+}
+
+$email = mysqli_real_escape_string($conn, trim($data->email));
+
+// --- 1. Find the pending verification record and its attempt count ---
+$sql_find = "SELECT name, resend_attempts FROM pending_verifications WHERE email = ?";
+$stmt_find = $conn->prepare($sql_find);
+$stmt_find->bind_param("s", $email);
+$stmt_find->execute();
+$result = $stmt_find->get_result();
+$pending_user = $result->fetch_assoc();
+$stmt_find->close();
+
+if (!$pending_user) {
+    echo json_encode(['success' => false, 'message' => 'No pending verification found. Please try signing up again.']);
+    $conn->close();
+    exit();
+}
+
+// --- 2. NEW SECURITY CHECK: Enforce the resend limit ---
+if ($pending_user['resend_attempts'] >= MAX_RESEND_ATTEMPTS) {
+    echo json_encode(['success' => false, 'message' => 'You have reached the maximum number of resend attempts. Please try signing up again later.']);
+    $conn->close();
+    exit();
+}
+
+// --- 3. Generate a new code and expiry time ---
+$new_verification_code = random_int(100000, 999999);
+$new_expires_at = date('Y-m-d H:i:s', time() + 900); // 15 minutes from now
+
+// --- 4. Increment the attempt counter and update the record ---
+$sql_update = "UPDATE pending_verifications SET verification_code = ?, expires_at = ?, resend_attempts = resend_attempts + 1 WHERE email = ?";
+$stmt_update = $conn->prepare($sql_update);
+$stmt_update->bind_param("sss", $new_verification_code, $new_expires_at, $email);
+
+if ($stmt_update->execute()) {
+    // Database updated, now send the email
+    try {
+        $mail = new PHPMailer(true);
+        // Server settings...
+        $mail->isSMTP();
+        $mail->Host = SMTP_HOST;
+        $mail->SMTPAuth = true;
+        $mail->Username = SMTP_USER;
+        $mail->Password = SMTP_PASS;
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = SMTP_PORT;
+        $mail->Timeout = 30;
+
+        $mail->setFrom(SMTP_FROM_EMAIL, SMTP_FROM_NAME);
+        $mail->addAddress($email, $pending_user['name']);
+
+        $mail->isHTML(true);
+        $mail->Subject = 'Your New CalcPro Verification Code';
+        $mail->Body    = "<p>Hello {$pending_user['name']},</p><p>Here is your new verification code for CalcPro:</p><h2 style='text-align:center; font-size: 28px; letter-spacing: 4px; color: #14b8a6;'>{$new_verification_code}</h2><p>This code is valid for 15 minutes.</p>";
+        $mail->AltBody = "Your new CalcPro verification code is: {$new_verification_code}";
+
+        $mail->send();
+
+        echo json_encode(['success' => true, 'message' => 'A new verification code has been sent.']);
+
+    } catch (Exception $e) {
+        error_log("PHPMailer Resend Error for {$email}: " . $mail->ErrorInfo);
+        echo json_encode(['success' => false, 'message' => 'Could not resend email. Please try again in a moment.']);
+    }
+} else {
+    echo json_encode(['success' => false, 'message' => 'Failed to update verification code in the database.']);
+}
+
+$stmt_update->close();
+$conn->close();
+?>

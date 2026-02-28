@@ -1,0 +1,118 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Filtering Parameters ---
+    $statusFilter = isset($_GET['status']) ? $_GET['status'] : 'all';
+    $categoryFilter = isset($_GET['category']) && is_numeric($_GET['category']) ? (int)$_GET['category'] : null;
+    $authorFilter = isset($_GET['author']) && is_numeric($_GET['author']) ? (int)$_GET['author'] : null;
+
+    // --- 2. Get Status Counts ---
+    $counts = ['all' => 0, 'published' => 0, 'draft' => 0, 'trash' => 0];
+    $countSql = "SELECT status, COUNT(id) as count FROM posts GROUP BY status";
+    $countResult = $conn->query($countSql);
+    $totalNonTrash = 0;
+    if ($countResult) {
+        while($row = $countResult->fetch_assoc()) {
+            $status = $row['status'] === 'scheduled' ? 'draft' : $row['status'];
+            if (isset($counts[$status])) {
+                $counts[$status] += (int)$row['count'];
+            }
+            if ($row['status'] !== 'trash') {
+                $totalNonTrash += (int)$row['count'];
+            }
+        }
+    }
+    $counts['all'] = $totalNonTrash;
+
+    // --- 3. Build WHERE clause ---
+    $whereClauses = [];
+    $params = [];
+    $types = "";
+
+    if ($statusFilter !== 'all' && in_array($statusFilter, ['published', 'draft', 'trash'])) {
+        if ($statusFilter === 'draft') {
+            $whereClauses[] = "(p.status = 'draft' OR p.status = 'scheduled')";
+        } else {
+            $whereClauses[] = "p.status = ?";
+            $params[] = $statusFilter;
+            $types .= "s";
+        }
+    } else {
+        $whereClauses[] = "p.status != 'trash'";
+    }
+
+    if ($categoryFilter) {
+        $whereClauses[] = "p.id IN (SELECT post_id FROM post_categories WHERE category_id = ?)";
+        $params[] = $categoryFilter;
+        $types .= "i";
+    }
+
+    if ($authorFilter) {
+        $whereClauses[] = "p.author_id = ?";
+        $params[] = $authorFilter;
+        $types .= "i";
+    }
+
+    $whereSql = "";
+    if (!empty($whereClauses)) {
+        $whereSql = "WHERE " . implode(" AND ", $whereClauses);
+    }
+
+    // --- 4. Main Query (Updated with Redirect Subquery) ---
+    // We check the 'redirects' table for a match on 'blog/' + slug.
+    // This tells us if traffic to this post is being diverted.
+    $sql = "
+        SELECT
+            p.id, p.title, p.slug, p.status, p.updated_at,
+            a.name as author_name,
+            (
+                SELECT GROUP_CONCAT(c.name SEPARATOR ', ') 
+                FROM categories c 
+                JOIN post_categories pc ON c.id = pc.category_id 
+                WHERE pc.post_id = p.id
+            ) as category_name,
+            (
+                SELECT target_url 
+                FROM redirects 
+                WHERE source_path = CONCAT('blog/', p.slug) 
+                AND status = 'active' 
+                LIMIT 1
+            ) as active_redirect
+        FROM posts p
+        LEFT JOIN admins a ON p.author_id = a.id
+        {$whereSql}
+        GROUP BY p.id
+        ORDER BY p.updated_at DESC
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    if (!empty($params)) {
+        $stmt->bind_param($types, ...$params);
+    }
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $posts = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    
+    // --- 5. Response ---
+    $responseData = [
+        'posts' => $posts,
+        'counts' => $counts
+    ];
+
+    sendResponse(true, $responseData, 'Posts fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_posts.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching posts.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

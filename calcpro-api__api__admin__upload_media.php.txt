@@ -1,0 +1,132 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// --- Configuration ---
+define('UPLOAD_DIR', PROJECT_ROOT . '/uploads/');
+define('MAX_FILE_SIZE', 256 * 1024 * 1024); // 256 MB
+$allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+try {
+    // --- 1. Use Admin ID from the verified token ---
+    $adminUserId = $admin_data->adminId; 
+
+    if (!isset($_FILES['mediaFile'])) {
+        throw new Exception('No file was uploaded.', 400);
+    }
+    
+    $file = $_FILES['mediaFile'];
+
+    // --- 2. File Upload Error Handling ---
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        $uploadErrors = [
+            UPLOAD_ERR_INI_SIZE   => 'File exceeds the server\'s maximum upload size.',
+            UPLOAD_ERR_FORM_SIZE  => 'File exceeds the form\'s maximum size limit.',
+            UPLOAD_ERR_PARTIAL    => 'The file was only partially uploaded.',
+            UPLOAD_ERR_NO_FILE    => 'No file was uploaded.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Missing a temporary folder on the server.',
+            UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk.',
+            UPLOAD_ERR_EXTENSION  => 'A PHP extension stopped the file upload.',
+        ];
+        $errorMessage = $uploadErrors[$file['error']] ?? 'Unknown upload error.';
+        throw new Exception($errorMessage, 400);
+    }
+
+    // --- 3. File Validation ---
+    if ($file['size'] > MAX_FILE_SIZE) {
+        throw new Exception('File is too large. Maximum size is 256MB.', 413);
+    }
+    
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mimeType = $finfo->file($file['tmp_name']);
+    if (!in_array($mimeType, $allowedMimeTypes)) {
+        throw new Exception('Invalid file type. Only JPG, PNG, GIF, and WEBP are allowed.', 415);
+    }
+
+    // --- 4. Filename Sanitization ---
+    $originalName = $file['name'];
+    $fileInfo = pathinfo($originalName);
+    $baseName = $fileInfo['filename'];
+    $extension = isset($fileInfo['extension']) ? strtolower($fileInfo['extension']) : '';
+
+    $sanitizedBaseName = preg_replace('/[^a-z0-9_-]/', '-', strtolower($baseName));
+    $sanitizedBaseName = preg_replace('/-+/', '-', $sanitizedBaseName);
+    $sanitizedBaseName = trim($sanitizedBaseName, '-');
+
+    $fileName = $sanitizedBaseName . '.' . $extension;
+
+    // --- 5. STRICT DUPLICATE CHECK (New Logic) ---
+    // Check if this specific filename exists in the database
+    $checkSql = "SELECT id FROM media WHERE file_name = ?";
+    $stmtCheck = $conn->prepare($checkSql);
+    $stmtCheck->bind_param("s", $fileName);
+    $stmtCheck->execute();
+    $stmtCheck->store_result();
+    
+    if ($stmtCheck->num_rows > 0) {
+        $stmtCheck->close();
+        // Return 409 Conflict to trigger the alert on frontend
+        throw new Exception("A file named '{$fileName}' already exists. Please rename your file before uploading.", 409);
+    }
+    $stmtCheck->close();
+
+    // --- 6. Get Image Dimensions ---
+    $dimensions = null;
+    $imageSizeInfo = getimagesize($file['tmp_name']);
+    if ($imageSizeInfo !== false) {
+        $width = $imageSizeInfo[0];
+        $height = $imageSizeInfo[1];
+        $dimensions = "{$width}x{$height}";
+    }
+
+    // --- 7. Move the File and Save to Database ---
+    $targetPath = UPLOAD_DIR . $fileName;
+    $relativePath = 'uploads/' . $fileName;
+
+    if (!move_uploaded_file($file['tmp_name'], $targetPath)) {
+        throw new Exception('Failed to move uploaded file.', 500);
+    }
+
+    $altText = ucwords(str_replace(['-', '_'], ' ', $baseName));
+    
+    $sql = "INSERT INTO media (admin_id, original_name, file_name, file_type, file_size, dimensions, upload_path, alt_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    $stmt = $conn->prepare($sql);
+    
+    $stmt->bind_param("isssisss", $adminUserId, $originalName, $fileName, $mimeType, $file['size'], $dimensions, $relativePath, $altText);
+
+    if ($stmt->execute()) {
+        $newMediaId = $conn->insert_id;
+        
+        $fetchSql = "SELECT * FROM media WHERE id = ?";
+        $fetchStmt = $conn->prepare($fetchSql);
+        $fetchStmt->bind_param("i", $newMediaId);
+        $fetchStmt->execute();
+        $newMediaRecord = $fetchStmt->get_result()->fetch_assoc();
+        $fetchStmt->close();
+
+        $api_base_url = $_ENV['API_PUBLIC_URL'];
+        $newMediaRecord['full_url'] = rtrim($api_base_url, '/') . '/' . $newMediaRecord['upload_path'];
+
+        sendResponse(true, $newMediaRecord, 'File uploaded successfully!', 201);
+    } else {
+        // Cleanup if DB insert fails
+        if (file_exists($targetPath)) {
+            unlink($targetPath);
+        }
+        throw new Exception('Failed to save file metadata to the database.', 500);
+    }
+    $stmt->close();
+
+} catch (Exception $e) {
+    $code = is_numeric($e->getCode()) && $e->getCode() > 0 ? $e->getCode() : 500;
+    error_log("Error in upload_media.php: " . $e->getMessage());
+    sendResponse(false, null, $e->getMessage(), $code, 'UPLOAD_FAILED');
+}
+
+$conn->close();
+?>

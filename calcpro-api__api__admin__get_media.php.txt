@@ -1,0 +1,76 @@
+<?php
+// File: calcpro-api/api/admin/get_media.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Status Filter ---
+    // Default to 'active' if not specified
+    $status = isset($_GET['status']) && $_GET['status'] === 'trash' ? 'trash' : 'active';
+
+    // --- 2. Pagination ---
+    $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+    $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 100; // Default 100 items per load
+    $offset = ($page - 1) * $limit;
+
+    // --- 3. Count Total Records ---
+    $countSql = "SELECT COUNT(id) as total FROM media WHERE status = ?";
+    $stmtCount = $conn->prepare($countSql);
+    $stmtCount->bind_param("s", $status);
+    $stmtCount->execute();
+    $totalResult = $stmtCount->get_result()->fetch_assoc();
+    $totalRecords = $totalResult['total'];
+    $stmtCount->close();
+
+    $totalPages = ceil($totalRecords / $limit);
+
+    // --- 4. Fetch Media Items ---
+    $sql = "SELECT * FROM media WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?";
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        throw new Exception('Database prepare failed: ' . $conn->error);
+    }
+
+    $stmt->bind_param("sii", $status, $limit, $offset);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    $media = [];
+    $api_base_url = $_ENV['API_PUBLIC_URL'];
+
+    while ($row = $result->fetch_assoc()) {
+        $row['id'] = (int)$row['id'];
+        $row['file_size'] = (int)$row['file_size'];
+        // Construct full URL
+        $row['full_url'] = rtrim($api_base_url, '/') . '/' . $row['upload_path'];
+        $media[] = $row;
+    }
+    $stmt->close();
+
+    // --- 5. Response ---
+    $responseData = [
+        'media' => $media,
+        'pagination' => [
+            'currentPage' => $page,
+            'totalPages' => $totalPages,
+            'totalRecords' => $totalRecords,
+            'limit' => $limit
+        ]
+    ];
+    
+    sendResponse(true, $responseData, 'Media library fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_media.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

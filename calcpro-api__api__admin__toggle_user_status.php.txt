@@ -1,0 +1,56 @@
+<?php
+require '../../core/config.php';
+require_once '../../core/response.php';
+
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+if (json_last_error() !== JSON_ERROR_NONE) {
+sendResponse(false, null, 'Invalid JSON format.', 400, 'INVALID_JSON');
+}
+
+if (!isset($data->userId) || !is_numeric($data->userId) || !isset($data->newStatus)) {
+sendResponse(false, null, 'User ID and new status are required.', 400, 'INVALID_INPUT');
+}
+
+$userId = (int)$data->userId;
+$newStatus = $data->newStatus;
+
+if (!in_array($newStatus, ['active', 'banned'])) {
+sendResponse(false, null, 'Invalid status provided. Must be "active" or "banned".', 400, 'INVALID_STATUS');
+}
+
+// Critical Safety Feature: Prevent the primary admin (ID = 1) from being banned.
+if ($userId === 1) {
+sendResponse(false, null, 'The primary administrator status cannot be changed.', 403, 'ACTION_NOT_ALLOWED');
+}
+
+try {
+$sql = "UPDATE users SET status = ? WHERE id = ?";
+$stmt = $conn->prepare($sql);
+
+if ($stmt === false) {
+throw new Exception('Failed to prepare the SQL statement.');
+}
+
+$stmt->bind_param("si", $newStatus, $userId);
+
+if ($stmt->execute()) {
+if ($stmt->affected_rows > 0) {
+$message = "User has been " . ($newStatus === 'active' ? 'unbanned' : 'banned') . " successfully.";
+sendResponse(true, null, $message, 200);
+} else {
+sendResponse(false, null, 'User not found or status is already set.', 404, 'NOT_FOUND');
+}
+} else {
+throw new Exception("Database update failed: " . $stmt->error);
+}
+$stmt->close();
+
+} catch (Exception $e) {
+error_log("Error in toggle_user_status.php: " . $e->getMessage());
+sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

@@ -1,0 +1,48 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+// No auth.php needed for this public endpoint
+
+try {
+    // --- THIS IS THE CORRECTED SQL QUERY ---
+    // The reference to the non-existent `publish_at` column has been removed from the WHERE clause.
+    // The query now correctly fetches categories that have at least one post with the status 'published'.
+    $sql = "
+        SELECT DISTINCT
+            c.id,
+            c.name,
+            c.slug
+        FROM
+            categories c
+        JOIN
+            post_categories pc ON c.id = pc.category_id
+        JOIN
+            posts p ON pc.post_id = p.id
+        WHERE
+            p.status = 'published'
+        ORDER BY
+            c.name ASC
+    ";
+
+    $stmt = $conn->prepare($sql);
+    if ($stmt === false) {
+        throw new Exception('Database prepare statement failed: ' . $conn->error);
+    }
+    
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $categories = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    
+    // Send the successful response with the list of categories.
+    sendResponse(true, $categories, 'Public categories fetched successfully.');
+
+} catch (Exception $e) {
+    // Error Handling
+    error_log("Error in get_public_categories.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching categories.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

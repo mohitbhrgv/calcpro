@@ -1,0 +1,144 @@
+<?php
+// File: calcpro-api/api/public/get_public_calculator.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+// Helper to fetch Alt Text by filename
+function getMediaAlt($conn, $url) {
+    if (empty($url)) return null;
+    $filename = basename($url);
+    $stmt = $conn->prepare("SELECT alt_text FROM media WHERE file_name = ? LIMIT 1");
+    if (!$stmt) return null;
+    $stmt->bind_param("s", $filename);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $alt = null;
+    if ($row = $res->fetch_assoc()) {
+        $alt = $row['alt_text'];
+    }
+    $stmt->close();
+    return $alt;
+}
+
+try {
+    if (!isset($_GET['slug']) || empty(trim($_GET['slug']))) {
+        sendResponse(false, null, 'A calculator slug is required.', 400, 'INVALID_INPUT');
+    }
+    $slug = trim($_GET['slug']);
+    
+    // --- Main Calculator Query ---
+    $sql = "
+        SELECT 
+            c.*,
+            c_prim.name as primary_category_name,
+            c_prim.slug as primary_category_slug,
+            c_parent.name as parent_category_name,
+            c_parent.slug as parent_category_slug,
+            GROUP_CONCAT(DISTINCT cc.name SEPARATOR '||') as category_names,
+            GROUP_CONCAT(DISTINCT cc.slug SEPARATOR '||') as category_slugs
+        FROM calculators c
+        LEFT JOIN calculator_category_assignments cca ON c.id = cca.calculator_id
+        LEFT JOIN calculator_categories cc ON cca.category_id = cc.id
+        LEFT JOIN calculator_categories c_prim ON c.primary_category_id = c_prim.id
+        LEFT JOIN calculator_categories c_parent ON c_prim.parent_id = c_parent.id
+        WHERE c.slug = ? AND c.status = 'published'
+        GROUP BY c.id
+        LIMIT 1
+    ";
+
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("s", $slug);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    if ($result->num_rows > 0) {
+        $calculator = $result->fetch_assoc();
+        $stmt->close();
+
+        // Process Categories
+        if (!empty($calculator['category_names']) && !empty($calculator['category_slugs'])) {
+            $categoryNames = explode('||', $calculator['category_names']);
+            $categorySlugs = explode('||', $calculator['category_slugs']);
+            
+            if ($calculator['primary_category_name']) {
+                $calculator['primary_category'] = [
+                    'name' => $calculator['primary_category_name'],
+                    'slug' => $calculator['primary_category_slug']
+                ];
+            } else {
+                $calculator['primary_category'] = [
+                    'name' => $categoryNames[0],
+                    'slug' => $categorySlugs[0]
+                ];
+            }
+        } else {
+            $calculator['primary_category'] = null;
+        }
+
+        // Fetch Associated Tags
+        $tagsSql = "
+            SELECT t.name, t.slug 
+            FROM tags t
+            JOIN calculator_tags ct ON t.id = ct.tag_id
+            WHERE ct.calculator_id = ?
+        ";
+        $tagsStmt = $conn->prepare($tagsSql);
+        $tagsStmt->bind_param("i", $calculator['id']);
+        $tagsStmt->execute();
+        $tagsResult = $tagsStmt->get_result();
+        
+        $tags = [];
+        while($row = $tagsResult->fetch_assoc()) {
+            $tags[] = $row;
+        }
+        $tagsStmt->close();
+        
+        $calculator['tags'] = $tags;
+
+        // Decode JSON fields
+        $calculator['faq_json'] = json_decode($calculator['faq_json'] ?? '[]');
+        $calculator['schema_json'] = json_decode($calculator['schema_json'] ?? '[]');
+        
+        $calculator['is_featured'] = (bool)$calculator['is_featured'];
+
+        // SEO & META
+        $calculator['focusKeywords'] = $calculator['focus_keywords']; 
+        $calculator['canonical_url'] = $calculator['canonical_url'];
+
+        // Social SEO (Facebook)
+        $calculator['ogTitle'] = $calculator['og_title'];
+        $calculator['ogDescription'] = $calculator['og_description'];
+        $calculator['ogImage'] = $calculator['og_image'];
+        $calculator['ogImageAlt'] = getMediaAlt($conn, $calculator['og_image']); // NEW
+
+        // Social SEO (Twitter)
+        $calculator['twitterTitle'] = $calculator['twitter_title'];
+        $calculator['twitterDescription'] = $calculator['twitter_description'];
+        $calculator['twitterImage'] = $calculator['twitter_image'];
+        $calculator['twitterImageAlt'] = getMediaAlt($conn, $calculator['twitter_image']); // NEW
+
+        // Robots Meta
+        $calculator['no_index'] = $calculator['no_index'] === null ? null : (bool)$calculator['no_index'];
+        $calculator['no_follow'] = $calculator['no_follow'] === null ? null : (bool)$calculator['no_follow'];
+        $calculator['no_archive'] = $calculator['no_archive'] === null ? null : (bool)$calculator['no_archive'];
+        $calculator['no_image_index'] = $calculator['no_image_index'] === null ? null : (bool)$calculator['no_image_index'];
+        $calculator['no_snippet'] = $calculator['no_snippet'] === null ? null : (bool)$calculator['no_snippet'];
+
+        $calculator['max_snippet'] = $calculator['max_snippet'] !== null ? (int)$calculator['max_snippet'] : null;
+        $calculator['max_video_preview'] = $calculator['max_video_preview'] !== null ? (int)$calculator['max_video_preview'] : null;
+
+        sendResponse(true, $calculator, 'Calculator content fetched successfully.');
+    } else {
+        $stmt->close();
+        sendResponse(false, null, 'Calculator content not found.', 404, 'NOT_FOUND');
+    }
+
+} catch (Exception $e) {
+    error_log("Error in get_public_calculator.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching calculator content.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

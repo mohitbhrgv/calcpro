@@ -1,0 +1,68 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+// This function identifies the logged-in admin via their JWT and returns their data.
+// The script will halt with a 401 error if the token is invalid.
+$admin_data = verifyAdminToken();
+$admin_id = $admin_data->adminId;
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->name) || empty(trim($data->name))) {
+        sendResponse(false, null, 'Name cannot be empty.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->email) || !filter_var(trim($data->email), FILTER_VALIDATE_EMAIL)) {
+        sendResponse(false, null, 'A valid email address is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize Data ---
+    $name = trim($data->name);
+    $email = trim($data->email);
+
+    // --- 4. Check for Duplicate Email ---
+    // Ensure the new email isn't already taken by another admin.
+    $sql_check = "SELECT id FROM admins WHERE email = ? AND id != ?";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->bind_param("si", $email, $admin_id);
+    $stmt_check->execute();
+    if ($stmt_check->get_result()->num_rows > 0) {
+        $stmt_check->close();
+        sendResponse(false, null, 'This email address is already in use by another account.', 409, 'DUPLICATE_EMAIL');
+    }
+    $stmt_check->close();
+
+    // --- 5. Update the Admin Record ---
+    $sql_update = "UPDATE admins SET name = ?, email = ? WHERE id = ?";
+    $stmt_update = $conn->prepare($sql_update);
+    $stmt_update->bind_param("ssi", $name, $email, $admin_id);
+
+    if ($stmt_update->execute()) {
+        // --- 6. Send Back Updated User Data ---
+        // This is crucial for the AuthContext on the frontend to stay in sync.
+        $updated_user_data = [
+            'id' => $admin_id,
+            'name' => $name,
+            'email' => $email,
+            'role' => $admin_data->adminRole // Role doesn't change here
+        ];
+        sendResponse(true, $updated_user_data, 'Profile updated successfully!');
+    } else {
+        throw new Exception("Database update failed: " . $stmt_update->error);
+    }
+    $stmt_update->close();
+
+} catch (Exception $e) {
+    error_log("Error in update_admin_profile.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

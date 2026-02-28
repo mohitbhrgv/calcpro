@@ -1,0 +1,247 @@
+<?php
+// File: calcpro-api/api/public/get_public_post.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+// Helper to fetch Alt Text by filename (derived from URL)
+function getMediaAlt($conn, $url) {
+    if (empty($url)) return null;
+    // Extract filename (e.g. "image.jpg" from "http://.../uploads/image.jpg")
+    $filename = basename($url);
+    
+    // We assume filenames are unique in the upload folder/media table
+    $stmt = $conn->prepare("SELECT alt_text FROM media WHERE file_name = ? LIMIT 1");
+    if (!$stmt) return null;
+    
+    $stmt->bind_param("s", $filename);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $alt = null;
+    if ($row = $res->fetch_assoc()) {
+        $alt = $row['alt_text'];
+    }
+    $stmt->close();
+    return $alt;
+}
+
+try {
+    // --- 1. Validate Input ---
+    if (!isset($_GET['slug']) || empty(trim($_GET['slug']))) {
+        sendResponse(false, null, 'A post slug is required.', 400, 'INVALID_INPUT');
+    }
+    $slug = trim($_GET['slug']);
+
+    // --- 2. Main Post Query ---
+    // Added m.alt_text to fetch Featured Image Alt directly
+    $sql = "
+        SELECT
+            p.id, p.title, p.slug, p.content, p.excerpt, p.read_time,
+            p.created_at as published_date,
+            p.updated_at,
+            p.meta_title, p.meta_description, p.focus_keywords,
+            p.canonical_url,
+            p.no_index, p.no_follow, p.no_archive, p.no_image_index, p.no_snippet,
+            p.max_snippet, p.max_video_preview, p.max_image_preview,
+            p.og_title, p.og_description, p.og_image,
+            p.twitter_title, p.twitter_description, p.twitter_image,
+            a.name as author_name, a.role as author_role,
+            m.upload_path as featured_image_path,
+            m.alt_text as featured_image_alt,
+            c_prim.name as primary_category_name,
+            c_prim.slug as primary_category_slug,
+            c_parent.name as parent_category_name,
+            c_parent.slug as parent_category_slug
+        FROM posts p
+        LEFT JOIN admins a ON p.author_id = a.id
+        LEFT JOIN media m ON p.featured_image_id = m.id
+        LEFT JOIN categories c_prim ON p.primary_category_id = c_prim.id
+        LEFT JOIN categories c_parent ON c_prim.parent_id = c_parent.id
+        WHERE p.slug = ? AND p.status = 'published'
+        LIMIT 1
+    ";
+
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("s", $slug);
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+    if ($result->num_rows === 0) {
+        $stmt->close();
+
+        // --- 2b. CHECK FOR REDIRECTS ---
+        $redirect_sql = "SELECT target_url, status_code FROM redirects WHERE source_path = ? AND status = 'active' LIMIT 1";
+        $r_stmt = $conn->prepare($redirect_sql);
+        
+        if ($r_stmt) {
+            $full_source_path = 'blog/' . $slug;
+            $r_stmt->bind_param("s", $full_source_path);
+            $r_stmt->execute();
+            $r_result = $r_stmt->get_result();
+
+            if ($r_result->num_rows > 0) {
+                $redirect_data = $r_result->fetch_assoc();
+                $r_stmt->close();
+                sendResponse(true, [
+                    'is_redirect' => true,
+                    'target_url' => $redirect_data['target_url'],
+                    'status_code' => (int)$redirect_data['status_code']
+                ], 'Resource has moved.');
+            }
+            $r_stmt->close();
+        }
+
+        sendResponse(false, null, 'Post not found or not published.', 404, 'NOT_FOUND');
+    }
+
+    $post_db = $result->fetch_assoc();
+    $stmt->close();
+
+    // --- 3. Fetch Categories (List) ---
+    $categorySql = "
+        SELECT c.id, c.name as category_name, c.slug as category_slug
+        FROM categories c
+        JOIN post_categories pc ON c.id = pc.category_id
+        WHERE pc.post_id = ?
+        ORDER BY c.id ASC
+    ";
+    $categoryStmt = $conn->prepare($categorySql);
+    $categoryStmt->bind_param("i", $post_db['id']);
+    $categoryStmt->execute();
+    $categories = $categoryStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $categoryStmt->close();
+
+    // --- 4. Fetch Tags ---
+    $tagSql = "
+        SELECT t.name, t.slug
+        FROM tags t
+        JOIN post_tags pt ON t.id = pt.tag_id
+        WHERE pt.post_id = ?
+    ";
+    $tagStmt = $conn->prepare($tagSql);
+    $tagStmt->bind_param("i", $post_db['id']);
+    $tagStmt->execute();
+    $tags = $tagStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $tagStmt->close();
+
+    // --- 5. Fetch Related Posts ---
+    $catIdForRelated = null;
+    if ($post_db['primary_category_name']) {
+        foreach ($categories as $cat) {
+            if ($cat['category_name'] === $post_db['primary_category_name']) {
+                $catIdForRelated = $cat['id'];
+                break;
+            }
+        }
+    }
+    if (!$catIdForRelated && !empty($categories)) {
+        $catIdForRelated = $categories[0]['id'];
+    }
+
+    $related_posts_db = [];
+    if ($catIdForRelated) {
+        $relatedSql = "
+            SELECT p.title, p.slug, m.upload_path as featured_image_path, p.created_at as published_date
+            FROM posts p
+            JOIN post_categories pc ON p.id = pc.post_id
+            LEFT JOIN media m ON p.featured_image_id = m.id
+            WHERE pc.category_id = ? AND p.id != ? AND p.status = 'published'
+            GROUP BY p.id
+            ORDER BY p.created_at DESC
+            LIMIT 3
+        ";
+        $relatedStmt = $conn->prepare($relatedSql);
+        $relatedStmt->bind_param("ii", $catIdForRelated, $post_db['id']);
+        $relatedStmt->execute();
+        $relatedResult = $relatedStmt->get_result();
+        $related_posts_db = $relatedResult->fetch_all(MYSQLI_ASSOC);
+        $relatedStmt->close();
+    }
+    
+    // --- 6. Construct Response ---
+    $api_base_url = $_ENV['API_PUBLIC_URL'];
+    
+    $related_posts_frontend = [];
+    foreach ($related_posts_db as $related_post_db) {
+        $related_posts_frontend[] = [
+            'title' => $related_post_db['title'],
+            'slug' => $related_post_db['slug'],
+            'featured_image_url' => !empty($related_post_db['featured_image_path']) ? rtrim($api_base_url, '/') . '/' . $related_post_db['featured_image_path'] : null,
+            'published_date' => $related_post_db['published_date']
+        ];
+    }
+
+    // --- LOOKUP ALT TEXT FOR CUSTOM IMAGES ---
+    // If og_image or twitter_image are set (and different from featured), fetch their alt text.
+    // Note: If they match featured image URL, we can reuse featured_image_alt in frontend logic, 
+    // but fetching explicitly is safer.
+    
+    $og_image_alt = getMediaAlt($conn, $post_db['og_image']);
+    $twitter_image_alt = getMediaAlt($conn, $post_db['twitter_image']);
+    
+    $post_frontend = [
+        'id' => (int)$post_db['id'],
+        'title' => $post_db['title'],
+        'slug' => $post_db['slug'],
+        'content' => $post_db['content'],
+        'excerpt' => $post_db['excerpt'],
+        'read_time' => (int)$post_db['read_time'],
+        'published_date' => $post_db['published_date'],
+        'updated_at' => $post_db['updated_at'],
+        'meta_title' => $post_db['meta_title'],
+        'meta_description' => $post_db['meta_description'],
+        'focus_keywords' => $post_db['focus_keywords'],
+        'author_name' => $post_db['author_name'],
+        'author_role' => $post_db['author_role'],
+        
+        // Image Data
+        'featured_image_url' => !empty($post_db['featured_image_path']) ? rtrim($api_base_url, '/') . '/' . $post_db['featured_image_path'] : null,
+        'featured_image_alt' => $post_db['featured_image_alt'], // From JOIN
+        
+        // Categories & Hierarchy
+        'primary_category_name' => $post_db['primary_category_name'],
+        'primary_category_slug' => $post_db['primary_category_slug'],
+        'parent_category_name' => $post_db['parent_category_name'],
+        'parent_category_slug' => $post_db['parent_category_slug'],
+        'category_name' => $post_db['primary_category_name'] ?: (!empty($categories) ? $categories[0]['category_name'] : null),
+        'categories' => $categories,
+        'tags' => $tags,
+        'related_posts' => $related_posts_frontend,
+
+        // SEO Fields
+        'canonical_url' => $post_db['canonical_url'],
+        
+        // Robots Meta
+        'no_index' => $post_db['no_index'] === null ? null : (bool)$post_db['no_index'],
+        'no_follow' => $post_db['no_follow'] === null ? null : (bool)$post_db['no_follow'],
+        'no_archive' => $post_db['no_archive'] === null ? null : (bool)$post_db['no_archive'],
+        'no_image_index' => $post_db['no_image_index'] === null ? null : (bool)$post_db['no_image_index'],
+        'no_snippet' => $post_db['no_snippet'] === null ? null : (bool)$post_db['no_snippet'],
+
+        // Advanced Robot Meta
+        'max_snippet' => $post_db['max_snippet'] !== null ? (int)$post_db['max_snippet'] : null,
+        'max_video_preview' => $post_db['max_video_preview'] !== null ? (int)$post_db['max_video_preview'] : null,
+        'max_image_preview' => $post_db['max_image_preview'],
+
+        // Social Meta
+        'og_title' => $post_db['og_title'],
+        'og_description' => $post_db['og_description'],
+        'og_image' => $post_db['og_image'],
+        'og_image_alt' => $og_image_alt, // NEW
+        
+        'twitter_title' => $post_db['twitter_title'],
+        'twitter_description' => $post_db['twitter_description'],
+        'twitter_image' => $post_db['twitter_image'],
+        'twitter_image_alt' => $twitter_image_alt, // NEW
+    ];
+
+    sendResponse(true, $post_frontend, 'Post fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_public_post.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching the post.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

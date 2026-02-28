@@ -1,0 +1,114 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->id) || !is_numeric($data->id)) {
+        sendResponse(false, null, 'A valid Redirect ID is required.', 400, 'INVALID_INPUT');
+    }
+
+    // If we are just toggling status, other fields might not be present.
+    // We check if specific fields exist before validating them.
+    
+    $id = (int)$data->id;
+    $updates = [];
+    $params = [];
+    $types = "";
+
+    // Source Path Update
+    if (isset($data->source_path)) {
+        $source_path = trim($data->source_path, '/');
+        if (empty($source_path)) {
+            sendResponse(false, null, 'Source path cannot be empty.', 400, 'INVALID_INPUT');
+        }
+        
+        // Check for duplicates (excluding self)
+        $check_sql = "SELECT id FROM redirects WHERE source_path = ? AND id != ?";
+        $check_stmt = $conn->prepare($check_sql);
+        $check_stmt->bind_param("si", $source_path, $id);
+        $check_stmt->execute();
+        if ($check_stmt->get_result()->num_rows > 0) {
+            sendResponse(false, null, 'Duplicate source path.', 409, 'DUPLICATE_SOURCE');
+        }
+        $check_stmt->close();
+
+        $updates[] = "source_path = ?";
+        $params[] = $source_path;
+        $types .= "s";
+    }
+
+    // Target URL Update
+    if (isset($data->target_url)) {
+        $target_url = trim($data->target_url);
+        // Note: We validate target requirement in context of status code below or if changing both.
+        $updates[] = "target_url = ?";
+        $params[] = $target_url;
+        $types .= "s";
+    }
+
+    // Status Code Update
+    if (isset($data->status_code)) {
+        $valid_codes = [301, 302, 307, 308, 410, 451];
+        $status_code = in_array((int)$data->status_code, $valid_codes) ? (int)$data->status_code : 301;
+        
+        // Validation Logic for Target URL Requirement
+        if (in_array($status_code, [301, 302, 307, 308])) {
+            // If target_url is also being updated, check it. 
+            // If not, we assume existing DB value is fine (or frontend handles this logic).
+            if (isset($data->target_url) && empty(trim($data->target_url))) {
+                 sendResponse(false, null, 'Target URL is required.', 400, 'INVALID_INPUT');
+            }
+        }
+
+        $updates[] = "status_code = ?";
+        $params[] = $status_code;
+        $types .= "i";
+    }
+
+    // Status Toggle Update ('active' / 'inactive')
+    // Note: 'trash' is handled by delete_redirect.php
+    if (isset($data->status)) {
+        if (in_array($data->status, ['active', 'inactive'])) {
+            $updates[] = "status = ?";
+            $params[] = $data->status;
+            $types .= "s";
+        }
+    }
+
+    if (empty($updates)) {
+        sendResponse(true, null, 'No changes to update.', 200);
+    }
+
+    // --- 3. Execute Update ---
+    $sql = "UPDATE redirects SET " . implode(", ", $updates) . " WHERE id = ?";
+    $params[] = $id;
+    $types .= "i";
+
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param($types, ...$params);
+
+    if ($stmt->execute()) {
+        sendResponse(true, null, 'Redirect rule updated successfully.', 200);
+    } else {
+        throw new Exception("Database update failed: " . $stmt->error);
+    }
+
+    $stmt->close();
+
+} catch (Exception $e) {
+    error_log("Error in update_redirect.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

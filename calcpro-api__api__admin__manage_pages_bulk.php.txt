@@ -1,0 +1,77 @@
+<?php
+// File: calcpro-api/api/admin/manage_pages_bulk.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->ids) || !is_array($data->ids) || empty($data->ids)) {
+        sendResponse(false, null, 'No items selected.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->action)) {
+        sendResponse(false, null, 'No action specified.', 400, 'INVALID_INPUT');
+    }
+
+    $action = $data->action;
+    
+    // Sanitize IDs
+    $ids = array_map('intval', $data->ids);
+    $id_list = implode(',', $ids);
+
+    // --- 3. Execute Action ---
+    $sql = "";
+    $successMsg = "";
+
+    switch ($action) {
+        case 'trash':
+            // Soft Delete: Preserves updated_at
+            $sql = "UPDATE pages SET previous_status = status, status = 'trash', updated_at = updated_at WHERE id IN ($id_list) AND status != 'trash'";
+            $successMsg = "Selected pages moved to Trash.";
+            break;
+
+        case 'restore':
+            // Restore: Preserves updated_at
+            $sql = "UPDATE pages SET status = COALESCE(previous_status, 'draft'), previous_status = NULL, updated_at = updated_at WHERE id IN ($id_list) AND status = 'trash'";
+            $successMsg = "Selected pages restored.";
+            break;
+
+        case 'delete_permanent':
+            // Hard delete
+            $sql = "DELETE FROM pages WHERE id IN ($id_list) AND status = 'trash'";
+            $successMsg = "Selected pages permanently deleted.";
+            break;
+
+        default:
+            sendResponse(false, null, 'Invalid action specified.', 400, 'INVALID_ACTION');
+            break;
+    }
+
+    // --- 4. Run Query ---
+    if ($conn->query($sql) === TRUE) {
+         $affected = $conn->affected_rows;
+         if ($affected > 0) {
+             sendResponse(true, ['affected' => $affected], $successMsg, 200);
+         } else {
+             sendResponse(false, null, 'No records were updated.', 404, 'NO_CHANGES');
+         }
+    } else {
+         throw new Exception("Database query failed: " . $conn->error);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in manage_pages_bulk.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

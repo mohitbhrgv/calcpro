@@ -1,0 +1,48 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+// We DO NOT include auth.php. This is a public endpoint.
+
+try {
+    // --- 1. The SQL Query ---
+    // This query selects only the slug and content for pages that are explicitly marked as 'published'.
+    // This is efficient and secure, preventing any draft content from ever being sent to the public.
+    $sql = "SELECT slug, content_json, meta_title, meta_description FROM pages WHERE status = 'published'";
+
+    $stmt = $conn->prepare($sql);
+    if ($stmt === false) {
+        throw new Exception('Database prepare statement failed: ' . $conn->error);
+    }
+    
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    // --- 2. Build the Content Object ---
+    // We will create an associative array (like a dictionary) where the page's slug is the key.
+    // This makes it extremely easy for the frontend to find the content for a specific page.
+    $pages_content = [];
+    if ($result->num_rows > 0) {
+        while ($row = $result->fetch_assoc()) {
+            $pages_content[$row['slug']] = [
+                'content' => json_decode($row['content_json'] ?? '{}'),
+                'meta_title' => $row['meta_title'],
+                'meta_description' => $row['meta_description']
+            ];
+        }
+    }
+    
+    $stmt->close();
+    
+    // --- 3. Send the Successful Response ---
+    // The entire collection of page content is sent back in a single, efficient request.
+    sendResponse(true, $pages_content, 'All published page content fetched successfully.');
+
+} catch (Exception $e) {
+    // --- Error Handling ---
+    error_log("Error in get_all_pages.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching page content.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

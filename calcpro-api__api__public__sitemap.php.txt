@@ -1,0 +1,262 @@
+<?php
+// File: calcpro-api/api/public/sitemap.php
+
+/**
+ * Advanced Dynamic Sitemap Engine v5.0
+ * Features: Pagination, Granular Categories, Deep Image Parsing.
+ * Tags removed.
+ */
+
+// 1. Load Configuration
+require_once dirname(__DIR__, 2) . '/core/config.php';
+
+// 2. Debugging & Headers
+$debugMode = isset($_GET['debug']) && $_GET['debug'] == '1';
+
+if (!$debugMode) {
+    header("Content-Type: application/xml; charset=utf-8");
+    header("X-Robots-Tag: noindex");
+} else {
+    header("Content-Type: text/plain; charset=utf-8");
+}
+
+// 3. Base URLs
+$apiBaseUrl = isset($_ENV['API_PUBLIC_URL']) ? rtrim($_ENV['API_PUBLIC_URL'], '/') : '';
+$baseUrl = isset($_ENV['PUBLIC_FRONTEND_URL']) ? rtrim($_ENV['PUBLIC_FRONTEND_URL'], '/') : '';
+
+// 4. Output Declaration
+if (ob_get_length()) ob_clean();
+
+if (!$debugMode) {
+    echo '<?xml version="1.0" encoding="UTF-8"?>';
+    echo '<?xml-stylesheet type="text/xsl" href="/main-sitemap.xsl"?>';
+}
+
+try {
+    // --- A. FETCH SETTINGS ---
+    $settings = [];
+    $res = $conn->query("SELECT setting_key, setting_value FROM settings");
+    if ($res) {
+        while($row = $res->fetch_assoc()) $settings[$row['setting_key']] = $row['setting_value'];
+    }
+
+    // Robust Boolean Helper
+    function isSettingEnabled($key) {
+        global $settings;
+        $val = $settings[$key] ?? 'true'; 
+        return ($val === true || $val === 1 || $val === '1' || strtolower((string)$val) === 'true');
+    }
+
+    // Configuration
+    $incPosts     = isSettingEnabled('seo_sitemap_inc_posts');
+    $incPages     = isSettingEnabled('seo_sitemap_inc_pages');
+    $incCalcs     = isSettingEnabled('seo_sitemap_inc_calcs');
+    $incBlogCats  = isSettingEnabled('seo_sitemap_inc_blog_cats');
+    $incCalcCats  = isSettingEnabled('seo_sitemap_inc_calc_cats');
+
+    // Pagination Limit
+    $limit = isset($settings['seo_sitemap_pagination_limit']) ? (int)$settings['seo_sitemap_pagination_limit'] : 1000;
+    if ($limit < 50) $limit = 50; // Safety floor
+    if ($limit > 50000) $limit = 50000; // Safety ceiling (Google limit)
+
+    // Current Page (for sub-sitemaps)
+    $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+    $offset = ($page - 1) * $limit;
+
+    // URL Bases
+    $calcBase = !empty($settings['calculator_base_slug']) ? trim($settings['calculator_base_slug'], '/') : 'calculators';
+    $postStruct = $settings['permalink_structure'] ?? 'slug';
+
+    // Request Type
+    $type = isset($_GET['type']) ? $_GET['type'] : 'index';
+
+    // --- Helpers ---
+
+    function extractImagesFromContent($content, $fallbackImg = null) {
+        $images = [];
+        if (!empty($fallbackImg)) $images[] = $fallbackImg;
+        if (!empty($content)) {
+            $stringToScan = is_array($content) || is_object($content) ? json_encode($content) : $content;
+            preg_match_all('/<img[^>]+src=["\']([^"\']+)["\']/i', $stringToScan, $matches);
+            if (!empty($matches[1])) {
+                foreach ($matches[1] as $src) $images[] = $src;
+            }
+        }
+        return array_unique(array_filter($images));
+    }
+
+    function addSitemap($filename, $lastMod = null) {
+        global $baseUrl;
+        $fullUrl = htmlspecialchars("$baseUrl/$filename");
+        $date = $lastMod ? date('c', strtotime($lastMod)) : date('c');
+        echo "    <sitemap>\n        <loc>$fullUrl</loc>\n        <lastmod>$date</lastmod>\n    </sitemap>\n";
+    }
+
+    function addUrl($loc, $lastMod = null, $images = []) {
+        global $baseUrl;
+        $loc = ltrim($loc, '/');
+        $fullUrl = htmlspecialchars($baseUrl . ($loc ? '/' . $loc : ''));
+        $date = $lastMod ? date('c', strtotime($lastMod)) : date('c');
+        
+        echo "    <url>\n        <loc>$fullUrl</loc>\n        <lastmod>$date</lastmod>\n";
+        foreach ($images as $imgUrl) {
+            echo "        <image:image>\n            <image:loc>" . htmlspecialchars($imgUrl) . "</image:loc>\n        </image:image>\n";
+        }
+        echo "    </url>\n";
+    }
+
+    /**
+     * Helper to calculate pages for index
+     */
+    function getPaginationCount($conn, $table, $where = "1=1") {
+        global $limit;
+        $res = $conn->query("SELECT COUNT(*) as total FROM `$table` WHERE $where");
+        $total = $res ? (int)$res->fetch_assoc()['total'] : 0;
+        return ($total > 0) ? ceil($total / $limit) : 0;
+    }
+
+    // --- B. LOGIC ROUTER ---
+
+    // 1. SITEMAP INDEX
+    if ($type === 'index') {
+        echo '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">';
+        
+        // --- Static Pages ---
+        if ($incPages) {
+            $lastModRes = $conn->query("SELECT updated_at FROM pages WHERE status='published' ORDER BY updated_at DESC LIMIT 1");
+            $lastMod = ($lastModRes && $row = $lastModRes->fetch_assoc()) ? $row['updated_at'] : date('c');
+            $pageCount = getPaginationCount($conn, 'pages', "status='published'");
+            
+            for ($i = 1; $i <= $pageCount; $i++) {
+                $suffix = ($i > 1) ? "?page=$i" : "";
+                addSitemap("page-sitemap.xml$suffix", $lastMod);
+            }
+        }
+
+        // --- Blog Posts ---
+        if ($incPosts) {
+            $lastModRes = $conn->query("SELECT updated_at FROM posts WHERE status='published' ORDER BY updated_at DESC LIMIT 1");
+            $lastMod = ($lastModRes && $row = $lastModRes->fetch_assoc()) ? $row['updated_at'] : date('c');
+            $postCount = getPaginationCount($conn, 'posts', "status='published'");
+            
+            for ($i = 1; $i <= $postCount; $i++) {
+                $suffix = ($i > 1) ? "?page=$i" : "";
+                addSitemap("post-sitemap.xml$suffix", $lastMod);
+            }
+        }
+
+        // --- Calculators ---
+        if ($incCalcs) {
+            $lastModRes = $conn->query("SELECT updated_at FROM calculators WHERE status='published' ORDER BY updated_at DESC LIMIT 1");
+            $lastMod = ($lastModRes && $row = $lastModRes->fetch_assoc()) ? $row['updated_at'] : date('c');
+            $calcCount = getPaginationCount($conn, 'calculators', "status='published'");
+            
+            for ($i = 1; $i <= $calcCount; $i++) {
+                $suffix = ($i > 1) ? "?page=$i" : "";
+                addSitemap("calculator-sitemap.xml$suffix", $lastMod);
+            }
+        }
+        
+        // --- Taxonomies (Assume 1 page usually, but logic holds) ---
+        if ($incBlogCats) {
+            $catCount = getPaginationCount($conn, 'categories');
+            for ($i = 1; $i <= $catCount; $i++) {
+                $suffix = ($i > 1) ? "?page=$i" : "";
+                addSitemap("blog-category-sitemap.xml$suffix", date('c'));
+            }
+        }
+        
+        if ($incCalcCats) {
+            $catCount = getPaginationCount($conn, 'calculator_categories');
+            for ($i = 1; $i <= $catCount; $i++) {
+                $suffix = ($i > 1) ? "?page=$i" : "";
+                addSitemap("calculator-category-sitemap.xml$suffix", date('c'));
+            }
+        }
+
+        echo '</sitemapindex>';
+    } 
+    else {
+        // 2. URL SETS (Paginated)
+        echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">';
+
+        // --- Pages ---
+        if ($type === 'page' && $incPages) {
+            $stmt = $conn->prepare("SELECT slug, updated_at, og_image, content_json FROM pages WHERE status='published' LIMIT ? OFFSET ?");
+            $stmt->bind_param("ii", $limit, $offset);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            
+            while($row = $res->fetch_assoc()) {
+                $images = extractImagesFromContent($row['content_json'], $row['og_image']);
+                $path = ($row['slug'] === 'home') ? '' : $row['slug'];
+                addUrl($path, $row['updated_at'], $images);
+            }
+            $stmt->close();
+        }
+
+        // --- Posts ---
+        elseif ($type === 'post' && $incPosts) {
+            $stmt = $conn->prepare("SELECT p.slug, p.content, p.created_at, p.updated_at, m.upload_path FROM posts p LEFT JOIN media m ON p.featured_image_id = m.id WHERE p.status='published' LIMIT ? OFFSET ?");
+            $stmt->bind_param("ii", $limit, $offset);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            
+            while($row = $res->fetch_assoc()) {
+                $created = new DateTime($row['created_at']);
+                $path = "blog/" . $row['slug'];
+                
+                if ($postStruct === 'date_slug') $path = "blog/" . $created->format('Y/m/d') . "/" . $row['slug'];
+                elseif ($postStruct === 'month_slug') $path = "blog/" . $created->format('Y/m') . "/" . $row['slug'];
+
+                $featImg = !empty($row['upload_path']) ? rtrim($apiBaseUrl, '/') . '/' . $row['upload_path'] : null;
+                $images = extractImagesFromContent($row['content'], $featImg);
+                addUrl($path, $row['updated_at'], $images);
+            }
+            $stmt->close();
+        }
+
+        // --- Calculators ---
+        elseif ($type === 'calculator' && $incCalcs) {
+            $stmt = $conn->prepare("SELECT slug, content, updated_at, og_image FROM calculators WHERE status='published' LIMIT ? OFFSET ?");
+            $stmt->bind_param("ii", $limit, $offset);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            
+            while($row = $res->fetch_assoc()) {
+                $images = extractImagesFromContent($row['content'], $row['og_image']);
+                addUrl("$calcBase/" . $row['slug'], $row['updated_at'], $images);
+            }
+            $stmt->close();
+        }
+
+        // --- Blog Categories ---
+        elseif ($type === 'blog-category' && $incBlogCats) {
+            $stmt = $conn->prepare("SELECT slug FROM categories LIMIT ? OFFSET ?");
+            $stmt->bind_param("ii", $limit, $offset);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            while($row = $res->fetch_assoc()) addUrl("blog/category/" . $row['slug']);
+            $stmt->close();
+        }
+
+        // --- Calculator Categories ---
+        elseif ($type === 'calculator-category' && $incCalcCats) {
+            $stmt = $conn->prepare("SELECT slug FROM calculator_categories LIMIT ? OFFSET ?");
+            $stmt->bind_param("ii", $limit, $offset);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            while($row = $res->fetch_assoc()) addUrl("$calcBase/category/" . $row['slug']);
+            $stmt->close();
+        }
+
+        echo '</urlset>';
+    }
+
+} catch (Exception $e) {
+    if ($debugMode) echo "Error: " . $e->getMessage();
+    error_log("Sitemap Error: " . $e->getMessage());
+}
+
+$conn->close();
+?>

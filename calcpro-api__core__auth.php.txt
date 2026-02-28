@@ -1,0 +1,71 @@
+<?php
+// Use the JWT classes from the firebase/php-jwt library
+use Firebase\JWT\JWT;
+use Firebase\JWT\Key;
+use Firebase\JWT\ExpiredException;
+use Firebase\JWT\SignatureInvalidException;
+
+/**
+ * Verifies the JWT from the Authorization header for ADMINS.
+ * Terminates execution (401/403) if invalid.
+ */
+function verifyAdminToken() {
+    $jwtSecretKey = $_ENV['JWT_SECRET'];
+    $headers = getallheaders();
+
+    if (!isset($headers['Authorization'])) {
+        sendResponse(false, null, 'Authorization header not found.', 401, 'AUTH_HEADER_MISSING');
+    }
+
+    if (preg_match('/Bearer\s(\S+)/', $headers['Authorization'], $matches)) {
+        $jwt = $matches[1];
+    } else {
+        sendResponse(false, null, 'Malformed authorization token.', 401, 'AUTH_TOKEN_MALFORMED');
+    }
+
+    if (!$jwt) {
+        sendResponse(false, null, 'No token provided.', 401, 'AUTH_TOKEN_MISSING');
+    }
+
+    try {
+        $decoded = JWT::decode($jwt, new Key($jwtSecretKey, 'HS256'));
+        // Optional: Add role check here if needed in future
+        return $decoded->data;
+
+    } catch (Exception $e) {
+        sendResponse(false, null, 'Invalid or expired token: ' . $e->getMessage(), 401, 'AUTH_TOKEN_INVALID');
+    }
+}
+
+/**
+ * Verifies the JWT for PUBLIC USERS.
+ * Returns decoded data on success, or FALSE/NULL on failure.
+ * Does NOT terminate execution, allowing the caller to decide the flow.
+ */
+function verifyUserToken() {
+    $jwtSecretKey = $_ENV['JWT_SECRET'];
+    $headers = getallheaders();
+
+    if (!isset($headers['Authorization'])) {
+        return false;
+    }
+
+    if (preg_match('/Bearer\s(\S+)/', $headers['Authorization'], $matches)) {
+        $jwt = $matches[1];
+    } else {
+        return false;
+    }
+
+    if (!$jwt) return false;
+
+    try {
+        $decoded = JWT::decode($jwt, new Key($jwtSecretKey, 'HS256'));
+        
+        // We return array to match previous usage in check_auth_status.php ($userPayload['id'])
+        return (array) $decoded->data; 
+
+    } catch (Exception $e) {
+        return false;
+    }
+}
+?>

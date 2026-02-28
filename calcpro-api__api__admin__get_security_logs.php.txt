@@ -1,0 +1,205 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+function getBlockType($reason) {
+    if ($reason === null) return 'other';
+    $reason_lower = strtolower($reason);
+    if (strpos($reason_lower, 'password') !== false) return 'failed_password';
+    if (strpos($reason_lower, 'otp') !== false) return 'failed_otp'; // Added OTP type check
+    if (strpos($reason_lower, 'email') !== false || strpos($reason_lower, 'username') !== false) return 'failed_email';
+    return 'other';
+}
+
+try {
+    // --- 0. Get Configuration ---
+    $limit = 15; // Default fallback
+    $limit_query = $conn->query("SELECT setting_value FROM settings WHERE setting_key = 'security_log_pagination_limit'");
+    if ($limit_query && $limit_query->num_rows > 0) {
+        $val = (int)$limit_query->fetch_assoc()['setting_value'];
+        if ($val > 0) $limit = $val;
+    }
+
+    $search = isset($_GET['search']) ? trim($_GET['search']) : '';
+
+    // --- Helper to get paginated data with SEARCH support ---
+    // Updated signature to accept $failureType (for separating Password vs OTP logs)
+    function fetchPaginatedData($conn, $table, $page, $limit, $search, $failureType = null) {
+        $offset = ($page - 1) * $limit;
+        
+        // Build Search Condition
+        $whereSQL = "";
+        $params = [];
+        $types = "";
+
+        if (!empty($search)) {
+            $searchTerm = "%{$search}%";
+            if ($table === 'login_attempts') {
+                $whereSQL = "WHERE (ip_address LIKE ? OR attempted_email LIKE ?)";
+                $params = [$searchTerm, $searchTerm];
+                $types = "ss";
+            } elseif ($table === 'admin_login_failures') {
+                // Handled in main query logic below
+                $whereSQL = ""; 
+            } else {
+                // Blacklist & Temp Blocks
+                $whereSQL = "WHERE (ip_address LIKE ? OR reason LIKE ?)";
+                $params = [$searchTerm, $searchTerm];
+                $types = "ss";
+            }
+        }
+
+        // --- 1. Get Total Count ---
+        if ($table === 'admin_login_failures') {
+            // Special count for joined table with failure_type filter
+            $count_sql = "
+                SELECT COUNT(alf.id) as total 
+                FROM admin_login_failures alf 
+                JOIN admins a ON alf.admin_id = a.id
+                WHERE 1=1
+            ";
+            
+            // Apply Failure Type Filter (password vs otp)
+            if ($failureType) {
+                $count_sql .= " AND alf.failure_type = ?";
+                $params[] = $failureType;
+                $types .= "s";
+            }
+
+            if (!empty($search)) {
+                $count_sql .= " AND (alf.ip_address LIKE ? OR a.email LIKE ?)";
+                $params[] = "%{$search}%";
+                $params[] = "%{$search}%";
+                $types .= "ss";
+            }
+        } else {
+            $count_sql = "SELECT COUNT(id) as total FROM `$table` $whereSQL";
+        }
+
+        $stmt_count = $conn->prepare($count_sql);
+        if (!empty($params)) {
+            $stmt_count->bind_param($types, ...$params);
+        }
+        $stmt_count->execute();
+        $total_records = $stmt_count->get_result()->fetch_assoc()['total'];
+        $stmt_count->close();
+        
+        $total_pages = ceil($total_records / $limit);
+
+        // --- 2. Get Data ---
+        $sort_col = ($table === 'ip_blacklist' || $table === 'temporary_blocks') ? 'blocked_at' : 'attempted_at';
+        
+        // Reset params for the main query
+        $params = []; 
+        $types = "";
+
+        if ($table === 'admin_login_failures') {
+             $sql = "
+                SELECT 
+                    alf.id, alf.ip_address, alf.attempted_at, alf.failure_type,
+                    a.name as admin_name, a.email as admin_email
+                FROM admin_login_failures alf
+                JOIN admins a ON alf.admin_id = a.id
+                WHERE 1=1
+             ";
+
+             // Apply Failure Type Filter
+             if ($failureType) {
+                 $sql .= " AND alf.failure_type = ?";
+                 $params[] = $failureType;
+                 $types .= "s";
+             }
+
+             if (!empty($search)) {
+                 $sql .= " AND (alf.ip_address LIKE ? OR a.email LIKE ?)";
+                 $params[] = "%{$search}%";
+                 $params[] = "%{$search}%";
+                 $types .= "ss";
+             }
+
+             $sql .= " ORDER BY alf.attempted_at DESC LIMIT ? OFFSET ?";
+             
+             // Add limit/offset
+             $params[] = $limit;
+             $params[] = $offset;
+             $types .= "ii";
+             
+        } else {
+            // For other tables, just append limit/offset to existing search params
+            if (!empty($search)) {
+                $searchTerm = "%{$search}%";
+                $params = [$searchTerm, $searchTerm];
+                $types = "ss";
+            }
+            $sql = "SELECT * FROM `$table` $whereSQL ORDER BY $sort_col DESC LIMIT ? OFFSET ?";
+            $params[] = $limit;
+            $params[] = $offset;
+            $types .= "ii";
+        }
+
+        $stmt = $conn->prepare($sql);
+        if (!empty($params)) {
+            $stmt->bind_param($types, ...$params);
+        }
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $data = $result ? $result->fetch_all(MYSQLI_ASSOC) : [];
+        $stmt->close();
+
+        // Process block types for visual badges
+        if ($table === 'ip_blacklist' || $table === 'temporary_blocks') {
+            $data = array_map(function($item) {
+                $item['block_type'] = getBlockType($item['reason']);
+                return $item;
+            }, $data);
+        }
+
+        return [
+            'data' => $data,
+            'pagination' => [
+                'currentPage' => $page,
+                'totalPages' => $total_pages,
+                'totalRecords' => (int)$total_records
+            ]
+        ];
+    }
+
+    // --- Get Page Numbers ---
+    $page_blacklist = isset($_GET['page_blacklist']) ? max(1, (int)$_GET['page_blacklist']) : 1;
+    $page_temp      = isset($_GET['page_temp']) ? max(1, (int)$_GET['page_temp']) : 1;
+    $page_unknown   = isset($_GET['page_unknown']) ? max(1, (int)$_GET['page_unknown']) : 1;
+    $page_admin     = isset($_GET['page_admin']) ? max(1, (int)$_GET['page_admin']) : 1;
+    $page_otp       = isset($_GET['page_otp']) ? max(1, (int)$_GET['page_otp']) : 1; // New Page Parameter
+
+    // --- Fetch All Tables ---
+    $ip_blacklist         = fetchPaginatedData($conn, 'ip_blacklist', $page_blacklist, $limit, $search);
+    $temporary_blocks     = fetchPaginatedData($conn, 'temporary_blocks', $page_temp, $limit, $search);
+    $login_attempts       = fetchPaginatedData($conn, 'login_attempts', $page_unknown, $limit, $search);
+    
+    // Split Admin Failures into Password vs OTP
+    $admin_login_failures = fetchPaginatedData($conn, 'admin_login_failures', $page_admin, $limit, $search, 'password');
+    $otp_failures         = fetchPaginatedData($conn, 'admin_login_failures', $page_otp, $limit, $search, 'otp');
+
+    // --- Response ---
+    $security_logs = [
+        'ipBlacklist'        => $ip_blacklist,
+        'temporaryBlocks'    => $temporary_blocks,
+        'loginAttempts'      => $login_attempts,
+        'adminLoginFailures' => $admin_login_failures,
+        'otpFailures'        => $otp_failures // New Data Key
+    ];
+
+    sendResponse(true, $security_logs, 'Security logs fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_security_logs.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred while fetching security logs.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

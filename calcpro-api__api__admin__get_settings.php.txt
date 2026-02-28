@@ -1,0 +1,54 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+// Ensures only a logged-in admin can access this information.
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. The SQL Query ---
+    // This query fetches all settings from the database.
+    $sql = "SELECT setting_key, setting_value FROM settings";
+    
+    $result = $conn->query($sql);
+    
+    if ($result === false) {
+        throw new Exception('Database query failed: ' . $conn->error);
+    }
+    
+    // --- 2. Build the Settings Object ---
+    // We create an associative array (a key-value map) which is very
+    // easy for the frontend JavaScript to work with.
+    $settings = [];
+    if ($result->num_rows > 0) {
+        while ($row = $result->fetch_assoc()) {
+            $key = $row['setting_key'];
+            $value = $row['setting_value'];
+
+            // Attempt to convert numeric and boolean strings to their native types
+            if (is_numeric($value)) {
+                $settings[$key] = $value + 0; // The "+ 0" trick casts to int/float
+            } elseif ($value === 'true') {
+                $settings[$key] = true;
+            } elseif ($value === 'false') {
+                $settings[$key] = false;
+            } else {
+                $settings[$key] = $value;
+            }
+        }
+    }
+    
+    // --- 3. Send the Successful Response ---
+    sendResponse(true, $settings, 'Settings fetched successfully.');
+
+} catch (Exception $e) {
+    // --- Error Handling ---
+    error_log("Error in get_settings.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching settings.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

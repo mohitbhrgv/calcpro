@@ -1,0 +1,123 @@
+<?php
+// File: calcpro-api/api/admin/update_category.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php'; // Ensure auth is present
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// Get the data sent from the frontend
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// Basic Validation
+if (!isset($data->id) || !is_numeric($data->id) || !isset($data->name) || !isset($data->slug)) {
+    sendResponse(false, null, 'Category ID, name, and slug are required.', 400, 'INVALID_INPUT');
+}
+
+// Sanitize and Validate Inputs
+$id = (int)$data->id;
+$name = trim($data->name);
+$slug = trim($data->slug);
+$description = isset($data->description) ? trim($data->description) : null;
+
+// --- NEW SEO FIELDS ---
+$meta_title = isset($data->meta_title) ? trim($data->meta_title) : null;
+$meta_description = isset($data->meta_description) ? trim($data->meta_description) : null;
+
+// Handle Parent ID
+$parent_id = (isset($data->parent_id) && is_numeric($data->parent_id) && $data->parent_id > 0) 
+             ? (int)$data->parent_id 
+             : null;
+
+if (empty($name) || empty($slug)) {
+    sendResponse(false, null, 'Category name and slug cannot be empty.', 400, 'INVALID_INPUT');
+}
+
+try {
+    // --- 1. HIERARCHY SAFETY CHECK (Advanced Cycle Detection) ---
+    
+    // A. Basic Self-Parenting Check
+    if ($parent_id === $id) {
+        sendResponse(false, null, 'A category cannot be its own parent.', 400, 'INVALID_HIERARCHY');
+    }
+
+    // B. Deep Cycle Check (Preventing loops)
+    if ($parent_id !== null) {
+        $current_check_id = $parent_id;
+        $max_depth = 100; // Safety break
+        $counter = 0;
+
+        while ($current_check_id !== null && $counter < $max_depth) {
+            if ($current_check_id === $id) {
+                sendResponse(false, null, 'Circular dependency detected! You cannot make a category a child of its own sub-category.', 400, 'INVALID_HIERARCHY');
+            }
+            $stmt_trace = $conn->prepare("SELECT parent_id FROM categories WHERE id = ?");
+            $stmt_trace->bind_param("i", $current_check_id);
+            $stmt_trace->execute();
+            $res_trace = $stmt_trace->get_result();
+            $row_trace = $res_trace->fetch_assoc();
+            $stmt_trace->close();
+
+            $current_check_id = ($row_trace && $row_trace['parent_id']) ? (int)$row_trace['parent_id'] : null;
+            $counter++;
+        }
+    }
+
+    // --- 2. Check for Duplicates (excluding the current category) ---
+    $sql_check = "SELECT id FROM categories WHERE (name = ? OR slug = ?) AND id != ?";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->bind_param("ssi", $name, $slug, $id);
+    $stmt_check->execute();
+    if ($stmt_check->get_result()->num_rows > 0) {
+        $stmt_check->close();
+        sendResponse(false, null, 'Another category with this name or slug already exists.', 409, 'DUPLICATE_ENTRY');
+    }
+    $stmt_check->close();
+
+    // --- 3. Update the Category in the database ---
+    $sql_update = "UPDATE categories SET name = ?, slug = ?, description = ?, parent_id = ?, meta_title = ?, meta_description = ? WHERE id = ?";
+    $stmt_update = $conn->prepare($sql_update);
+    
+    // --- BUG FIX: Corrected Type String ---
+    // Previous: "sssiisi" (Meta Title as INT) -> WRONG
+    // New: "sssissi" (String, String, String, Integer, String, String, Integer) -> CORRECT
+    $stmt_update->bind_param("sssissi", $name, $slug, $description, $parent_id, $meta_title, $meta_description, $id);
+    
+    if ($stmt_update->execute()) {
+        // Fetch the updated category data to send back
+        $sql_fetch = "
+            SELECT c.id, c.name, c.slug, c.description, c.parent_id, c.meta_title, c.meta_description, c.created_at, 
+            p.name as parent_name
+            FROM categories c 
+            LEFT JOIN categories p ON c.parent_id = p.id
+            WHERE c.id = ?
+        ";
+        $stmt_fetch = $conn->prepare($sql_fetch);
+        $stmt_fetch->bind_param("i", $id);
+        $stmt_fetch->execute();
+        $updated_category = $stmt_fetch->get_result()->fetch_assoc();
+        $stmt_fetch->close();
+
+        // Add placeholder post_count for frontend consistency
+        if ($updated_category) {
+            $updated_category['post_count'] = 0; 
+            $updated_category['parent_id'] = $updated_category['parent_id'] ? (int)$updated_category['parent_id'] : null;
+        }
+
+        sendResponse(true, $updated_category, 'Category updated successfully!', 200);
+    } else {
+        throw new Exception("Database update failed: " . $stmt_update->error);
+    }
+    $stmt_update->close();
+
+} catch (Exception $e) {
+    error_log("Error in update_category.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

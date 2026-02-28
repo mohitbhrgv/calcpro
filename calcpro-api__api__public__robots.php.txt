@@ -1,0 +1,85 @@
+<?php
+// File: calcpro-api/api/public/robots.php
+
+// 1. Load Configuration
+require_once dirname(__DIR__, 2) . '/core/config.php';
+
+// 2. Set Headers
+header("Content-Type: text/plain; charset=utf-8");
+
+if (ob_get_length()) ob_clean();
+
+try {
+    // --- A. FETCH SETTINGS ---
+    $customRules = "";
+    $customEnabled = false;
+
+    $sql = "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('seo_robots_custom_enable', 'seo_robots_custom_content')";
+    $result = $conn->query($sql);
+    
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            if ($row['setting_key'] === 'seo_robots_custom_enable') {
+                $customEnabled = ($row['setting_value'] === 'true' || $row['setting_value'] === '1');
+            }
+            if ($row['setting_key'] === 'seo_robots_custom_content') {
+                $customRules = $row['setting_value'];
+            }
+        }
+    }
+
+    // --- B. DETERMINE URLs ---
+    $baseUrl = isset($_ENV['PUBLIC_FRONTEND_URL']) 
+        ? rtrim($_ENV['PUBLIC_FRONTEND_URL'], '/') 
+        : 'https://' . $_SERVER['SERVER_NAME'];
+
+    // Determine API Path dynamically from .env
+    $apiPath = '/api/'; 
+    if (isset($_ENV['API_PUBLIC_URL'])) {
+        $parsed = parse_url($_ENV['API_PUBLIC_URL']);
+        if (isset($parsed['path'])) {
+            $apiPath = rtrim($parsed['path'], '/') . '/';
+        }
+    }
+
+    // --- C. OUTPUT RULES ---
+
+    if ($customEnabled && !empty(trim($customRules))) {
+        // === 1. CUSTOM MODE ===
+        echo trim($customRules);
+
+        if (stripos($customRules, 'Sitemap:') === false) {
+            echo "\n\nSitemap: " . $baseUrl . "/sitemap.xml";
+        }
+
+    } else {
+        // === 2. DEFAULT MODE (Safe & Generic) ===
+        
+        echo "User-agent: *\n";
+        echo "Allow: /\n";
+        
+        // Block Backend API (Dynamic)
+        // Only block if it's not root, to prevent accidental site de-indexing
+        if (!empty($apiPath) && $apiPath !== '/') {
+            echo "Disallow: " . $apiPath . "\n";
+        }
+        
+        // Block Admin Panel Routes
+        echo "Disallow: /admin/\n";
+        
+        // Block Raw Data Files (Security/SEO Best Practice)
+        echo "Disallow: /*.json$\n";
+        echo "Disallow: /*.php$\n"; // Prevent direct access to PHP scripts via search results
+
+        // Sitemap
+        echo "\nSitemap: " . $baseUrl . "/sitemap.xml";
+    }
+
+} catch (Exception $e) {
+    echo "User-agent: *\n";
+    echo "Disallow: /";
+    error_log("Robots.txt Generation Error: " . $e->getMessage());
+}
+
+$conn->close();
+?>

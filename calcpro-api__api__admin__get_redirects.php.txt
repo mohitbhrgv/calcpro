@@ -1,0 +1,95 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Pagination & Filter Parameters ---
+    $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+    $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 100;
+    $offset = ($page - 1) * $limit;
+    
+    $statusFilter = isset($_GET['status']) ? $_GET['status'] : 'all';
+
+    // --- 2. Build WHERE Clause ---
+    $whereSQL = "";
+    $params = [];
+    $types = "";
+
+    if ($statusFilter === 'trash') {
+        $whereSQL = "WHERE status = 'trash'";
+    } elseif ($statusFilter === 'active') {
+        $whereSQL = "WHERE status = 'active'";
+    } elseif ($statusFilter === 'inactive') {
+        $whereSQL = "WHERE status = 'inactive'";
+    } else {
+        // 'all' typically shows everything EXCEPT trash in CMS interfaces
+        $whereSQL = "WHERE status != 'trash'";
+    }
+
+    // --- 3. Get Data ---
+    $sql = "SELECT id, source_path, target_url, status_code, status, created_at 
+            FROM redirects 
+            {$whereSQL}
+            ORDER BY created_at DESC 
+            LIMIT ? OFFSET ?";
+    
+    $stmt = $conn->prepare($sql);
+    if ($stmt === false) {
+        throw new Exception('Database prepare failed: ' . $conn->error);
+    }
+
+    // Bind params. Note: We don't bind filter params because they are static strings in the query above.
+    $stmt->bind_param("ii", $limit, $offset);
+    $stmt->execute();
+    
+    $result = $stmt->get_result();
+    $redirects = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    // --- 4. Get Total Count (for Pagination) ---
+    $countSql = "SELECT COUNT(id) as total FROM redirects {$whereSQL}";
+    $countResult = $conn->query($countSql);
+    $totalRecords = $countResult ? $countResult->fetch_assoc()['total'] : 0;
+
+    // --- 5. Get Status Counts (for Tabs) ---
+    $counts = ['all' => 0, 'active' => 0, 'inactive' => 0, 'trash' => 0];
+    $statsSql = "SELECT status, COUNT(id) as count FROM redirects GROUP BY status";
+    $statsResult = $conn->query($statsSql);
+    
+    if ($statsResult) {
+        while ($row = $statsResult->fetch_assoc()) {
+            $s = $row['status'];
+            if (isset($counts[$s])) {
+                $counts[$s] = (int)$row['count'];
+            }
+            if ($s !== 'trash') {
+                $counts['all'] += (int)$row['count'];
+            }
+        }
+    }
+
+    // --- 6. Send Response ---
+    $responseData = [
+        'redirects' => $redirects,
+        'counts' => $counts,
+        'pagination' => [
+            'currentPage' => $page,
+            'totalPages' => ceil($totalRecords / $limit),
+            'totalRecords' => (int)$totalRecords
+        ]
+    ];
+
+    sendResponse(true, $responseData, 'Redirects fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_redirects.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

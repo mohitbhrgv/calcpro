@@ -1,0 +1,68 @@
+<?php
+// Include the core configuration and response helper files
+require '../../core/config.php';
+require_once '../../core/response.php';
+
+// Get the data sent from the frontend
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// Basic Validation
+if (!isset($data->id) || !is_numeric($data->id) || !isset($data->name) || !isset($data->slug)) {
+    sendResponse(false, null, 'Tag ID, name, and slug are required for an update.', 400, 'INVALID_INPUT');
+}
+
+// Sanitize and Validate Inputs
+$id = (int)$data->id;
+$name = trim($data->name);
+$slug = trim($data->slug);
+
+if (empty($name) || empty($slug)) {
+    sendResponse(false, null, 'Tag name and slug cannot be empty.', 400, 'INVALID_INPUT');
+}
+
+try {
+    // Check for Duplicates (excluding the current tag)
+    $sql_check = "SELECT id FROM tags WHERE (name = ? OR slug = ?) AND id != ?";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->bind_param("ssi", $name, $slug, $id);
+    $stmt_check->execute();
+    if ($stmt_check->get_result()->num_rows > 0) {
+        $stmt_check->close();
+        sendResponse(false, null, 'Another tag with this name or slug already exists.', 409, 'DUPLICATE_ENTRY');
+    }
+    $stmt_check->close();
+
+    // Update the Tag in the database
+    $sql_update = "UPDATE tags SET name = ?, slug = ? WHERE id = ?";
+    $stmt_update = $conn->prepare($sql_update);
+    $stmt_update->bind_param("ssi", $name, $slug, $id);
+    
+    if ($stmt_update->execute()) {
+        // Fetch the updated tag data to send back
+        $sql_fetch = "
+            SELECT t.id, t.name, t.slug, COUNT(pt.post_id) as post_count 
+            FROM tags t 
+            LEFT JOIN post_tags pt ON t.id = pt.tag_id 
+            WHERE t.id = ?
+            GROUP BY t.id
+        ";
+        $stmt_fetch = $conn->prepare($sql_fetch);
+        $stmt_fetch->bind_param("i", $id);
+        $stmt_fetch->execute();
+        $updated_tag = $stmt_fetch->get_result()->fetch_assoc();
+        $stmt_fetch->close();
+
+        sendResponse(true, $updated_tag, 'Tag updated successfully!', 200);
+    } else {
+        throw new Exception("Database update failed: " . $stmt_update->error);
+    }
+    $stmt_update->close();
+
+} catch (Exception $e) {
+    error_log("Error in update_tag.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

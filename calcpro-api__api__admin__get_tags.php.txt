@@ -1,0 +1,81 @@
+<?php
+// File: calcpro-api/api/admin/get_tags.php
+
+// Core utilities
+require '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Determine Context ---
+    // 'post' is the default if nothing is specified
+    $context = isset($_GET['context']) && $_GET['context'] === 'calculator' ? 'calculator' : 'post';
+
+    // --- 2. Build SQL Query based on Context ---
+    if ($context === 'calculator') {
+        // Count usage in CALCULATORS
+        $sql = "
+            SELECT 
+                t.id, 
+                t.name, 
+                t.slug, 
+                COUNT(ct.calculator_id) as usage_count
+            FROM 
+                tags t
+            LEFT JOIN 
+                calculator_tags ct ON t.id = ct.tag_id
+            GROUP BY 
+                t.id, t.name, t.slug
+            ORDER BY 
+                t.name ASC
+        ";
+    } else {
+        // Count usage in POSTS (Default)
+        $sql = "
+            SELECT 
+                t.id, 
+                t.name, 
+                t.slug, 
+                COUNT(pt.post_id) as usage_count
+            FROM 
+                tags t
+            LEFT JOIN 
+                post_tags pt ON t.id = pt.tag_id
+            GROUP BY 
+                t.id, t.name, t.slug
+            ORDER BY 
+                t.name ASC
+        ";
+    }
+
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        throw new Exception('Database prepare statement failed: ' . $conn->error);
+    }
+    
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $tags = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    
+    // Standardize the key name for frontend (frontend expects 'post_count' or 'usage_count')
+    // We will standardize on 'post_count' to avoid breaking existing frontend logic in the table,
+    // or we can map it. Let's map it in the response to be safe.
+    foreach ($tags as &$tag) {
+        // For compatibility with the existing DataTable which looks for 'post_count'
+        $tag['post_count'] = (int)$tag['usage_count']; 
+    }
+    
+    sendResponse(true, $tags, ucfirst($context) . ' tags fetched successfully.', 200);
+
+} catch (Exception $e) {
+    error_log("Error in get_tags.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred while fetching tags.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

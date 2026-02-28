@@ -1,0 +1,52 @@
+<?php
+// Include the database configuration file
+require '../../core/config.php';
+
+// Set content type to JSON
+header('Content-Type: application/json');
+
+// --- Basic Validation: Check if user ID is provided ---
+// We will get the user ID from the URL, e.g., get_calculations.php?userId=1
+if (!isset($_GET['userId']) || !is_numeric($_GET['userId'])) {
+    echo json_encode(['success' => false, 'message' => 'User ID is required and must be a number.']);
+    exit();
+}
+
+// --- Sanitize Input ---
+$userId = (int)$_GET['userId'];
+
+// --- Prepare SQL Statement to fetch calculations for the user ---
+// We order by `created_at` DESC to get the most recent calculations first
+$sql = "SELECT id, calculator_type, inputs, results, created_at FROM calculations WHERE user_id = ? ORDER BY created_at DESC";
+$stmt = $conn->prepare($sql);
+
+if ($stmt === false) {
+    echo json_encode(['success' => false, 'message' => 'Database error preparing statement: ' . $conn->error]);
+    exit();
+}
+
+$stmt->bind_param("i", $userId);
+$stmt->execute();
+$result = $stmt->get_result();
+
+// --- Fetch all rows and build the results array ---
+$calculations = [];
+if ($result->num_rows > 0) {
+    while ($row = $result->fetch_assoc()) {
+        // We need to decode the JSON strings from the database back into objects/arrays
+        $row['inputs'] = json_decode($row['inputs']);
+        $row['results'] = json_decode($row['results']);
+        $calculations[] = $row;
+    }
+}
+
+// --- Send the response ---
+echo json_encode([
+    'success' => true,
+    'calculations' => $calculations
+]);
+
+// --- Close connections ---
+$stmt->close();
+$conn->close();
+?>

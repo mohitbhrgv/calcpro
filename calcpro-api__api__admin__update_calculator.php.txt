@@ -1,0 +1,238 @@
+<?php
+// File: calcpro-api/api/admin/update_calculator.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->id) || !is_numeric($data->id)) {
+        sendResponse(false, null, 'Calculator ID is required.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->name) || empty(trim($data->name))) {
+        sendResponse(false, null, 'Calculator name is required.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->slug) || empty(trim($data->slug))) {
+        sendResponse(false, null, 'Calculator slug is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize and Prepare Data ---
+    $id = (int)$data->id;
+    $name = trim($data->name);
+    $slug = trim($data->slug);
+    $content = $data->content ?? null;
+    
+    $faq_json = (isset($data->faq_json) && (is_object($data->faq_json) || is_array($data->faq_json))) 
+                ? json_encode($data->faq_json) 
+                : '[]';
+
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new Exception('Invalid FAQ JSON provided.');
+    }
+
+    $meta_title = isset($data->metaTitle) ? trim($data->metaTitle) : null;
+    $meta_description = isset($data->metaDescription) ? trim($data->metaDescription) : null;
+    $focus_keywords = isset($data->focusKeywords) ? trim($data->focusKeywords) : null;
+
+    $og_image = isset($data->og_image) ? trim($data->og_image) : null;
+    $canonical_url = isset($data->canonical_url) ? trim($data->canonical_url) : null;
+    $status = isset($data->status) && in_array($data->status, ['published', 'draft']) ? $data->status : 'draft';
+    
+    $is_featured = (isset($data->is_featured) && $data->is_featured === true) ? 1 : 0;
+
+    // Social SEO (Facebook)
+    $ogTitle = isset($data->ogTitle) ? trim($data->ogTitle) : null;
+    $ogDescription = isset($data->ogDescription) ? trim($data->ogDescription) : null;
+
+    // Social SEO (Twitter) - NEW
+    $twitterTitle = isset($data->twitterTitle) ? trim($data->twitterTitle) : null;
+    $twitterDescription = isset($data->twitterDescription) ? trim($data->twitterDescription) : null;
+    $twitterImage = isset($data->twitterImage) ? trim($data->twitterImage) : null;
+
+    // Robots Meta
+    $no_index = (isset($data->no_index) && $data->no_index !== null) ? (int)$data->no_index : null;
+    $no_follow = (isset($data->no_follow) && $data->no_follow !== null) ? (int)$data->no_follow : null;
+    $no_archive = (isset($data->no_archive) && $data->no_archive !== null) ? (int)$data->no_archive : null;
+    $no_image_index = (isset($data->no_image_index) && $data->no_image_index !== null) ? (int)$data->no_image_index : null;
+    $no_snippet = (isset($data->no_snippet) && $data->no_snippet !== null) ? (int)$data->no_snippet : null;
+
+    // Advanced Robot Meta
+    $maxSnippet = isset($data->max_snippet) && $data->max_snippet !== null ? (int)$data->max_snippet : null;
+    $maxVideoPreview = isset($data->max_video_preview) && $data->max_video_preview !== null ? (int)$data->max_video_preview : null;
+    $maxImagePreview = isset($data->max_image_preview) ? trim($data->max_image_preview) : null;
+
+    $schema_json = (isset($data->schema_json) && (is_object($data->schema_json) || is_array($data->schema_json))) 
+                    ? json_encode($data->schema_json) 
+                    : '[]';
+
+    // Relations
+    $categoryIds = isset($data->categories) && is_array($data->categories) ? $data->categories : [];
+    $tagIds = isset($data->tags) && is_array($data->tags) ? $data->tags : [];
+
+    $primary_category_id = (isset($data->primary_category_id) && is_numeric($data->primary_category_id) && $data->primary_category_id > 0)
+                            ? (int)$data->primary_category_id
+                            : null;
+
+    $isMinorEdit = (isset($data->is_minor_edit) && $data->is_minor_edit === true);
+    $updateTimestampSql = $isMinorEdit ? "updated_at = updated_at" : "updated_at = NOW()";
+
+    // --- 4. Start Transaction ---
+    $conn->begin_transaction();
+
+    // --- 5. Check for Duplicate Slug ---
+    $sql_check = "SELECT id FROM calculators WHERE slug = ? AND id != ?";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->bind_param("si", $slug, $id);
+    $stmt_check->execute();
+    if ($stmt_check->get_result()->num_rows > 0) {
+        $stmt_check->close();
+        $conn->rollback(); 
+        sendResponse(false, null, 'Another calculator with this slug already exists.', 409, 'DUPLICATE_SLUG');
+    }
+    $stmt_check->close();
+
+    // --- 6. The SQL UPDATE Query ---
+    $sql_update = "UPDATE calculators SET 
+                name = ?, 
+                slug = ?, 
+                content = ?, 
+                faq_json = ?, 
+                meta_title = ?, 
+                meta_description = ?,
+                focus_keywords = ?,
+                canonical_url = ?,
+                og_title = ?, 
+                og_description = ?,
+                og_image = ?,
+                twitter_title = ?,
+                twitter_description = ?,
+                twitter_image = ?,
+                status = ?,
+                is_featured = ?,
+                no_index = ?, 
+                no_follow = ?, 
+                no_archive = ?, 
+                no_image_index = ?, 
+                no_snippet = ?,
+                max_snippet = ?,
+                max_video_preview = ?,
+                max_image_preview = ?,
+                schema_json = ?,
+                primary_category_id = ?,
+                $updateTimestampSql
+            WHERE id = ?";
+            
+    $stmt_update = $conn->prepare($sql_update);
+    
+    if ($stmt_update === false) {
+        throw new Exception("Database prepare failed: " . $conn->error);
+    }
+
+    // Bind Params:
+    // s (name), s (slug), s (content), s (faq)
+    // s (metaT), s (metaD), s (focus), s (canonical)
+    // s (ogT), s (ogD), s (ogI)
+    // s (twT), s (twD), s (twI)
+    // s (status)
+    // i (featured)
+    // i (noI), i (noF), i (noA), i (noImg), i (noSnip), i (maxSnip), i (maxVid)
+    // s (maxImg), s (schema)
+    // i (primary_cat), i (id)
+    
+    // 15 strings + 1 int + 7 ints + 2 strings + 2 ints
+    // 15s + 8i + 2s + 2i = 17s + 10i = 27 total.
+    // Type string: "sssssssssssssssiiiiiiiissii"
+
+    $stmt_update->bind_param(
+        "sssssssssssssssiiiiiiiissii", 
+        $name, 
+        $slug, 
+        $content, 
+        $faq_json, 
+        $meta_title, 
+        $meta_description, 
+        $focus_keywords,
+        $canonical_url,
+        $ogTitle,
+        $ogDescription,
+        $og_image, 
+        $twitterTitle,
+        $twitterDescription,
+        $twitterImage,
+        $status, 
+        $is_featured,
+        $no_index,
+        $no_follow,
+        $no_archive,
+        $no_image_index,
+        $no_snippet,
+        $maxSnippet,
+        $maxVideoPreview,
+        $maxImagePreview,
+        $schema_json,
+        $primary_category_id,
+        $id
+    );
+    
+    if (!$stmt_update->execute()) {
+        $conn->rollback();
+        throw new Exception("Database update failed: " . $stmt_update->error);
+    }
+    $stmt_update->close();
+
+    // --- 7. Sync Categories ---
+    $conn->query("DELETE FROM calculator_category_assignments WHERE calculator_id = $id");
+    if (!empty($categoryIds)) {
+        $stmt_cat = $conn->prepare("INSERT INTO calculator_category_assignments (calculator_id, category_id) VALUES (?, ?)");
+        foreach ($categoryIds as $catId) {
+            $cId = (int)$catId;
+            $stmt_cat->bind_param("ii", $id, $cId);
+            if (!$stmt_cat->execute()) {
+                $conn->rollback(); throw new Exception("Failed to update categories.");
+            }
+        }
+        $stmt_cat->close();
+    }
+
+    // --- 8. Sync Tags ---
+    $conn->query("DELETE FROM calculator_tags WHERE calculator_id = $id");
+    if (!empty($tagIds)) {
+        $stmt_tag = $conn->prepare("INSERT INTO calculator_tags (calculator_id, tag_id) VALUES (?, ?)");
+        foreach ($tagIds as $tagId) {
+            $tId = (int)$tagId;
+            $stmt_tag->bind_param("ii", $id, $tId);
+            if (!$stmt_tag->execute()) {
+                $conn->rollback(); throw new Exception("Failed to update tags.");
+            }
+        }
+        $stmt_tag->close();
+    }
+
+    // --- 9. Commit Transaction ---
+    $conn->commit();
+    
+    $successMsg = $isMinorEdit 
+        ? 'Calculator updated (Minor Edit - date preserved).' 
+        : 'Calculator updated successfully.';
+
+    sendResponse(true, null, $successMsg);
+
+} catch (Exception $e) {
+    if ($conn->inTransaction()) {
+      $conn->rollback();
+    }
+    error_log("Error in update_calculator.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

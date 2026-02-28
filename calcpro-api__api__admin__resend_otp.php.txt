@@ -1,0 +1,75 @@
+<?php
+// Use the PHPMailer classes
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+// Core utilities
+require '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../vendor/autoload.php';
+
+// --- Main Script Execution ---
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+if (!isset($data->email) || !filter_var(trim($data->email), FILTER_VALIDATE_EMAIL)) {
+    sendResponse(false, null, 'A valid email is required.', 400, 'INVALID_INPUT');
+}
+
+$email = trim($data->email);
+$ip_address = $_SERVER['REMOTE_ADDR'];
+
+try {
+    // 1. Find the pending verification and the associated admin details
+    $sql_find = "
+        SELECT a.id, a.name, a.email, otp.id as otp_id
+        FROM admins a
+        JOIN admin_otp_verifications otp ON a.id = otp.admin_id
+        WHERE a.email = ?
+        ORDER BY otp.created_at DESC
+        LIMIT 1
+    ";
+    $stmt_find = $conn->prepare($sql_find);
+    $stmt_find->bind_param("s", $email);
+    $stmt_find->execute();
+    $result = $stmt_find->get_result();
+    $admin = $result->fetch_assoc();
+    $stmt_find->close();
+
+    if (!$admin) {
+        sendResponse(false, null, 'No pending verification found for this email. Please try logging in again.', 404, 'NOT_FOUND');
+    }
+
+    // 2. Generate a new OTP and update the database
+    $new_otp_code = random_int(100000, 999999);
+    $new_otp_hash = password_hash($new_otp_code, PASSWORD_BCRYPT);
+    $new_expires_at = date('Y-m-d H:i:s', time() + 600); // 10 minutes from now
+
+    $update_sql = "UPDATE admin_otp_verifications SET otp_code_hash = ?, expires_at = ?, ip_address = ? WHERE id = ?";
+    $stmt_update = $conn->prepare($update_sql);
+    $stmt_update->bind_param("sssi", $new_otp_hash, $new_expires_at, $ip_address, $admin['otp_id']);
+    
+    if (!$stmt_update->execute()) {
+        throw new Exception('Failed to update OTP in the database.');
+    }
+    $stmt_update->close();
+    
+    // 3. Send the new OTP via email
+    $subject = 'Your New CalcPro Admin Verification Code';
+    $htmlBody = "<p>Hello {$admin['name']},</p><p>Here is your new verification code to complete your sign-in:</p><h2 style='text-align:center; font-size: 28px; letter-spacing: 4px; color: #1d4ed8;'>{$new_otp_code}</h2><p>This code is valid for 10 minutes and was requested from the IP address: {$ip_address}.</p>";
+    $altBody = "Your new CalcPro verification code is: {$new_otp_code}. It is valid for 10 minutes.";
+    
+    if (!sendSecurityEmail($admin['email'], $admin['name'], $subject, $htmlBody, $altBody)) {
+        throw new Exception('Failed to send the new verification email.');
+    }
+
+    // 4. Send success response
+    sendResponse(true, null, 'A new verification code has been sent to your email.');
+
+} catch (Exception $e) {
+    error_log("Error in resend_otp.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred while resending the code.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

@@ -1,0 +1,113 @@
+<?php
+// File: calcpro-api/api/admin/get_calculator.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Validation ---
+    if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
+        sendResponse(false, null, 'A valid Calculator ID is required.', 400, 'INVALID_INPUT');
+    }
+
+    $calculatorId = (int)$_GET['id'];
+    
+    // --- 2. Fetch Calculator ---
+    $sql = "SELECT * FROM calculators WHERE id = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("i", $calculatorId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    if ($result->num_rows > 0) {
+        $calculator = $result->fetch_assoc();
+        $stmt->close();
+
+        // --- Fetch Relations ---
+        $categoriesSql = "SELECT category_id FROM calculator_category_assignments WHERE calculator_id = ?";
+        $cStmt = $conn->prepare($categoriesSql);
+        $cStmt->bind_param("i", $calculatorId);
+        $cStmt->execute();
+        $cRes = $cStmt->get_result();
+        $categoryIds = [];
+        while($row = $cRes->fetch_assoc()) $categoryIds[] = (int)$row['category_id'];
+        $cStmt->close();
+
+        $tagsSql = "SELECT tag_id FROM calculator_tags WHERE calculator_id = ?";
+        $tStmt = $conn->prepare($tagsSql);
+        if ($tStmt) {
+            $tStmt->bind_param("i", $calculatorId);
+            $tStmt->execute();
+            $tRes = $tStmt->get_result();
+            $tagIds = [];
+            while($row = $tRes->fetch_assoc()) $tagIds[] = (int)$row['tag_id'];
+            $tStmt->close();
+        } else {
+            $tagIds = [];
+        }
+
+        // --- Redirect Check ---
+        $activeRedirect = null;
+        $redirectSql = "SELECT target_url, status_code FROM redirects WHERE source_path = ? AND status = 'active' LIMIT 1";
+        $redStmt = $conn->prepare($redirectSql);
+        $sourcePath = 'calculator/' . $calculator['slug']; 
+        $redStmt->bind_param("s", $sourcePath);
+        $redStmt->execute();
+        $redRes = $redStmt->get_result();
+        if ($redRes->num_rows > 0) $activeRedirect = $redRes->fetch_assoc();
+        $redStmt->close();
+
+        // --- 3. Prepare Response with Strict Types ---
+        
+        $calculator['categories'] = $categoryIds;
+        $calculator['tags'] = $tagIds;
+        $calculator['active_redirect'] = $activeRedirect;
+        
+        $calculator['faq_json'] = json_decode($calculator['faq_json'] ?? '[]', true);
+        $calculator['schema_json'] = json_decode($calculator['schema_json'] ?? '[]', true);
+
+        // Explicit Mapping
+        $calculator['focusKeywords'] = $calculator['focus_keywords'];
+        $calculator['canonical_url'] = $calculator['canonical_url']; 
+        $calculator['primary_category_id'] = $calculator['primary_category_id'] ? (int)$calculator['primary_category_id'] : null;
+        $calculator['is_featured'] = (bool)$calculator['is_featured'];
+
+        // Social SEO (Facebook)
+        $calculator['ogTitle'] = $calculator['og_title'];
+        $calculator['ogDescription'] = $calculator['og_description'];
+
+        // Social SEO (Twitter) - ADDED
+        $calculator['twitterTitle'] = $calculator['twitter_title'];
+        $calculator['twitterDescription'] = $calculator['twitter_description'];
+        $calculator['twitterImage'] = $calculator['twitter_image'];
+
+        // Robots Meta
+        $calculator['no_index'] = $calculator['no_index'] === null ? null : (int)$calculator['no_index'];
+        $calculator['no_follow'] = $calculator['no_follow'] === null ? null : (int)$calculator['no_follow'];
+        $calculator['no_archive'] = $calculator['no_archive'] === null ? null : (int)$calculator['no_archive'];
+        $calculator['no_image_index'] = $calculator['no_image_index'] === null ? null : (int)$calculator['no_image_index'];
+        $calculator['no_snippet'] = $calculator['no_snippet'] === null ? null : (int)$calculator['no_snippet'];
+
+        // Advanced Robot Meta
+        $calculator['max_snippet'] = isset($calculator['max_snippet']) ? (int)$calculator['max_snippet'] : null;
+        $calculator['max_video_preview'] = isset($calculator['max_video_preview']) ? (int)$calculator['max_video_preview'] : null;
+        $calculator['max_image_preview'] = $calculator['max_image_preview'];
+        
+        sendResponse(true, $calculator, 'Calculator data fetched successfully.');
+    } else {
+        $stmt->close();
+        sendResponse(false, null, 'Calculator content not found.', 404, 'NOT_FOUND');
+    }
+
+} catch (Exception $e) {
+    error_log("Error in get_calculator.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching calculator data.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

@@ -1,0 +1,65 @@
+<?php
+// Include the database configuration file
+require '../../core/config.php';
+
+// Set content type to JSON
+header('Content-Type: application/json');
+
+// --- Get the request data ---
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// --- Basic Validation: Ensure we have a user ID ---
+if (!isset($data->userId)) {
+    echo json_encode(['success' => false, 'message' => 'User ID is required.']);
+    exit();
+}
+
+// --- Sanitize Input ---
+$userId = (int)$data->userId;
+
+// --- Logic to determine which delete action to perform ---
+
+// CASE 1: Delete a SINGLE calculation
+if (isset($data->calculationId)) {
+    $calculationId = (int)$data->calculationId;
+
+    // SECURITY: The WHERE clause ensures a user can ONLY delete their OWN calculations.
+    $sql = "DELETE FROM calculations WHERE id = ? AND user_id = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("ii", $calculationId, $userId);
+
+    if ($stmt->execute()) {
+        // We check affected_rows to see if a row was actually deleted.
+        if ($stmt->affected_rows > 0) {
+            echo json_encode(['success' => true, 'message' => 'Calculation deleted successfully.']);
+        } else {
+            echo json_encode(['success' => false, 'message' => 'Calculation not found or you do not have permission to delete it.']);
+        }
+    } else {
+        echo json_encode(['success' => false, 'message' => 'Failed to delete calculation: ' . $stmt->error]);
+    }
+    $stmt->close();
+}
+// CASE 2: Delete ALL calculations for a user
+else if (isset($data->deleteAll) && $data->deleteAll === true) {
+    $sql = "DELETE FROM calculations WHERE user_id = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("i", $userId);
+
+    if ($stmt->execute()) {
+        $deletedCount = $stmt->affected_rows;
+        echo json_encode(['success' => true, 'message' => "$deletedCount calculations have been deleted."]);
+    } else {
+        echo json_encode(['success' => false, 'message' => 'Failed to delete all calculations: ' . $stmt->error]);
+    }
+    $stmt->close();
+}
+// CASE 3: Invalid request
+else {
+    echo json_encode(['success' => false, 'message' => 'Invalid delete request.']);
+}
+
+// --- Close connection ---
+$conn->close();
+?>

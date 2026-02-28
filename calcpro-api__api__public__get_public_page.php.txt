@@ -1,0 +1,107 @@
+<?php
+// File: calcpro-api/api/public/get_public_page.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+// Helper to fetch Alt Text by filename
+function getMediaAlt($conn, $url) {
+    if (empty($url)) return null;
+    $filename = basename($url);
+    $stmt = $conn->prepare("SELECT alt_text FROM media WHERE file_name = ? LIMIT 1");
+    if (!$stmt) return null;
+    $stmt->bind_param("s", $filename);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $alt = null;
+    if ($row = $res->fetch_assoc()) {
+        $alt = $row['alt_text'];
+    }
+    $stmt->close();
+    return $alt;
+}
+
+try {
+    // --- 1. Validate Input ---
+    if (!isset($_GET['slug']) || empty(trim($_GET['slug']))) {
+        sendResponse(false, null, 'A page slug is required.', 400, 'INVALID_INPUT');
+    }
+    $slug = trim($_GET['slug']);
+    
+    // --- 2. Main Query ---
+    $sql = "SELECT * FROM pages WHERE slug = ? AND status = 'published'";
+    $stmt = $conn->prepare($sql);
+    if ($stmt === false) {
+        throw new Exception('Database prepare statement failed: ' . $conn->error);
+    }
+    
+    $stmt->bind_param("s", $slug);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    if ($result->num_rows > 0) {
+        $page = $result->fetch_assoc();
+        $stmt->close();
+        
+        // --- Lookup Alt Texts ---
+        $og_image_alt = getMediaAlt($conn, $page['og_image']);
+        $twitter_image_alt = getMediaAlt($conn, $page['twitter_image']);
+
+        // --- 3. Strict Formatting ---
+        $page_frontend = [
+            'id' => (int)$page['id'],
+            'title' => $page['title'],
+            'slug' => $page['slug'],
+            'page_key' => $page['page_key'],
+            'content' => json_decode($page['content_json'] ?? '{}'),
+            'status' => $page['status'],
+            
+            // Standard SEO
+            'meta_title' => $page['meta_title'],
+            'meta_description' => $page['meta_description'],
+            'focus_keywords' => $page['focus_keywords'],
+            'canonical_url' => $page['canonical_url'],
+            
+            // Social SEO (Facebook)
+            'og_title' => $page['og_title'],
+            'og_description' => $page['og_description'],
+            'og_image' => $page['og_image'],
+            'og_image_alt' => $og_image_alt, // NEW
+            
+            // Twitter SEO
+            'twitter_title' => $page['twitter_title'],
+            'twitter_description' => $page['twitter_description'],
+            'twitter_image' => $page['twitter_image'],
+            'twitter_image_alt' => $twitter_image_alt, // NEW
+
+            // Robots Meta
+            'no_index' => $page['no_index'] === null ? null : (bool)$page['no_index'],
+            'no_follow' => $page['no_follow'] === null ? null : (bool)$page['no_follow'],
+            'no_archive' => $page['no_archive'] === null ? null : (bool)$page['no_archive'],
+            'no_image_index' => $page['no_image_index'] === null ? null : (bool)$page['no_image_index'],
+            'no_snippet' => $page['no_snippet'] === null ? null : (bool)$page['no_snippet'],
+
+            // Advanced Robot Meta
+            'max_snippet' => $page['max_snippet'] !== null ? (int)$page['max_snippet'] : null,
+            'max_video_preview' => $page['max_video_preview'] !== null ? (int)$page['max_video_preview'] : null,
+            'max_image_preview' => $page['max_image_preview'],
+
+            'schema_json' => json_decode($page['schema_json'] ?? '[]'),
+            'created_at' => $page['created_at'],
+            'updated_at' => $page['updated_at']
+        ];
+        
+        sendResponse(true, $page_frontend, 'Page content fetched successfully.');
+    } else {
+        $stmt->close();
+        sendResponse(false, null, 'Page not found.', 404, 'NOT_FOUND');
+    }
+
+} catch (Exception $e) {
+    error_log("Error in get_public_page.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching the page content.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

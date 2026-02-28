@@ -1,0 +1,272 @@
+<?php
+/**
+ * SecurityGuard Class
+ * 
+ * Centralizes Brute Force Protection logic, IP blocking, and audit logging.
+ * Implements the "Intelligent Escalation" strategy and probabilistic garbage collection.
+ */
+
+// Ensure the NotificationManager is available
+require_once __DIR__ . '/NotificationManager.php';
+
+class SecurityGuard {
+    private $conn;
+    private $ip_address;
+    private $notifier;
+    
+    // Standardized Messages
+    const MSG_PERMA_BLOCK = "This IP address has been permanently blocked due to suspicious activity.";
+    
+    public function __construct($dbConnection, $ip = null) {
+        $this->conn = $dbConnection;
+        $this->ip_address = $ip ?: $_SERVER['REMOTE_ADDR'];
+        $this->notifier = new NotificationManager($dbConnection);
+        
+        // Trigger Probabilistic Garbage Collection (1% chance)
+        $this->runGarbageCollection();
+    }
+
+    /**
+     * Checks if the current IP is allowed to proceed.
+     * Returns an array with status and error details if blocked.
+     */
+    public function checkIpStatus() {
+        // 1. Check Permanent Blacklist
+        $stmt = $this->conn->prepare("SELECT id FROM ip_blacklist WHERE ip_address = ?");
+        $stmt->bind_param("s", $this->ip_address);
+        $stmt->execute();
+        if ($stmt->get_result()->num_rows > 0) {
+            $stmt->close();
+            return ['allowed' => false, 'code' => 'IP_PERMABANNED', 'message' => self::MSG_PERMA_BLOCK];
+        }
+        $stmt->close();
+
+        // 2. Check Temporary Block (Dynamic Duration)
+        $lockout_min = 1440; 
+        
+        $setting_res = $this->conn->query("SELECT setting_value FROM settings WHERE setting_key = 'security_temp_block_duration_minutes'");
+        if ($setting_res && $setting_res->num_rows > 0) {
+            $val = (int)$setting_res->fetch_assoc()['setting_value'];
+            if ($val > 0) $lockout_min = $val;
+        }
+
+        // Check if a block exists within that dynamic timeframe
+        $stmt = $this->conn->prepare("SELECT blocked_at FROM temporary_blocks WHERE ip_address = ? AND blocked_at > NOW() - INTERVAL ? MINUTE");
+        $stmt->bind_param("si", $this->ip_address, $lockout_min);
+        $stmt->execute();
+        
+        if ($stmt->get_result()->num_rows > 0) {
+            $stmt->close();
+            
+            // --- NEW: Professional Duration Formatting ---
+            // Convert lockout minutes to seconds for calculation
+            $seconds = $lockout_min * 60;
+            
+            $d = floor($seconds / 86400);
+            $seconds %= 86400;
+            $h = floor($seconds / 3600);
+            $seconds %= 3600;
+            $m = floor($seconds / 60);
+
+            // Build array of parts (e.g., ["1 day", "2 hours"])
+            $parts = [];
+            if ($d > 0) $parts[] = $d . ' day' . ($d > 1 ? 's' : '');
+            if ($h > 0) $parts[] = $h . ' hour' . ($h > 1 ? 's' : '');
+            if ($m > 0) $parts[] = $m . ' minute' . ($m > 1 ? 's' : '');
+
+            // Construct natural language string
+            if (empty($parts)) {
+                $durationStr = "less than a minute";
+            } else {
+                // If more than 1 part, pop the last one to prepend "and"
+                if (count($parts) > 1) {
+                    $last = array_pop($parts);
+                    $durationStr = implode(', ', $parts) . " and " . $last;
+                } else {
+                    $durationStr = $parts[0];
+                }
+            }
+
+            $msg = "Too many failed login attempts. Access from this IP has been temporarily blocked for {$durationStr}.";
+            
+            return ['allowed' => false, 'code' => 'IP_TEMPBANNED', 'message' => $msg];
+        }
+        $stmt->close();
+
+        return ['allowed' => true];
+    }
+
+    /**
+     * Logs a failed attempt and triggers block escalation if limits are reached.
+     * 
+     * @param string|null $email The email attempted (if any)
+     * @param int|null $adminId The admin ID if the email was valid (optional)
+     * @param string $type 'password', 'otp' (valid email), or 'email' (unknown user)
+     */
+    public function logFailure($email = null, $adminId = null, $type = 'email') {
+        // 1. Log the specific failure
+        if (($type === 'password' || $type === 'otp') && $adminId) {
+            // Log known user failures (Password or OTP) to the detailed table
+            $stmt = $this->conn->prepare("INSERT INTO admin_login_failures (admin_id, ip_address, failure_type) VALUES (?, ?, ?)");
+            $stmt->bind_param("iss", $adminId, $this->ip_address, $type);
+        } else {
+            // Log unknown user failures to the general table
+            $stmt = $this->conn->prepare("INSERT INTO login_attempts (ip_address, attempted_email) VALUES (?, ?)");
+            $stmt->bind_param("ss", $this->ip_address, $email);
+        }
+        $stmt->execute();
+        $stmt->close();
+
+        // 2. Check Total Failures to see if we need to block
+        $this->checkAndEscalateBlock($adminId, $type); 
+    }
+
+    /**
+     * Private: Counts total failures and applies blocks if necessary.
+     */
+    private function checkAndEscalateBlock($adminId = null, $failureType = 'email') {
+        $limit = defined('LOGIN_ATTEMPT_LIMIT') ? LOGIN_ATTEMPT_LIMIT : 3;
+
+        // Count from both tables
+        $sql = "SELECT COUNT(*) as total FROM (
+                    SELECT attempted_at FROM login_attempts WHERE ip_address = ? 
+                    UNION ALL 
+                    SELECT attempted_at FROM admin_login_failures WHERE ip_address = ?
+                ) as all_failures";
+        
+        $stmt = $this->conn->prepare($sql);
+        $stmt->bind_param("ss", $this->ip_address, $this->ip_address);
+        $stmt->execute();
+        $count = $stmt->get_result()->fetch_assoc()['total'];
+        $stmt->close();
+
+        if ($count >= $limit) {
+            $this->applyTemporaryBlock($adminId, $failureType);
+        }
+    }
+
+    /**
+     * Private: Applies a Temp Block and checks if it should be escalated to Permanent.
+     * 
+     * @param int|null $adminId The admin ID if the target was a known admin.
+     * @param string $blockType The specific type of block (e.g., 'password', 'otp', or 'email').
+     */
+    private function applyTemporaryBlock($adminId = null, $blockType = 'email') {
+        $this->conn->begin_transaction();
+        
+        try {
+            // Determine reason based on the specific failure type
+            if ($blockType === 'password') {
+                 $reason = "Multiple failed password attempts on admin account.";
+                 $type_to_log = 'failed_password';
+            } elseif ($blockType === 'otp') {
+                 $reason = "Multiple failed 2FA (OTP) attempts.";
+                 $type_to_log = 'failed_otp';
+            } elseif ($blockType === 'email') {
+                 $reason = "Multiple failed email/username attempts (probing).";
+                 $type_to_log = 'failed_email';
+            } else {
+                 $reason = "Multiple failed login attempts.";
+                 $type_to_log = 'other';
+            }
+
+            // 1. DYNAMIC ESCALATION CHECK (Moved up to decide notification)
+            $timeframe_hours = 168; // Default 7 days
+            $threshold = 2; // Default 2 blocks
+            
+            $res = $this->conn->query("SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('security_escalation_timeframe_hours', 'security_escalation_threshold')");
+            while ($row = $res->fetch_assoc()) {
+                if ($row['setting_key'] === 'security_escalation_timeframe_hours') $timeframe_hours = (int)$row['setting_value'];
+                if ($row['setting_key'] === 'security_escalation_threshold') $threshold = (int)$row['setting_value'];
+            }
+
+            // Check history for PREVIOUS blocks (excluding the one we are about to add)
+            $check_stmt = $this->conn->prepare("SELECT COUNT(*) as block_count FROM temporary_blocks WHERE ip_address = ? AND blocked_at > NOW() - INTERVAL ? HOUR");
+            $check_stmt->bind_param("si", $this->ip_address, $timeframe_hours);
+            $check_stmt->execute();
+            $block_count = $check_stmt->get_result()->fetch_assoc()['block_count'];
+            $check_stmt->close();
+
+            // If history + current attempt >= threshold, we escalate.
+            // Note: Since we haven't inserted the current temp block yet, we check if $block_count >= ($threshold - 1).
+            // Example: Threshold 2. History has 1. 1 >= (2-1) is TRUE. Escalation happens now.
+            $will_escalate = ($block_count >= ($threshold - 1));
+
+            // 2. Always Insert Temp Block Record (as audit trail)
+            $stmt = $this->conn->prepare("INSERT INTO temporary_blocks (ip_address, admin_id, reason, origin, block_type) VALUES (?, ?, ?, 'system', ?)");
+            $stmt->bind_param("siss", $this->ip_address, $adminId, $reason, $type_to_log);
+            $stmt->execute();
+            $stmt->close();
+
+            // 3. Clear logs
+            $this->conn->prepare("DELETE FROM login_attempts WHERE ip_address = ?")->execute([$this->ip_address]);
+            $this->conn->prepare("DELETE FROM admin_login_failures WHERE ip_address = ?")->execute([$this->ip_address]);
+
+            // 4. Handle Notification & Escalation
+            if ($will_escalate) {
+                // ESCALATE TO PERMANENT
+                $perm_stmt = $this->conn->prepare("INSERT INTO ip_blacklist (ip_address, admin_id, reason, origin, block_type) VALUES (?, ?, ?, 'system', ?) ON DUPLICATE KEY UPDATE blocked_at = NOW()");
+                $perm_stmt->bind_param("siss", $this->ip_address, $adminId, $reason, $type_to_log);
+                $perm_stmt->execute();
+                $perm_stmt->close();
+
+                // Remove temp block records since they are now permabanned
+                $this->conn->query("DELETE FROM temporary_blocks WHERE ip_address = '{$this->ip_address}'");
+
+                // --- NOTIFICATION TRIGGER: Critical Only ---
+                $this->notifier->create(
+                    'security',
+                    'critical',
+                    'IP Blacklisted (Escalation)',
+                    "IP {$this->ip_address} permanently banned after multiple offenses.",
+                    '/admin/security/brute-force?tab=blacklist'
+                );
+            } else {
+                // STANDARD TEMP BLOCK
+                // --- NOTIFICATION TRIGGER: Warning Only (if NOT escalated) ---
+                $this->notifier->create(
+                    'security',
+                    'warning',
+                    'Temporary IP Block',
+                    "IP {$this->ip_address} blocked due to {$reason}",
+                    '/admin/security/brute-force?tab=tempBlocks'
+                );
+            }
+
+            $this->conn->commit();
+        } catch (Exception $e) {
+            $this->conn->rollback();
+            error_log("SecurityGuard Error: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Probabilistic Garbage Collection (1% chance).
+     */
+    private function runGarbageCollection() {
+        if (rand(1, 100) === 1) {
+            // 1. Clean Log Retention (Login attempts)
+            $retention_days = 30; 
+            $res = $this->conn->query("SELECT setting_value FROM settings WHERE setting_key = 'login_attempt_retention_days'");
+            if ($res && $res->num_rows > 0) {
+                $val = (int)$res->fetch_assoc()['setting_value'];
+                if ($val > 0) $retention_days = $val;
+            }
+
+            $this->conn->query("DELETE FROM login_attempts WHERE attempted_at < NOW() - INTERVAL $retention_days DAY");
+            $this->conn->query("DELETE FROM admin_login_failures WHERE attempted_at < NOW() - INTERVAL $retention_days DAY");
+            
+            // 2. Clean Temporary Blocks (Based on Escalation Timeframe)
+            $timeframe_hours = 168; // Default
+            $res2 = $this->conn->query("SELECT setting_value FROM settings WHERE setting_key = 'security_escalation_timeframe_hours'");
+            if ($res2 && $res2->num_rows > 0) {
+                $val = (int)$res2->fetch_assoc()['setting_value'];
+                if ($val > 0) $timeframe_hours = $val;
+            }
+            
+            // STRICT CLEANUP: Deletes data exactly when it falls out of the escalation window.
+            $this->conn->query("DELETE FROM temporary_blocks WHERE blocked_at < NOW() - INTERVAL $timeframe_hours HOUR");
+        }
+    }
+}
+?>

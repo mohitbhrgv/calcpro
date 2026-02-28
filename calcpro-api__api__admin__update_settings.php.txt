@@ -1,0 +1,272 @@
+<?php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// --- 1. RBAC ENFORCEMENT ---
+// Only Super Admins can modify global system settings.
+if (!isset($admin_data->adminRole) || $admin_data->adminRole !== 'super_admin') {
+    sendResponse(false, null, 'Unauthorized: Only Super Admins can modify global settings.', 403, 'FORBIDDEN');
+}
+
+// Helper to build blog path based on structure and date
+function buildBlogPath($structure, $slug, $created_at) {
+    $date = new DateTime($created_at);
+    // Uses default UTC from config
+    $year = $date->format('Y');
+    $month = $date->format('m');
+    $day = $date->format('d');
+
+    switch ($structure) {
+        case 'date_slug': // /blog/2025/12/08/post-slug
+            return "blog/{$year}/{$month}/{$day}/{$slug}";
+        case 'month_slug': // /blog/2025/12/post-slug
+            return "blog/{$year}/{$month}/{$slug}";
+        case 'slug': // /blog/post-slug (Default)
+        default:
+            return "blog/{$slug}";
+    }
+}
+
+try {
+    $json = file_get_contents('php://input');
+    $data = json_decode($json, true);
+
+    if (json_last_error() !== JSON_ERROR_NONE || !is_array($data)) {
+        throw new Exception('Invalid JSON data provided.', 400);
+    }
+
+    $allowed_system_settings = [
+        'siteName', 'siteDescription', 'site_logo', 'site_icon', 'site_footer_text',
+        'site_logo_height_header_desktop', 'site_logo_height_header_tablet', 'site_logo_height_header_mobile',
+        'site_logo_height_footer_desktop', 'site_logo_height_footer_tablet', 'site_logo_height_footer_mobile',
+        'site_logo_brightness', 'site_logo_opacity', 'site_logo_grayscale',
+        'saveLimit', 'maintenanceMode', 'cdnApiKey', 'calculatorCategories', 'defaultPrecision', 'defaultUnits',
+        'inactivity_logout_enabled', 'inactivity_timeout_minutes', 'security_2fa_enabled', 'security_2fa_frequency',
+        'site_timezone', 'date_format', 'time_format', 'permalink_structure', 'calculator_base_slug',
+        'login_attempt_retention_days', 'security_log_pagination_limit',
+        'security_temp_block_duration_minutes',
+        'security_escalation_timeframe_hours', 'security_escalation_threshold',
+        
+        // --- 404 Monitor Settings ---
+        'seo_404_monitor_mode', 
+        'seo_404_monitor_limit', 
+        'seo_404_monitor_exclude', 
+        'seo_404_monitor_ignore_query',
+
+        // --- Sitemap & Robots Settings ---
+        'seo_sitemap_inc_posts',
+        'seo_sitemap_inc_pages',
+        'seo_sitemap_inc_calcs',
+        'seo_sitemap_inc_blog_cats', 
+        'seo_sitemap_inc_calc_cats',
+        'seo_sitemap_pagination_limit',
+        'seo_robots_custom_enable', 'seo_robots_custom_content',
+
+        // --- Integrations & Scripts ---
+        'integration_ga4_id',
+        'integration_gsc_code',
+        'integration_header_scripts',
+        'integration_footer_scripts',
+
+        // --- Structure & Special Pages ---
+        'seo_page_for_about', 'seo_page_for_contact', 'seo_enable_sitelinks_search',
+        
+        // --- Local SEO (Manual JSON) ---
+        'seo_local_json_ld'
+    ];
+
+    $conn->begin_transaction();
+
+    // --- LOGIC TO DETECT DURATION CHANGE ---
+    $old_duration = null;
+    if (isset($data['security_temp_block_duration_minutes'])) {
+        $stmt_old_dur = $conn->prepare("SELECT setting_value FROM settings WHERE setting_key = 'security_temp_block_duration_minutes'");
+        $stmt_old_dur->execute();
+        $res_old_dur = $stmt_old_dur->get_result();
+        if ($res_old_dur->num_rows > 0) {
+            $old_duration = (int)$res_old_dur->fetch_assoc()['setting_value'];
+        } else {
+            $old_duration = 1440; // Fallback to default if not set
+        }
+        $stmt_old_dur->close();
+    }
+
+    // =================================================================
+    // SMART REDIRECT LOGIC
+    // =================================================================
+    $should_auto_redirect = isset($data['auto_redirects']) && $data['auto_redirects'] === true;
+    $publicUrl = rtrim($_ENV['PUBLIC_FRONTEND_URL'], '/');
+    $redirects_to_insert = [];
+
+    // 1. CALCULATOR REDIRECTS
+    if ($should_auto_redirect && isset($data['calculator_base_slug'])) {
+        $newBase = trim($data['calculator_base_slug'], '/ ');
+        $stmt_old = $conn->prepare("SELECT setting_value FROM settings WHERE setting_key = 'calculator_base_slug'");
+        $stmt_old->execute();
+        $res_old = $stmt_old->get_result();
+        $oldBase = ($res_old->num_rows > 0) ? $res_old->fetch_assoc()['setting_value'] : 'calculator'; 
+        $stmt_old->close();
+
+        if ($oldBase && $newBase && $oldBase !== $newBase) {
+            $calc_res = $conn->query("SELECT slug FROM calculators WHERE status = 'published'");
+            if ($calc_res) {
+                while($row = $calc_res->fetch_assoc()) {
+                    $slug = $row['slug'];
+                    $source = "{$oldBase}/{$slug}";
+                    $target = "{$publicUrl}/{$newBase}/{$slug}";
+                    
+                    $sourceEsc = $conn->real_escape_string($source);
+                    $targetEsc = $conn->real_escape_string($target);
+                    $redirects_to_insert[] = "('$sourceEsc', '$targetEsc', 301, 'active')";
+                }
+            }
+        }
+    }
+
+    // 2. BLOG POST REDIRECTS
+    if ($should_auto_redirect && isset($data['permalink_structure'])) {
+        $newStruct = $data['permalink_structure'];
+        $stmt_old_struct = $conn->prepare("SELECT setting_value FROM settings WHERE setting_key = 'permalink_structure'");
+        $stmt_old_struct->execute();
+        $res_old_struct = $stmt_old_struct->get_result();
+        $oldStruct = ($res_old_struct->num_rows > 0) ? $res_old_struct->fetch_assoc()['setting_value'] : 'slug';
+        $stmt_old_struct->close();
+
+        if ($oldStruct !== $newStruct) {
+             $post_res = $conn->query("SELECT slug, created_at FROM posts WHERE status = 'published'");
+             if ($post_res) {
+                 while($row = $post_res->fetch_assoc()) {
+                     $source = buildBlogPath($oldStruct, $row['slug'], $row['created_at']);
+                     $targetPath = buildBlogPath($newStruct, $row['slug'], $row['created_at']);
+                     $target = "{$publicUrl}/{$targetPath}";
+
+                     $sourceEsc = $conn->real_escape_string($source);
+                     $targetEsc = $conn->real_escape_string($target);
+                     $redirects_to_insert[] = "('$sourceEsc', '$targetEsc', 301, 'active')";
+                 }
+             }
+        }
+    }
+
+    // EXECUTE BATCH INSERT IF NEEDED
+    if (!empty($redirects_to_insert)) {
+        $chunks = array_chunk($redirects_to_insert, 500);
+        foreach ($chunks as $chunk) {
+            $values = implode(',', $chunk);
+            $sql_redirect = "INSERT INTO redirects (source_path, target_url, status_code, status) VALUES {$values} ON DUPLICATE KEY UPDATE target_url = VALUES(target_url)";
+            if (!$conn->query($sql_redirect)) {
+                error_log("Redirect Batch Insert Failed: " . $conn->error);
+            }
+        }
+    }
+
+    // =================================================================
+
+    $sql = "INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)";
+    $stmt = $conn->prepare($sql);
+
+    if ($stmt === false) {
+        throw new Exception('Database prepare statement failed: ' . $conn->error);
+    }
+
+    foreach ($data as $key => $value) {
+        // Check if key is in whitelist or starts with seo_ (dynamic SEO templates)
+        $is_allowed = in_array($key, $allowed_system_settings) || (strpos($key, 'seo_') === 0);
+
+        if ($is_allowed) {
+            
+            // --- FIX: DETECT TYPE BEFORE CONVERSION ---
+            // This prevents "Array to string conversion" errors.
+            $value_to_save = "";
+
+            if (is_array($value) || is_object($value)) { 
+                // Complex types (like Exclude Paths) are JSON stringified
+                $value_to_save = json_encode($value);
+            } 
+            elseif (is_bool($value)) { 
+                // Booleans are converted to standardized strings
+                $value_to_save = $value ? 'true' : 'false'; 
+            } 
+            else {
+                // Strings and numbers are cast normally
+                $value_to_save = (string)$value;
+            }
+
+            // --- DEBUG: EXPLICITLY LOG SITE ICON SAVE ---
+            if ($key === 'site_icon') {
+                error_log("[Settings Update] Saving site_icon. Value: '" . $value_to_save . "'");
+            }
+
+            // --- KEY-SPECIFIC LOGIC & CONSTRAINTS ---
+            if ($key === 'inactivity_timeout_minutes') { 
+                $valInt = max(1, min(120, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'seo_sitemap_pagination_limit') {
+                $valInt = max(50, min(50000, (int)$value));
+                $value_to_save = (string)$valInt;
+            }
+            elseif ($key === 'site_timezone') { 
+                try { new DateTimeZone($value); } 
+                catch (Exception $e) { throw new Exception("Invalid timezone: ".htmlspecialchars($value), 400); } 
+            }
+            elseif ($key === 'login_attempt_retention_days') { 
+                $valInt = max(1, min(365, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'security_log_pagination_limit') { 
+                $valInt = max(10, min(500, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'security_temp_block_duration_minutes') { 
+                $valInt = max(5, min(43200, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'security_escalation_timeframe_hours') { 
+                $valInt = max(1, min(720, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'security_escalation_threshold') { 
+                $valInt = max(2, min(20, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            
+            // Security: Prevent malicious keys even if they passed the whitelist prefix check
+            if (!preg_match('/^[a-zA-Z0-9_]+$/', $key)) continue;
+
+            $stmt->bind_param("ss", $key, $value_to_save);
+            if (!$stmt->execute()) throw new Exception("Failed to update setting: $key");
+        }
+    }
+    $stmt->close();
+    
+    // --- RESET TIMERS IF DURATION CHANGED ---
+    $new_duration = isset($data['security_temp_block_duration_minutes']) ? (int)$data['security_temp_block_duration_minutes'] : null;
+    if ($new_duration !== null && $old_duration !== null && $new_duration !== $old_duration) {
+        $sql_reset = "UPDATE temporary_blocks SET blocked_at = NOW() WHERE blocked_at > NOW() - INTERVAL ? MINUTE";
+        $stmt_reset = $conn->prepare($sql_reset);
+        $stmt_reset->bind_param("i", $old_duration);
+        $stmt_reset->execute();
+        $stmt_reset->close();
+    }
+    
+    $conn->commit();
+    sendResponse(true, null, 'Settings updated successfully!');
+
+} catch (Exception $e) {
+    if ($conn->inTransaction()) {
+        $conn->rollback();
+    }
+    $code = is_numeric($e->getCode()) && $e->getCode() > 0 ? $e->getCode() : 500;
+    error_log("Error in update_settings.php: " . $e->getMessage());
+    sendResponse(false, null, $e->getMessage(), $code);
+}
+
+$conn->close();
+?>

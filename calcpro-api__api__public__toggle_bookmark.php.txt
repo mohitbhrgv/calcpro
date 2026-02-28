@@ -1,0 +1,58 @@
+<?php
+// Include the database configuration file
+require '../../core/config.php';
+
+// Set content type to JSON
+header('Content-Type: application/json');
+
+// --- Get the request data ---
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// --- Basic Validation ---
+if (!isset($data->userId) || !isset($data->calculatorId)) {
+    echo json_encode(['success' => false, 'message' => 'User ID and Calculator ID are required.']);
+    exit();
+}
+
+// --- Sanitize Input ---
+$userId = (int)$data->userId;
+$calculatorId = mysqli_real_escape_string($conn, trim($data->calculatorId));
+
+// --- Logic to Toggle the Bookmark ---
+
+// 1. First, check if the bookmark already exists for this user and calculator
+$checkSql = "SELECT id FROM bookmarks WHERE user_id = ? AND calculator_id = ?";
+$stmt = $conn->prepare($checkSql);
+$stmt->bind_param("is", $userId, $calculatorId);
+$stmt->execute();
+$result = $stmt->get_result();
+$stmt->close();
+
+if ($result->num_rows > 0) {
+    // 2. If it exists, DELETE it (unbookmark action)
+    $deleteSql = "DELETE FROM bookmarks WHERE user_id = ? AND calculator_id = ?";
+    $stmt = $conn->prepare($deleteSql);
+    $stmt->bind_param("is", $userId, $calculatorId);
+    if ($stmt->execute()) {
+        echo json_encode(['success' => true, 'bookmarked' => false, 'message' => 'Bookmark removed.']);
+    } else {
+        echo json_encode(['success' => false, 'message' => 'Failed to remove bookmark.']);
+    }
+    $stmt->close();
+} else {
+    // 3. If it does not exist, INSERT it (bookmark action)
+    $insertSql = "INSERT INTO bookmarks (user_id, calculator_id) VALUES (?, ?)";
+    $stmt = $conn->prepare($insertSql);
+    $stmt->bind_param("is", $userId, $calculatorId);
+    if ($stmt->execute()) {
+        echo json_encode(['success' => true, 'bookmarked' => true, 'message' => 'Bookmark added.']);
+    } else {
+        echo json_encode(['success' => false, 'message' => 'Failed to add bookmark.']);
+    }
+    $stmt->close();
+}
+
+// --- Close connection ---
+$conn->close();
+?>

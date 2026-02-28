@@ -1,0 +1,311 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    if (!isset($data->action)) {
+        sendResponse(false, null, 'An action is required.', 400, 'INVALID_ACTION');
+    }
+
+    $action = $data->action;
+
+    if ($action === 'add' || $action === 'add_temporary') {
+        if (!isset($data->ip_address) || !filter_var($data->ip_address, FILTER_VALIDATE_IP)) {
+            sendResponse(false, null, 'A valid IP address is required.', 400, 'INVALID_INPUT');
+        }
+        
+        $block_type = $data->block_type ?? 'other';
+        $ip_address = trim($data->ip_address);
+        
+        $reason = 'Manually added block.';
+        if (isset($data->block_type)) {
+             if ($data->block_type === 'failed_email') $reason = 'Suspected failed email/username attempts.';
+             elseif ($data->block_type === 'failed_password') $reason = 'Suspected failed password attempts.';
+             elseif ($data->block_type === 'failed_otp') $reason = 'Excessive OTP failures.';
+        }
+
+        // Check if already permanently banned
+        $check_perm = $conn->prepare("SELECT id FROM ip_blacklist WHERE ip_address = ?");
+        $check_perm->bind_param("s", $ip_address);
+        $check_perm->execute();
+        $is_perm_banned = $check_perm->get_result()->num_rows > 0;
+        $check_perm->close();
+
+        if ($action === 'add') {
+            if ($is_perm_banned) {
+                sendResponse(false, null, 'This IP address is already in the blacklist.', 409, 'DUPLICATE_IP');
+            }
+            
+            $conn->begin_transaction();
+            try {
+                $origin = (isset($data->context) && $data->context === 'escalation') ? 'system' : 'manual';
+                
+                $stmt = $conn->prepare("INSERT INTO ip_blacklist (ip_address, reason, origin, block_type) VALUES (?, ?, ?, ?)");
+                $stmt->bind_param("ssss", $ip_address, $reason, $origin, $block_type);
+                $stmt->execute();
+                $stmt->close();
+
+                // Cleanup other tables
+                $conn->prepare("DELETE FROM temporary_blocks WHERE ip_address = ?")->execute([$ip_address]);
+                $conn->prepare("DELETE FROM login_attempts WHERE ip_address = ?")->execute([$ip_address]);
+                $conn->prepare("DELETE FROM admin_login_failures WHERE ip_address = ?")->execute([$ip_address]);
+                
+                $conn->commit();
+                sendResponse(true, null, 'IP address has been successfully blacklisted.');
+
+            } catch (mysqli_sql_exception $e) {
+                $conn->rollback();
+                if ($e->getCode() == 1062) {
+                    sendResponse(false, null, 'This IP is already blacklisted (Duplicate Entry).', 409, 'DUPLICATE_IP');
+                }
+                throw $e;
+            }
+
+        } else { // add_temporary
+            if ($is_perm_banned) {
+                sendResponse(false, null, 'This IP is already permanently blacklisted and cannot be temporarily blocked.', 409, 'CONFLICT_PERMABANNED');
+            }
+
+            // Explicit Check/Update to prevent duplicates
+            $check_temp = $conn->prepare("SELECT id FROM temporary_blocks WHERE ip_address = ?");
+            $check_temp->bind_param("s", $ip_address);
+            $check_temp->execute();
+            $temp_result = $check_temp->get_result();
+            $existing_temp = $temp_result->fetch_assoc();
+            $check_temp->close();
+
+            $conn->begin_transaction();
+            
+            if ($existing_temp) {
+                // Update existing record (Refresh time)
+                $stmt = $conn->prepare("UPDATE temporary_blocks SET reason = ?, origin = 'manual', block_type = ?, blocked_at = NOW() WHERE id = ?");
+                $stmt->bind_param("ssi", $reason, $block_type, $existing_temp['id']);
+                $stmt->execute();
+                $stmt->close();
+                $msg = 'Existing temporary block updated (timer reset).';
+            } else {
+                // Insert new record
+                $stmt = $conn->prepare("INSERT INTO temporary_blocks (ip_address, reason, origin, block_type, blocked_at) VALUES (?, ?, 'manual', ?, NOW())");
+                $stmt->bind_param("sss", $ip_address, $reason, $block_type);
+                $stmt->execute();
+                $stmt->close();
+                $msg = 'IP address has been temporarily blocked.';
+            }
+            
+            // Cleanup failure logs
+            $conn->prepare("DELETE FROM login_attempts WHERE ip_address = ?")->execute([$ip_address]);
+            $conn->prepare("DELETE FROM admin_login_failures WHERE ip_address = ?")->execute([$ip_address]);
+
+            $conn->commit();
+            sendResponse(true, null, $msg);
+        }
+
+    } elseif ($action === 'add_bulk') {
+        // --- UPDATED: Bulk Permanent Block (Escalation) with Data Preservation ---
+        if (!isset($data->items) || !is_array($data->items) || empty($data->items)) {
+            sendResponse(false, null, 'Items array required.', 400, 'INVALID_INPUT');
+        }
+
+        // Extract IPs from the input objects
+        $ips = [];
+        foreach ($data->items as $item) {
+            if (isset($item->ip_address)) {
+                $ips[] = $item->ip_address;
+            }
+        }
+        
+        if (empty($ips)) {
+             sendResponse(false, null, 'No valid IPs found.', 400, 'INVALID_INPUT');
+        }
+
+        $conn->begin_transaction();
+
+        // 1. Fetch Source Data from temporary_blocks to ensure we keep the Block Type & Reason
+        $in_clause = implode(',', array_fill(0, count($ips), '?'));
+        $types = str_repeat('s', count($ips));
+
+        $sql_fetch = "SELECT ip_address, reason, block_type FROM temporary_blocks WHERE ip_address IN ($in_clause)";
+        $stmt_fetch = $conn->prepare($sql_fetch);
+        $stmt_fetch->bind_param($types, ...$ips);
+        $stmt_fetch->execute();
+        $result = $stmt_fetch->get_result();
+
+        $entries = [];
+        while ($row = $result->fetch_assoc()) {
+            $entries[] = $row;
+        }
+        $stmt_fetch->close();
+
+        // 2. Insert into IP Blacklist
+        // --- FIXED: Changed 'system' to 'manual' for bulk admin action ---
+        $stmt_insert = $conn->prepare("INSERT IGNORE INTO ip_blacklist (ip_address, reason, origin, block_type, blocked_at) VALUES (?, ?, 'manual', ?, NOW())");
+        
+        // 3. Delete from Temporary Blocks
+        $stmt_delete = $conn->prepare("DELETE FROM temporary_blocks WHERE ip_address = ?");
+
+        $count = 0;
+        foreach ($entries as $entry) {
+            // Use existing data or intelligent defaults
+            $bType = !empty($entry['block_type']) ? $entry['block_type'] : 'other';
+            $reason = !empty($entry['reason']) ? $entry['reason'] : 'Bulk escalation from temporary blocks.';
+
+            $stmt_insert->bind_param("sss", $entry['ip_address'], $reason, $bType);
+            $stmt_insert->execute();
+            
+            // Only delete if insert was successful or it was a duplicate (handled by IGNORE)
+            if ($stmt_insert->affected_rows >= 0) {
+                 $stmt_delete->bind_param("s", $entry['ip_address']);
+                 $stmt_delete->execute();
+                 $count++;
+            }
+        }
+        
+        $stmt_insert->close();
+        $stmt_delete->close();
+
+        // 4. Cleanup Logs (Optional but recommended for escalation)
+        $cleanup_sql_1 = "DELETE FROM login_attempts WHERE ip_address IN ($in_clause)";
+        $conn->prepare($cleanup_sql_1)->execute($ips);
+        
+        $cleanup_sql_2 = "DELETE FROM admin_login_failures WHERE ip_address IN ($in_clause)";
+        $conn->prepare($cleanup_sql_2)->execute($ips);
+
+        $conn->commit();
+        sendResponse(true, null, "$count IP(s) successfully escalated to blacklist.");
+
+    } elseif ($action === 'remove') {
+        if (!isset($data->id)) sendResponse(false, null, 'ID required.', 400, 'INVALID_INPUT');
+        $stmt = $conn->prepare("DELETE FROM ip_blacklist WHERE id = ?");
+        $id = (int)$data->id;
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        if ($stmt->affected_rows > 0) {
+            sendResponse(true, null, 'IP removed from blacklist.');
+        } else {
+            sendResponse(false, null, 'IP not found.', 404, 'NOT_FOUND');
+        }
+        $stmt->close();
+
+    } elseif ($action === 'downgrade_to_temp') {
+        if (!isset($data->id)) sendResponse(false, null, 'ID required.', 400, 'INVALID_INPUT');
+        $id = (int)$data->id;
+
+        $conn->begin_transaction();
+
+        $fetch_stmt = $conn->prepare("SELECT ip_address, reason, block_type FROM ip_blacklist WHERE id = ?");
+        $fetch_stmt->bind_param("i", $id);
+        $fetch_stmt->execute();
+        $res = $fetch_stmt->get_result();
+        
+        if ($res->num_rows === 0) {
+            $fetch_stmt->close();
+            $conn->rollback();
+            sendResponse(false, null, 'Record not found.', 404, 'NOT_FOUND');
+        }
+        
+        $record = $res->fetch_assoc();
+        $fetch_stmt->close();
+        
+        $del_stmt = $conn->prepare("DELETE FROM ip_blacklist WHERE id = ?");
+        $del_stmt->bind_param("i", $id);
+        $del_stmt->execute();
+        $del_stmt->close();
+
+        // Safe cleanup before insert
+        $conn->prepare("DELETE FROM temporary_blocks WHERE ip_address = ?")->execute([$record['ip_address']]);
+
+        $ins_stmt = $conn->prepare("INSERT INTO temporary_blocks (ip_address, reason, origin, block_type, blocked_at) VALUES (?, ?, 'manual', ?, NOW())");
+        $ins_stmt->bind_param("sss", $record['ip_address'], $record['reason'], $record['block_type']);
+        $ins_stmt->execute();
+        $ins_stmt->close();
+
+        $conn->commit();
+        sendResponse(true, null, 'IP moved back to Temporary Block.');
+
+    } elseif ($action === 'downgrade_to_temp_bulk') {
+        if (!isset($data->ids) || !is_array($data->ids) || empty($data->ids)) {
+            sendResponse(false, null, 'IDs array required.', 400, 'INVALID_INPUT');
+        }
+
+        $ids = $data->ids;
+        $ids = array_map('intval', $ids);
+        
+        $conn->begin_transaction();
+
+        // 1. Fetch details
+        $in_clause = implode(',', array_fill(0, count($ids), '?'));
+        $types = str_repeat('i', count($ids));
+        
+        $sql_fetch = "SELECT id, ip_address, reason, block_type FROM ip_blacklist WHERE id IN ($in_clause)";
+        $stmt_fetch = $conn->prepare($sql_fetch);
+        $stmt_fetch->bind_param($types, ...$ids);
+        $stmt_fetch->execute();
+        $result = $stmt_fetch->get_result();
+        
+        $entries = [];
+        while ($row = $result->fetch_assoc()) {
+            $entries[] = $row;
+        }
+        $stmt_fetch->close();
+
+        if (empty($entries)) {
+            $conn->rollback();
+            sendResponse(false, null, 'No valid entries found.', 404, 'NOT_FOUND');
+        }
+
+        // 2. Prepare statements
+        $stmt_del_temp = $conn->prepare("DELETE FROM temporary_blocks WHERE ip_address = ?");
+        $stmt_ins_temp = $conn->prepare("INSERT INTO temporary_blocks (ip_address, reason, origin, block_type, blocked_at) VALUES (?, ?, 'manual', ?, NOW())");
+        $stmt_del_perm = $conn->prepare("DELETE FROM ip_blacklist WHERE id = ?");
+
+        $count = 0;
+        foreach ($entries as $entry) {
+            // A. Clean existing temp
+            $stmt_del_temp->bind_param("s", $entry['ip_address']);
+            $stmt_del_temp->execute();
+
+            // B. Insert into temp
+            // Important: Use existing block_type from blacklist, default only if missing
+            $bType = !empty($entry['block_type']) ? $entry['block_type'] : 'other';
+            // Important: Preserve reason if valuable, or set generic
+            $reason = !empty($entry['reason']) ? $entry['reason'] : 'Downgraded from blacklist.';
+            
+            $stmt_ins_temp->bind_param("sss", $entry['ip_address'], $reason, $bType);
+            $stmt_ins_temp->execute();
+
+            // C. Delete from perm
+            $stmt_del_perm->bind_param("i", $entry['id']);
+            $stmt_del_perm->execute();
+            
+            $count++;
+        }
+
+        $stmt_del_temp->close();
+        $stmt_ins_temp->close();
+        $stmt_del_perm->close();
+
+        $conn->commit();
+        sendResponse(true, null, "$count IP(s) reverted to temporary blocks.");
+
+    } else {
+        sendResponse(false, null, 'Invalid action specified.', 400, 'INVALID_ACTION');
+    }
+
+} catch (Exception $e) {
+    if ($conn->inTransaction()) {
+        $conn->rollback();
+    }
+    error_log("Error in manage_blacklist.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred: ' . $e->getMessage(), 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

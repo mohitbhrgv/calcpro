@@ -1,0 +1,92 @@
+<?php
+// File: calcpro-api/api/public/get_public_calculators.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+try {
+    // --- 1. Parameters ---
+    $tagSlug = isset($_GET['tag']) ? trim($_GET['tag']) : null;
+    $tagDetails = null;
+
+    // --- 2. VALIDATION: Check if Tag Exists ---
+    if ($tagSlug) {
+        $tagCheckSql = "SELECT id, name, slug FROM tags WHERE slug = ?";
+        $stmtCheck = $conn->prepare($tagCheckSql);
+        $stmtCheck->bind_param("s", $tagSlug);
+        $stmtCheck->execute();
+        $tagResult = $stmtCheck->get_result();
+        
+        if ($tagResult->num_rows === 0) {
+            $stmtCheck->close();
+            sendResponse(false, null, 'Tag not found.', 404, 'NOT_FOUND');
+        }
+        
+        $tagDetails = $tagResult->fetch_assoc();
+        $stmtCheck->close();
+    }
+
+    // --- 3. Build Main Query ---
+    // Using the exact structure verified in diagnostics
+    $whereConditions = ["c.status = 'published'"];
+    $params = [];
+    $types = "";
+
+    if ($tagSlug) {
+        // Subquery Strategy
+        $whereConditions[] = "c.id IN (SELECT ct.calculator_id FROM calculator_tags ct JOIN tags t ON ct.tag_id = t.id WHERE t.slug = ?)";
+        $params[] = $tagSlug;
+        $types .= "s";
+    }
+
+    $whereSql = implode(" AND ", $whereConditions);
+
+    // Using SELECT c.* to match the working diagnostic exactly
+    $sql = "
+        SELECT c.*, 
+        GROUP_CONCAT(DISTINCT cc.name SEPARATOR ', ') as category_names,
+        GROUP_CONCAT(DISTINCT cc.slug SEPARATOR ',') as category_slugs
+        FROM calculators c
+        LEFT JOIN calculator_category_assignments cca ON c.id = cca.calculator_id
+        LEFT JOIN calculator_categories cc ON cca.category_id = cc.id
+        WHERE {$whereSql}
+        GROUP BY c.id
+        ORDER BY c.name ASC
+    ";
+
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        throw new Exception("Database prepare failed: " . $conn->error);
+    }
+
+    if (!empty($params)) {
+        $stmt->bind_param($types, ...$params);
+    }
+    
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    $calculators = [];
+    if ($result) {
+        while($calc = $result->fetch_assoc()) {
+            $calc['is_featured'] = (bool)$calc['is_featured'];
+            $calculators[] = $calc;
+        }
+    }
+    $stmt->close();
+
+    // --- 4. Response ---
+    sendResponse(true, [
+        'calculators' => $calculators,
+        'tag_details' => $tagDetails
+    ], 'Calculators fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_public_calculators.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching calculators.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

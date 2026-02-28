@@ -1,0 +1,96 @@
+<?php
+// ------------------------------------------------------------------
+// 1. INCLUDES & CONFIGURATION
+// ------------------------------------------------------------------
+
+// Include the Main Configuration (Database connection, CORS settings)
+require_once '../../core/config.php';
+
+// Include the Auth Helper (Contains the logic to decode JWT tokens)
+require_once '../../core/auth.php';
+
+// Ensure the response is always JSON
+header('Content-Type: application/json');
+
+try {
+    // ------------------------------------------------------------------
+    // 2. VERIFY TOKEN
+    // ------------------------------------------------------------------
+    
+    // Check the "Authorization" header sent by the frontend
+    // This function comes from 'core/auth.php'
+    $userPayload = verifyUserToken(); 
+
+    if ($userPayload) {
+        // ------------------------------------------------------------------
+        // 3. TOKEN IS VALID -> CHECK DATABASE
+        // ------------------------------------------------------------------
+        
+        // Even if the token is valid, we check the DB to ensure the user 
+        // wasn't banned or deleted since the token was issued.
+        $userId = $userPayload['id'];
+        
+        // Prepare statement to prevent SQL Injection
+        $stmt = $conn->prepare("SELECT id, name, email, role, status, created_at FROM users WHERE id = ? LIMIT 1");
+        $stmt->bind_param("i", $userId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        
+        if ($row = $result->fetch_assoc()) {
+            
+            // Check if user is banned
+            if (isset($row['status']) && $row['status'] === 'banned') {
+                echo json_encode([
+                    'status' => 'error', 
+                    'message' => 'Account suspended'
+                ]);
+            } else {
+                // SUCCESS: User is authenticated and active
+                echo json_encode([
+                    'status' => 'success',
+                    'user' => $row
+                ]);
+            }
+            
+        } else {
+            // Token was valid signature-wise, but user ID no longer exists in DB
+            echo json_encode([
+                'status' => 'error', 
+                'message' => 'User account not found.'
+            ]);
+        }
+        
+        $stmt->close();
+        
+    } else {
+        // ------------------------------------------------------------------
+        // 4. TOKEN IS INVALID OR EXPIRED
+        // ------------------------------------------------------------------
+        
+        // We return a 200 OK status code but with a 'status: error' body.
+        // This tells the frontend "Request worked, but user is not logged in".
+        // This prevents the frontend from crashing on a 401/500 error.
+        echo json_encode([
+            'status' => 'error', 
+            'message' => 'Invalid or expired token'
+        ]);
+    }
+
+} catch (Exception $e) {
+    // ------------------------------------------------------------------
+    // 5. SYSTEM ERROR HANDLING
+    // ------------------------------------------------------------------
+    
+    // Log the actual error to the server logs for debugging
+    error_log("Auth Check Error: " . $e->getMessage());
+    
+    // Return a generic error to the user
+    echo json_encode([
+        'status' => 'error', 
+        'message' => 'Server error during auth check'
+    ]);
+}
+
+// Close database connection
+$conn->close();
+?>

@@ -1,0 +1,175 @@
+<?php
+/**
+ * EnvHandler Class
+ * Handles safe reading and writing of .env files with security masking and automated backups.
+ */
+class EnvHandler {
+    private $envPath;
+    private $projectRoot;
+    private $backupDir;
+    private $backupLimit = 10; // Maximum number of backup folders to keep
+
+    public function __construct($path) {
+        $this->envPath = $path;
+        $this->projectRoot = dirname($path); // Assuming .env is in PROJECT_ROOT
+        $this->backupDir = $this->projectRoot . '/backups';
+    }
+
+    /**
+     * Check if the .env file exists and is writable.
+     */
+    public function getStatus() {
+        return [
+            'exists' => file_exists($this->envPath),
+            'writable' => is_writable($this->envPath)
+        ];
+    }
+
+    /**
+     * Reads the .env file and returns key-value pairs.
+     */
+    public function read($sensitiveKeys = []) {
+        if (!file_exists($this->envPath)) {
+            return [];
+        }
+
+        $lines = file($this->envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        $data = [];
+
+        foreach ($lines as $line) {
+            if (strpos(trim($line), '#') === 0) continue;
+
+            if (strpos($line, '=') !== false) {
+                list($key, $value) = explode('=', $line, 2);
+                $key = trim($key);
+                $value = trim($value);
+                $value = trim($value, '"\'');
+
+                if (in_array($key, $sensitiveKeys) && !empty($value)) {
+                    $value = '********';
+                }
+
+                $data[$key] = $value;
+            }
+        }
+        return $data;
+    }
+
+    /**
+     * Updates the .env file with new values.
+     */
+    public function update($newValues) {
+        if (!file_exists($this->envPath)) {
+            throw new Exception(".env file not found.");
+        }
+        if (!is_writable($this->envPath)) {
+            throw new Exception("Permission Denied: .env file is not writable.");
+        }
+
+        // 1. Manage Backups (Create Folder Snapshot & Rotate)
+        $this->handleBackup();
+
+        // 2. Read existing content
+        $lines = file($this->envPath);
+        $result = [];
+
+        foreach ($lines as $line) {
+            $trimmedLine = trim($line);
+            
+            if (empty($trimmedLine) || strpos($trimmedLine, '#') === 0) {
+                $result[] = $line;
+                continue;
+            }
+
+            $matched = false;
+            foreach ($newValues as $key => $val) {
+                if (strpos($trimmedLine, $key . '=') === 0) {
+                    $matched = true;
+                    if ($val === '********') {
+                        $result[] = $line; 
+                    } else {
+                        $finalVal = (strpos($val, ' ') !== false) ? '"' . $val . '"' : $val;
+                        $result[] = "{$key}={$finalVal}\n";
+                    }
+                    break;
+                }
+            }
+
+            if (!$matched) {
+                $result[] = $line;
+            }
+        }
+
+        // 3. Write back to file
+        if (file_put_contents($this->envPath, implode('', $result)) === false) {
+            throw new Exception("Failed to write to .env file.");
+        }
+
+        return true;
+    }
+
+    /**
+     * Handles directory creation, snapshotting .env + .htaccess, and rotation.
+     */
+    private function handleBackup() {
+        // A. Ensure main backup directory exists and is protected
+        if (!is_dir($this->backupDir)) {
+            if (!mkdir($this->backupDir, 0755, true)) {
+                throw new Exception("Failed to create backup directory.");
+            }
+        }
+
+        $htaccessProtect = $this->backupDir . '/.htaccess';
+        if (!file_exists($htaccessProtect)) {
+            file_put_contents($htaccessProtect, "Order Deny,Allow\nDeny from all");
+        }
+
+        // B. Create a specific timestamped folder for this snapshot
+        $timestamp = date('Y-m-d_H-i-s');
+        $snapshotDir = $this->backupDir . '/' . $timestamp;
+
+        if (!mkdir($snapshotDir, 0755)) {
+            throw new Exception("Failed to create snapshot directory.");
+        }
+
+        // C. Copy .env
+        if (!copy($this->envPath, $snapshotDir . '/.env')) {
+            throw new Exception("Failed to backup .env file.");
+        }
+
+        // D. Copy .htaccess (if it exists in root)
+        $rootHtaccess = $this->projectRoot . '/.htaccess';
+        if (file_exists($rootHtaccess)) {
+            copy($rootHtaccess, $snapshotDir . '/.htaccess');
+        }
+
+        // E. Rotation Logic: Cleanup old directories
+        $dirs = glob($this->backupDir . '/*', GLOB_ONLYDIR);
+        
+        // Sort by modification time (oldest first)
+        usort($dirs, function($a, $b) {
+            return filemtime($a) - filemtime($b);
+        });
+
+        if (count($dirs) > $this->backupLimit) {
+            $toDelete = count($dirs) - $this->backupLimit;
+            for ($i = 0; $i < $toDelete; $i++) {
+                $this->deleteDirectory($dirs[$i]);
+            }
+        }
+    }
+
+    /**
+     * Helper to recursively delete a directory and its contents.
+     */
+    private function deleteDirectory($dir) {
+        if (!is_dir($dir)) return;
+        
+        $files = array_diff(scandir($dir), array('.', '..'));
+        foreach ($files as $file) {
+            (is_dir("$dir/$file")) ? $this->deleteDirectory("$dir/$file") : unlink("$dir/$file");
+        }
+        return rmdir($dir);
+    }
+}
+?>

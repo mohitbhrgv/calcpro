@@ -1,0 +1,76 @@
+<?php
+// Use robust, absolute paths based on the current file's location.
+require_once dirname(__DIR__, 2) . '/core/config.php';
+require_once dirname(__DIR__, 2) . '/core/response.php';
+
+// This is a public endpoint, no JWT verification is needed.
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->token) || empty($data->token)) {
+        sendResponse(false, null, 'An unblock token is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize and Prepare Data ---
+    $token = $data->token;
+    $token_hash = hash('sha256', $token);
+
+    // --- 4. CORRECTED LOGIC: Find Token in the Dedicated `admin_unblock_tokens` Table ---
+    $sql_find = "SELECT id, admin_id, ip_address_blocked FROM admin_unblock_tokens WHERE token_hash = ? AND expires_at > NOW()";
+    $stmt_find = $conn->prepare($sql_find);
+    $stmt_find->bind_param("s", $token_hash);
+    $stmt_find->execute();
+    $result = $stmt_find->get_result();
+    
+    if ($result->num_rows === 0) {
+        $stmt_find->close();
+        // Even if the token is invalid/expired, we attempt to delete it to prevent replay attacks.
+        $conn->query("DELETE FROM admin_unblock_tokens WHERE token_hash = '" . $conn->real_escape_string($token_hash) . "'");
+        sendResponse(false, null, 'This unlock link is invalid or has expired. Please try logging in again to generate a new one.', 400, 'INVALID_OR_EXPIRED_TOKEN');
+    }
+
+    $token_data = $result->fetch_assoc();
+    $token_id = $token_data['id']; // The ID of the token row itself, for deletion.
+    $ip_address_to_unblock = $token_data['ip_address_blocked']; // The IP address stored with the token.
+    $stmt_find->close();
+    
+    // --- 5. Perform the Unlock Operations ---
+    $conn->begin_transaction();
+    try {
+        // a) Remove from temporary blocks using the IP from the token record
+        $stmt_temp = $conn->prepare("DELETE FROM temporary_blocks WHERE ip_address = ?");
+        $stmt_temp->bind_param("s", $ip_address_to_unblock);
+        $stmt_temp->execute();
+        $stmt_temp->close();
+
+        // b) Remove from permanent blacklist using the IP from the token record
+        $stmt_perm = $conn->prepare("DELETE FROM ip_blacklist WHERE ip_address = ?");
+        $stmt_perm->bind_param("s", $ip_address_to_unblock);
+        $stmt_perm->execute();
+        $stmt_perm->close();
+
+        // c) Invalidate the token by DELETING its row to make it single-use
+        $stmt_invalidate = $conn->prepare("DELETE FROM admin_unblock_tokens WHERE id = ?");
+        $stmt_invalidate->bind_param("i", $token_id);
+        $stmt_invalidate->execute();
+        $stmt_invalidate->close();
+
+        $conn->commit();
+        
+        sendResponse(true, null, 'Account access successfully restored for your IP address. You can now log in.');
+
+    } catch (Exception $e) {
+        $conn->rollback();
+        throw $e; // Rethrow to be caught by the outer catch block
+    }
+
+} catch (Exception $e) {
+    error_log("Error in unlock_account.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();

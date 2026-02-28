@@ -1,0 +1,44 @@
+<?php
+/**
+ * Sends a standardized JSON response and terminates the script.
+ * This ensures all API outputs are consistent.
+ *
+ * @param bool        $success    Whether the operation was successful.
+ * @param mixed|null  $data       The payload/data to return on success. Can be an array, object, etc.
+ * @param string|null $message    A descriptive message, especially useful for errors.
+ * @param int         $statusCode The HTTP status code to send (e.g., 200 for OK, 400 for Bad Request, 404 for Not Found).
+ * @param string|null $errorCode  An optional, specific error code for the frontend to key off of (e.g., 'INVALID_INPUT').
+ */
+function sendResponse($success, $data = null, $message = null, $statusCode = 200, $errorCode = null) {
+    // Set the HTTP response code. This is crucial for proper REST API behavior.
+    http_response_code($statusCode);
+
+    // Set the content type header to indicate a JSON response.
+    header('Content-Type: application/json');
+
+    // Assemble the response array.
+    $response = [
+        'success' => $success
+    ];
+
+    // Only add the 'data' key if data is provided.
+    if ($data !== null) {
+        $response['data'] = $data;
+    }
+
+    // Only add the 'message' key if a message is provided.
+    if ($message !== null) {
+        $response['message'] = $message;
+    }
+
+    // Only add the 'errorCode' key if one is provided.
+    if ($errorCode !== null) {
+        $response['errorCode'] = $errorCode;
+    }
+
+    // Encode the response array into a JSON string and echo it.
+    echo json_encode($response);
+
+    // Terminate the script to ensure no further output is sent.
+    exit();
+}

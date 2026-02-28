@@ -1,0 +1,146 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// --- Configuration ---
+define('UPLOAD_DIR', PROJECT_ROOT . '/uploads/');
+define('MAX_FILE_SIZE', 256 * 1024 * 1024);
+$allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+try {
+    // --- 1. Validation of POST data ---
+    if (!isset($_POST['media_id']) || !is_numeric($_POST['media_id'])) {
+        throw new Exception('A valid Media ID is required.', 400);
+    }
+    if (!isset($_POST['replacement_type']) || !in_array($_POST['replacement_type'], ['replace_only', 'replace_and_update_links'])) {
+        throw new Exception('A valid replacement type is required.', 400);
+    }
+    if (!isset($_POST['alt_text'])) {
+        throw new Exception('Alt text is required.', 400);
+    }
+    if (!isset($_POST['date_option']) || !in_array($_POST['date_option'], ['keep', 'replace'])) {
+        throw new Exception('A valid date option is required.', 400);
+    }
+    if (!isset($_FILES['newMediaFile'])) {
+        throw new Exception('No replacement file was uploaded.', 400);
+    }
+
+    $mediaId = (int)$_POST['media_id'];
+    $replacementType = $_POST['replacement_type'];
+    $altText = trim($_POST['alt_text']);
+    $dateOption = $_POST['date_option'];
+    $file = $_FILES['newMediaFile'];
+
+    // --- 2. File Upload Validation ---
+    if ($file['error'] !== UPLOAD_ERR_OK) throw new Exception('File upload error occurred.', 400);
+    if ($file['size'] > MAX_FILE_SIZE) throw new Exception('File is too large.', 413);
+    $mimeType = (new finfo(FILEINFO_MIME_TYPE))->file($file['tmp_name']);
+    if (!in_array($mimeType, $allowedMimeTypes)) throw new Exception('Invalid file type.', 415);
+    
+    $conn->begin_transaction();
+
+    // --- 3. Fetch Original Media Record FIRST ---
+    $sql_fetch = "SELECT * FROM media WHERE id = ?";
+    $stmt_fetch = $conn->prepare($sql_fetch);
+    $stmt_fetch->bind_param("i", $mediaId);
+    $stmt_fetch->execute();
+    $result = $stmt_fetch->get_result();
+    if ($result->num_rows === 0) throw new Exception('Original media item not found.', 404);
+    $originalMedia = $result->fetch_assoc();
+    $stmt_fetch->close();
+    
+    $originalFilePath = PROJECT_ROOT . '/' . $originalMedia['upload_path'];
+
+    // --- LOGIC FOR REPLACEMENT ---
+    if ($replacementType === 'replace_only') {
+        // REQUIREMENT 1: Filename match
+        if ($file['name'] !== $originalMedia['original_name']) {
+            throw new Exception("To 'Just replace the file', the new file must have the exact same name as the original ('" . htmlspecialchars($originalMedia['original_name']) . "').", 400);
+        }
+
+        if (!move_uploaded_file($file['tmp_name'], $originalFilePath)) {
+            throw new Exception('Failed to overwrite the existing file. Check permissions.');
+        }
+
+        $imageSizeInfo = getimagesize($originalFilePath);
+        $dimensions = ($imageSizeInfo !== false) ? "{$imageSizeInfo[0]}x{$imageSizeInfo[1]}" : null;
+        
+        $dateSql = ($dateOption === 'replace') ? ", created_at = NOW()" : "";
+
+        $updateSql = "UPDATE media SET file_size = ?, dimensions = ?, file_type = ?, alt_text = ? {$dateSql} WHERE id = ?";
+        $updateStmt = $conn->prepare($updateSql);
+        $updateStmt->bind_param("isssi", $file['size'], $dimensions, $mimeType, $altText, $mediaId);
+        if (!$updateStmt->execute()) throw new Exception('Failed to update media metadata.');
+        $updateStmt->close();
+
+    } else { // 'replace_and_update_links'
+        
+        // REQUIREMENT 2: Filename diff
+        if ($file['name'] === $originalMedia['original_name']) {
+            throw new Exception("The new file cannot have the same name as the original when updating links. Use the 'Just replace the file' option instead.", 400);
+        }
+        
+        $fileInfo = pathinfo($file['name']);
+        $baseName = preg_replace('/[^a-z0-9_-]/', '-', strtolower($fileInfo['filename']));
+        $extension = strtolower($fileInfo['extension']);
+        $newFileName = $baseName . '.' . $extension;
+        $counter = 1;
+        while (file_exists(UPLOAD_DIR . $newFileName)) {
+            $newFileName = $baseName . '-' . $counter . '.' . $extension;
+            $counter++;
+        }
+        $newRelativePath = 'uploads/' . $newFileName;
+        $newFilePath = UPLOAD_DIR . $newFileName;
+
+        if (!move_uploaded_file($file['tmp_name'], $newFilePath)) {
+            throw new Exception('Failed to move new uploaded file. Check permissions.');
+        }
+
+        $imageSizeInfo = getimagesize($newFilePath);
+        $dimensions = ($imageSizeInfo !== false) ? "{$imageSizeInfo[0]}x{$imageSizeInfo[1]}" : null;
+        
+        $updateSql = "UPDATE media SET original_name = ?, file_name = ?, file_type = ?, file_size = ?, dimensions = ?, upload_path = ?, alt_text = ?, created_at = NOW() WHERE id = ?";
+        $updateStmt = $conn->prepare($updateSql);
+        $updateStmt->bind_param("sssisssi", $file['name'], $newFileName, $mimeType, $file['size'], $dimensions, $newRelativePath, $altText, $mediaId);
+        if (!$updateStmt->execute()) throw new Exception('Failed to update media record with new file info.');
+        $updateStmt->close();
+
+        // --- COMPREHENSIVE LINK UPDATE ---
+        $oldUrl = rtrim($_ENV['API_PUBLIC_URL'], '/') . '/' . $originalMedia['upload_path'];
+        $newUrl = rtrim($_ENV['API_PUBLIC_URL'], '/') . '/' . $newRelativePath;
+        
+        // 1. Update Posts (Content + OG Image)
+        $conn->query("UPDATE posts SET content = REPLACE(content, '$oldUrl', '$newUrl'), og_image = REPLACE(og_image, '$oldUrl', '$newUrl')");
+        
+        // 2. Update Calculators (Content + OG Image)
+        $conn->query("UPDATE calculators SET content = REPLACE(content, '$oldUrl', '$newUrl'), og_image = REPLACE(og_image, '$oldUrl', '$newUrl')");
+
+        // 3. Update Pages (Content JSON + OG Image)
+        // JSON stored as string, so REPLACE works safely on the raw string
+        $conn->query("UPDATE pages SET content_json = REPLACE(content_json, '$oldUrl', '$newUrl'), og_image = REPLACE(og_image, '$oldUrl', '$newUrl')");
+
+        // 4. Update Settings (Global OG, Logo, etc.)
+        $conn->query("UPDATE settings SET setting_value = REPLACE(setting_value, '$oldUrl', '$newUrl')");
+
+        if (file_exists($originalFilePath)) {
+            unlink($originalFilePath);
+        }
+    }
+
+    $conn->commit();
+    sendResponse(true, null, 'Image replaced successfully and all references updated.');
+
+} catch (Exception $e) {
+    $conn->rollback();
+    $code = is_numeric($e->getCode()) && $e->getCode() > 0 ? $e->getCode() : 500;
+    error_log("Error in replace_media.php: " . $e->getMessage());
+    sendResponse(false, null, $e->getMessage(), $code, 'REPLACE_FAILED');
+}
+
+$conn->close();
+?>

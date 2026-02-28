@@ -1,0 +1,22 @@
+<?php
+// This script is designed to be run automatically by a server cron job.
+// Its purpose is to keep the `pending_verifications` table clean.
+
+require '../core/config.php';
+
+// SQL to delete all records from the pending table where the expiry time has passed.
+$sql = "DELETE FROM pending_verifications WHERE expires_at < NOW()";
+
+// We execute the query and can optionally log the result for monitoring.
+if ($conn->query($sql) === TRUE) {
+  $deleted_count = $conn->affected_rows;
+  // This log will appear in your server's PHP error log file.
+  error_log("Cron Job: Cleaned up {$deleted_count} expired verifications successfully.");
+  echo "Cleaned up {$deleted_count} expired records.";
+} else {
+  error_log("Cron Job Error - Cleanup Verifications: " . $conn->error);
+  echo "Error during cleanup: " . $conn->error;
+}
+
+$conn->close();
+?>

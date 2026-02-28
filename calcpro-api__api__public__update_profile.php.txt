@@ -1,0 +1,85 @@
+<?php
+// Include the database configuration file
+require '../../core/config.php';
+
+// Set content type to JSON
+header('Content-Type: application/json');
+
+// --- Get the request data ---
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// --- Basic Validation ---
+if (!isset($data->userId) || !isset($data->name) || !isset($data->email)) {
+    echo json_encode(['success' => false, 'message' => 'User ID, name, and email are required.']);
+    exit();
+}
+
+if (empty(trim($data->name))) {
+    echo json_encode(['success' => false, 'message' => 'Name cannot be empty.']);
+    exit();
+}
+
+if (!filter_var($data->email, FILTER_VALIDATE_EMAIL)) {
+    echo json_encode(['success' => false, 'message' => 'Invalid email format.']);
+    exit();
+}
+
+// --- Sanitize Input ---
+$userId = (int)$data->userId;
+$name = mysqli_real_escape_string($conn, trim($data->name));
+$email = mysqli_real_escape_string($conn, trim($data->email));
+
+// --- Prepare SQL Statement ---
+// This statement will update the name and email for the user with the given ID.
+$sql = "UPDATE users SET name = ?, email = ? WHERE id = ?";
+$stmt = $conn->prepare($sql);
+
+if ($stmt === false) {
+    echo json_encode(['success' => false, 'message' => 'Database error preparing statement: ' . $conn->error]);
+    exit();
+}
+
+// Bind the parameters to the statement to prevent SQL injection
+$stmt->bind_param("ssi", $name, $email, $userId);
+
+// --- Execute and Check for Errors ---
+if ($stmt->execute()) {
+    // Check if any row was actually updated
+    if ($stmt->affected_rows > 0) {
+        // The update was successful.
+        // We send back the new user data so the frontend can update its state.
+        echo json_encode([
+            'success' => true,
+            'message' => 'Profile updated successfully!',
+            'user' => [
+                'name' => $name,
+                'email' => $email
+            ]
+        ]);
+    } else {
+        // This can happen if the user clicks "Save" without changing anything.
+        // We can treat it as a success, as the data is already correct.
+        echo json_encode([
+            'success' => true,
+            'message' => 'No changes were made.',
+            'user' => [
+                'name' => $name,
+                'email' => $email
+            ]
+        ]);
+    }
+} else {
+    // Check for a duplicate email error (MySQL error code 1062)
+    if ($conn->errno == 1062) {
+        echo json_encode(['success' => false, 'message' => 'This email address is already taken.']);
+    } else {
+        // Handle other potential database errors
+        echo json_encode(['success' => false, 'message' => 'Profile update failed: ' . $stmt->error]);
+    }
+}
+
+// --- Close connections ---
+$stmt->close();
+$conn->close();
+?>

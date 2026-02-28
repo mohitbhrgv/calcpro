@@ -1,0 +1,76 @@
+<?php
+require '../../core/config.php';
+require_once '../../core/response.php';
+
+$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+$limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 10;
+$offset = ($page - 1) * $limit;
+
+$status_filter = isset($_GET['status']) ? $_GET['status'] : 'all';
+$where_clause = "";
+$params = [];
+$types = "";
+
+if ($status_filter === 'active' || $status_filter === 'banned') {
+    $where_clause = "WHERE status = ?";
+    $params[] = $status_filter;
+    $types .= "s";
+}
+
+try {
+    // Get Total Count WITH filter
+    $count_sql = "SELECT COUNT(id) as total FROM users " . $where_clause;
+    $stmt_count = $conn->prepare($count_sql);
+    if (!empty($params)) {
+        $stmt_count->bind_param($types, ...$params);
+    }
+    $stmt_count->execute();
+    $total_users = $stmt_count->get_result()->fetch_assoc()['total'];
+    $total_pages = ceil($total_users / $limit);
+    $stmt_count->close();
+
+    // Fetch Paginated User Data WITH filter
+    $sql = "SELECT id, name, email, created_at, status FROM users " . $where_clause . " ORDER BY created_at DESC LIMIT ? OFFSET ?";
+    $stmt = $conn->prepare($sql);
+    
+    $types .= "ii";
+    array_push($params, $limit, $offset);
+
+    $stmt->bind_param($types, ...$params);
+    
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+    $users = [];
+    if ($result->num_rows > 0) {
+        while ($row = $result->fetch_assoc()) {
+            $users[] = [
+                'id' => $row['id'],
+                'name' => $row['name'],
+                'email' => $row['email'],
+                'date' => date('M d, Y', strtotime($row['created_at'])),
+                'role' => 'User', // Placeholder role
+                'status' => $row['status']
+            ];
+        }
+    }
+    $stmt->close();
+
+    $data = [
+        'users' => $users,
+        'pagination' => [
+            'currentPage' => $page,
+            'totalPages' => $total_pages,
+            'totalUsers' => (int)$total_users
+        ]
+    ];
+    
+    sendResponse(true, $data, 'Users fetched successfully.', 200);
+
+} catch (Exception $e) {
+    error_log("Error in get_users.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred while fetching users.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

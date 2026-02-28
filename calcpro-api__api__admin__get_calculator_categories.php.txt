@@ -1,0 +1,64 @@
+<?php
+// File: calcpro-api/api/admin/get_calculator_categories.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php'; 
+
+// --- Security Check ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- The SQL Query (Updated for SEO Fields) ---
+    // Added: c.meta_title, c.meta_description
+    $sql = "
+        SELECT 
+            c.id, 
+            c.name, 
+            c.slug, 
+            c.description, 
+            c.parent_id,
+            c.meta_title,
+            c.meta_description,
+            p.name as parent_name,
+            COUNT(cca.calculator_id) as calculator_count
+        FROM 
+            calculator_categories c
+        LEFT JOIN 
+            calculator_categories p ON c.parent_id = p.id
+        LEFT JOIN 
+            calculator_category_assignments cca ON c.id = cca.category_id
+        GROUP BY 
+            c.id
+        ORDER BY 
+            c.parent_id ASC, c.name ASC
+    ";
+
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        throw new Exception('Database prepare statement failed: ' . $conn->error);
+    }
+    
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $categories = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    
+    // Type casting for consistency
+    foreach ($categories as &$cat) {
+        $cat['id'] = (int)$cat['id'];
+        $cat['parent_id'] = $cat['parent_id'] ? (int)$cat['parent_id'] : null;
+        $cat['calculator_count'] = (int)$cat['calculator_count'];
+    }
+    
+    sendResponse(true, $categories, 'Calculator categories fetched successfully.', 200);
+
+} catch (Exception $e) {
+    error_log("Error in get_calculator_categories.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

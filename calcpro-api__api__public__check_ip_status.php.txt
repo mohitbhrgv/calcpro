@@ -1,0 +1,111 @@
+<?php
+// Core utilities
+require '../../core/config.php';
+require_once '../../core/response.php';
+
+// This is a public endpoint, so no JWT is required.
+
+try {
+    $ip_address = $_SERVER['REMOTE_ADDR'];
+    
+    // --- 0. FETCH DYNAMIC SETTINGS ---
+    $lockout_minutes = 1440; // Default 24 hours
+    
+    $settings_sql = "SELECT setting_value FROM settings WHERE setting_key = 'security_temp_block_duration_minutes'";
+    $settings_res = $conn->query($settings_sql);
+    if ($settings_res && $settings_res->num_rows > 0) {
+        $val = (int)$settings_res->fetch_assoc()['setting_value'];
+        if ($val > 0) $lockout_minutes = $val;
+    }
+
+    // --- Define the standardized permanent message ---
+    $permanent_block_message = "This IP address has been permanently blocked due to suspicious activity. Authorized personnel must contact the system administrator to request access.";
+
+    // --- 1. Check for a permanent ban first ---
+    $blacklist_stmt = $conn->prepare("SELECT id FROM ip_blacklist WHERE ip_address = ?");
+    $blacklist_stmt->bind_param("s", $ip_address);
+    $blacklist_stmt->execute();
+    if ($blacklist_stmt->get_result()->num_rows > 0) {
+        $blacklist_stmt->close();
+        sendResponse(true, ['locked' => true, 'permanent' => true, 'message' => $permanent_block_message], 'IP is blacklisted.', 200);
+    }
+    $blacklist_stmt->close();
+
+    // --- 2. Check for an ACTIVE temporary ban ---
+    // We calculate the expiry time in SQL to avoid timezone mismatch issues.
+    
+    $sql_check_temp_block = "
+        SELECT 
+            blocked_at,
+            TIMESTAMPDIFF(SECOND, NOW(), DATE_ADD(blocked_at, INTERVAL ? MINUTE)) as seconds_remaining
+        FROM temporary_blocks 
+        WHERE ip_address = ? 
+        AND DATE_ADD(blocked_at, INTERVAL ? MINUTE) > NOW()
+        ORDER BY blocked_at DESC 
+        LIMIT 1
+    ";
+    
+    $temp_block_stmt = $conn->prepare($sql_check_temp_block);
+    $temp_block_stmt->bind_param("isi", $lockout_minutes, $ip_address, $lockout_minutes);
+    $temp_block_stmt->execute();
+    $result = $temp_block_stmt->get_result();
+    
+    if ($result->num_rows > 0) {
+        $temp_block = $result->fetch_assoc();
+        
+        $seconds = (int)$temp_block['seconds_remaining'];
+        if ($seconds < 0) $seconds = 0;
+
+        // --- NEW: Professional Duration Formatting ---
+        // Break down into Days, Hours, Minutes
+        $d = floor($seconds / 86400);
+        $seconds %= 86400;
+        $h = floor($seconds / 3600);
+        $seconds %= 3600;
+        $m = floor($seconds / 60);
+
+        // Build array of parts (e.g., ["1 day", "2 hours"])
+        $parts = [];
+        if ($d > 0) $parts[] = $d . ' day' . ($d > 1 ? 's' : '');
+        if ($h > 0) $parts[] = $h . ' hour' . ($h > 1 ? 's' : '');
+        if ($m > 0) $parts[] = $m . ' minute' . ($m > 1 ? 's' : '');
+
+        // Construct natural language string
+        if (empty($parts)) {
+            $durationStr = "less than a minute";
+        } else {
+            // If more than 1 part, pop the last one to prepend "and"
+            if (count($parts) > 1) {
+                $last = array_pop($parts);
+                $durationStr = implode(', ', $parts) . " and " . $last;
+            } else {
+                $durationStr = $parts[0];
+            }
+        }
+        
+        // Generate updated expiry timestamp for frontend
+        $expiry_time = time() + (int)$temp_block['seconds_remaining'];
+        
+        $temporary_block_message = "Too many failed login attempts. Access from this IP has been temporarily blocked for {$durationStr}. Authorized personnel must contact the system administrator to request access.";
+        
+        $temp_block_stmt->close();
+        
+        sendResponse(true, [
+            'locked' => true, 
+            'permanent' => false, 
+            'expiry' => $expiry_time, 
+            'message' => $temporary_block_message
+        ], 'IP is temporarily locked.', 200);
+    }
+    $temp_block_stmt->close();
+
+    // --- 3. If neither check passes, the IP is not locked ---
+    sendResponse(true, ['locked' => false], 'IP is not locked.', 200);
+
+} catch (Exception $e) {
+    error_log("Error in check_ip_status.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

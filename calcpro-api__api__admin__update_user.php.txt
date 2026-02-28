@@ -1,0 +1,60 @@
+<?php
+require '../../core/config.php';
+require_once '../../core/response.php';
+
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// Basic Validation
+if (!isset($data->userId) || !is_numeric($data->userId) || !isset($data->name) || !isset($data->email)) {
+    sendResponse(false, null, 'User ID, name, and email are required.', 400, 'INVALID_INPUT');
+}
+
+// Sanitize and Validate Inputs
+$userId = (int)$data->userId;
+$name = trim($data->name);
+$email = trim($data->email);
+
+if (empty($name)) {
+    sendResponse(false, null, 'Name cannot be empty.', 400, 'INVALID_INPUT');
+}
+
+if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    sendResponse(false, null, 'Invalid email format.', 400, 'INVALID_INPUT');
+}
+
+try {
+    // Check for Duplicate Email (excluding the current user)
+    $sql_check = "SELECT id FROM users WHERE email = ? AND id != ?";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->bind_param("si", $email, $userId);
+    $stmt_check->execute();
+    if ($stmt_check->get_result()->num_rows > 0) {
+        $stmt_check->close();
+        sendResponse(false, null, 'This email address is already in use by another account.', 409, 'DUPLICATE_ENTRY');
+    }
+    $stmt_check->close();
+
+    // Update the user's data
+    $sql_update = "UPDATE users SET name = ?, email = ? WHERE id = ?";
+    $stmt_update = $conn->prepare($sql_update);
+    $stmt_update->bind_param("ssi", $name, $email, $userId);
+    
+    if ($stmt_update->execute()) {
+        if ($stmt_update->affected_rows > 0) {
+            sendResponse(true, null, 'User profile updated successfully!', 200);
+        } else {
+            sendResponse(true, null, 'No changes were detected.', 200);
+        }
+    } else {
+        throw new Exception("Database update failed: " . $stmt_update->error);
+    }
+    $stmt_update->close();
+
+} catch (Exception $e) {
+    error_log("Error in update_user.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn->close();
+?>

@@ -1,0 +1,112 @@
+<?php
+// --- Use PHPMailer classes ---
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+// --- Composer's autoloader ---
+require '../../vendor/autoload.php';
+
+// --- Database & Email Configuration ---
+// This includes our updated validatePasswordStrength function.
+require '../../core/config.php';
+
+set_time_limit(60);
+header('Content-Type: application/json');
+
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// --- Validation ---
+if (!isset($data->name) || !isset($data->email) || !isset($data->password)) {
+    echo json_encode(['success' => false, 'message' => 'Missing required fields.']);
+    exit();
+}
+
+// --- SERVER-SIDE PASSWORD STRENGTH VALIDATION ---
+if (!validatePasswordStrength($data->password)) {
+    echo json_encode(['success' => false, 'message' => 'Password must be at least 8 characters and contain a letter, a number, and a special character.']);
+    exit();
+}
+
+if (!filter_var($data->email, FILTER_VALIDATE_EMAIL)) {
+    echo json_encode(['success' => false, 'message' => 'Invalid email format.']);
+    exit();
+}
+
+// --- Sanitize Input ---
+$name = mysqli_real_escape_string($conn, trim($data->name));
+$email = mysqli_real_escape_string($conn, trim($data->email));
+$password = trim($data->password);
+
+$sql_check_user = "SELECT id FROM users WHERE email = ?";
+$stmt_check_user = $conn->prepare($sql_check_user);
+$stmt_check_user->bind_param("s", $email);
+$stmt_check_user->execute();
+if ($stmt_check_user->get_result()->num_rows > 0) {
+    echo json_encode(['success' => false, 'message' => 'This email address is already registered.']);
+    $stmt_check_user->close();
+    $conn->close();
+    exit();
+}
+$stmt_check_user->close();
+
+$sql_delete_pending = "DELETE FROM pending_verifications WHERE email = ?";
+$stmt_delete_pending = $conn->prepare($sql_delete_pending);
+$stmt_delete_pending->bind_param("s", $email);
+$stmt_delete_pending->execute();
+$stmt_delete_pending->close();
+
+$hashed_password = password_hash($password, PASSWORD_BCRYPT);
+$verification_code = random_int(100000, 999999);
+
+$created_at_utc = date('Y-m-d H:i:s');
+$expires_at_utc = date('Y-m-d H:i:s', time() + 900); // 15 minutes expiry
+
+$sql = "INSERT INTO pending_verifications (name, email, password_hash, verification_code, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)";
+$stmt = $conn->prepare($sql);
+
+if ($stmt === false) {
+    echo json_encode(['success' => false, 'message' => 'Database error: ' . $conn->error]);
+    exit();
+}
+
+$stmt->bind_param("ssssss", $name, $email, $hashed_password, $verification_code, $expires_at_utc, $created_at_utc);
+
+if ($stmt->execute()) {
+    try {
+        $mail = new PHPMailer(true);
+        // Server settings...
+        $mail->isSMTP();
+        $mail->Host = $_ENV['SMTP_HOST'];
+        $mail->SMTPAuth = true;
+        $mail->Username = $_ENV['SMTP_USER'];
+        $mail->Password = $_ENV['SMTP_PASS'];
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = $_ENV['SMTP_PORT'];
+        $mail->Timeout = 30;
+
+        // Recipients
+        $mail->setFrom($_ENV['SMTP_FROM_EMAIL'], $_ENV['SMTP_FROM_NAME']);
+        $mail->addAddress($email, $name);
+
+        // Content
+        $mail->isHTML(true);
+        $mail->Subject = 'Verify Your Email Address for CalcPro';
+        $mail->Body    = "<p>Hello {$name},</p><p>Please use the following code to complete your registration:</p><h2 style='text-align:center; font-size: 28px; letter-spacing: 4px; color: #14b8a6;'>{$verification_code}</h2><p>This code is valid for 15 minutes.</p>";
+        $mail->AltBody = "Your CalcPro verification code is: {$verification_code}";
+
+        $mail->send();
+
+        echo json_encode(['success' => true, 'message' => 'Almost there—check your inbox for the verification code to complete your registration.']);
+
+    } catch (Exception $e) {
+        error_log("PHPMailer Error during registration for {$email}: " . $mail->ErrorInfo);
+        echo json_encode(['success' => false, 'message' => 'Could not send verification email. Please try again.']);
+    }
+} else {
+    echo json_encode(['success' => false, 'message' => 'Registration failed due to a database error.']);
+}
+
+$stmt->close();
+$conn->close();
+?>

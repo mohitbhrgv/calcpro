@@ -1,0 +1,99 @@
+"use client";
+
+import React, { useEffect, useRef } from 'react';
+import Script from 'next/script';
+
+interface ScriptItem {
+  id: number | string;
+  name: string;
+  code: string;
+  enabled: boolean;
+}
+
+interface ThirdPartyScriptsProps {
+  settings: any;
+}
+
+const ThirdPartyScripts = ({ settings }: ThirdPartyScriptsProps) => {
+  const headerScriptRef = useRef(false);
+  const footerScriptRef = useRef(false);
+
+  // --- Helper: Parse Scripts from JSON string ---
+  const getEnabledScripts = (jsonString: string): string => {
+    if (!jsonString) return "";
+    try {
+      const parsed = JSON.parse(jsonString);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter((s: ScriptItem) => s.enabled === true)
+          .map((s: ScriptItem) => s.code)
+          .join('\n');
+      }
+    } catch (e) {
+      // Legacy support for raw string
+      return jsonString;
+    }
+    return "";
+  };
+
+  // --- Helper: Inject Raw HTML (Safe Injection) ---
+  const injectRawHtml = (htmlString: string, location: 'head' | 'body') => {
+    if (!htmlString || !htmlString.trim()) return;
+    try {
+      // Create a range to parse the HTML string into actual DOM nodes (including <script>)
+      const range = document.createRange();
+      range.selectNode(document.body);
+      const fragment = range.createContextualFragment(htmlString);
+      
+      if (location === 'head') {
+        document.head.appendChild(fragment);
+      } else {
+        document.body.appendChild(fragment);
+      }
+    } catch (e) {
+      console.error(`[ThirdPartyScripts] Failed to inject ${location} scripts:`, e);
+    }
+  };
+
+  useEffect(() => {
+    // --- 1. Custom Header Scripts ---
+    if (!headerScriptRef.current && settings?.integration_header_scripts) {
+      const headerCode = getEnabledScripts(settings.integration_header_scripts);
+      injectRawHtml(headerCode, 'head');
+      headerScriptRef.current = true;
+    }
+
+    // --- 2. Custom Footer Scripts ---
+    if (!footerScriptRef.current && settings?.integration_footer_scripts) {
+      const footerCode = getEnabledScripts(settings.integration_footer_scripts);
+      injectRawHtml(footerCode, 'body');
+      footerScriptRef.current = true;
+    }
+  }, [settings]);
+
+  // --- 3. Google Analytics 4 (Native Next.js Script) ---
+  const gaId = settings?.integration_ga4_id;
+
+  return (
+    <>
+      {gaId && (
+        <>
+          <Script
+            src={`https://www.googletagmanager.com/gtag/js?id=${gaId}`}
+            strategy="afterInteractive"
+          />
+          <Script id="google-analytics" strategy="afterInteractive">
+            {`
+              window.dataLayer = window.dataLayer || [];
+              function gtag(){dataLayer.push(arguments);}
+              gtag('js', new Date());
+              gtag('config', '${gaId}');
+            `}
+          </Script>
+        </>
+      )}
+    </>
+  );
+};
+
+export default ThirdPartyScripts;

@@ -1,0 +1,74 @@
+import { Metadata } from "next";
+import { notFound } from "next/navigation";
+import ClientBlogCategory from "./client";
+import { getPublishedPosts, getBlogCategories, getSiteSettings } from "@/lib/content";
+import { constructMetadata } from "@/lib/seo";
+import BreadcrumbSchema from "@/components/seo/schemas/BreadcrumbSchema"; // <--- IMPORTED
+
+export const dynamic = "force-dynamic";
+
+interface PageProps {
+  params: Promise<{ slug: string }>;
+}
+
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const categories = await getBlogCategories();
+  const currentCategory = categories.find((c) => c.slug === slug);
+  const settings = await getSiteSettings();
+
+  if (!currentCategory) return { title: "Category Not Found" };
+
+  return constructMetadata({
+    data: currentCategory,
+    settings,
+    type: "blog-category",
+    context: { name: currentCategory.name, description: currentCategory.description },
+    path: `/blog/category/${slug}`
+  });
+}
+
+export default async function BlogCategoryPage({ params }: PageProps) {
+  const { slug } = await params;
+
+  const [postsData, categories, settings] = await Promise.all([
+    getPublishedPosts(1, 100),
+    getBlogCategories(),
+    getSiteSettings()
+  ]);
+
+  const currentCategory = categories.find((c) => c.slug === slug);
+
+  if (!currentCategory) {
+    notFound();
+  }
+
+  // Find Parent for Schema
+  const parentCategory = currentCategory.parent_id 
+      ? categories.find(c => c.id === currentCategory.parent_id) 
+      : undefined;
+
+  const breadcrumbData = {
+      title: currentCategory.name,
+      parent_category_name: parentCategory?.name,
+      parent_category_slug: parentCategory?.slug
+  };
+
+  return (
+    <>
+      {/* --- ADDED BREADCRUMB SCHEMA --- */}
+      <BreadcrumbSchema 
+          data={breadcrumbData} 
+          settings={settings} 
+          currentPath={`/blog/category/${slug}`} 
+      />
+
+      <ClientBlogCategory 
+        posts={postsData.posts} 
+        category={currentCategory}
+        allCategories={categories}
+        settings={settings}
+      />
+    </>
+  );
+}

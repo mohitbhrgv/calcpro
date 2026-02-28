@@ -1,0 +1,55 @@
+import React from "react";
+import { Metadata } from "next";
+import ClientBlogPage from "./client";
+import { 
+  getPageBySlug, 
+  getPublishedPosts, 
+  getBlogCategories,
+  getSiteSettings
+} from "@/lib/content";
+import BreadcrumbSchema from "@/components/seo/schemas/BreadcrumbSchema"; // <--- IMPORTED
+
+// Force dynamic rendering to ensure new posts/settings appear immediately
+export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const page = await getPageBySlug("blog");
+  
+  return {
+    title: page?.meta_title || "Blog - Calculox",
+    description: page?.meta_description || "Insights, tutorials, and tips for making better decisions.",
+    openGraph: {
+      title: page?.meta_title || "Blog - Calculox",
+      description: page?.meta_description || "Insights, tutorials, and tips for making better decisions.",
+      type: "website",
+    }
+  };
+}
+
+export default async function BlogPage() {
+  // Parallel Data Fetching
+  const [pageData, postsData, categories, settings] = await Promise.all([
+    getPageBySlug("blog"),
+    getPublishedPosts(1, 100), 
+    getBlogCategories(),
+    getSiteSettings()
+  ]);
+
+  return (
+    <>
+      {/* --- ADDED BREADCRUMB SCHEMA --- */}
+      <BreadcrumbSchema 
+          data={pageData} 
+          settings={settings} 
+          currentPath="/blog" 
+      />
+
+      <ClientBlogPage 
+        initialPageData={pageData}
+        initialPosts={postsData.posts}
+        categories={categories}
+        settings={settings}
+      />
+    </>
+  );
+}

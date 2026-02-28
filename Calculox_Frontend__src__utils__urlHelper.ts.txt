@@ -1,0 +1,49 @@
+/**
+ * Generates the correct route paths and link builders based on site settings.
+ */
+
+// 1. Get the dynamic base for Calculators (e.g., 'calculator', 'tools', 'apps')
+export const getCalculatorBase = (settings: any = {}) => {
+    let base = settings?.calculator_base_slug || 'calculators'; 
+    return base.replace(/^\/+|\/+$/g, ''); 
+};
+
+// 2. Build a link for a specific calculator
+export const getCalculatorLink = (slug: string, settings: any = {}) => {
+    const base = getCalculatorBase(settings);
+    return `/${base}/${slug}`;
+};
+
+// 3. Build a link for a Blog Post based on structure
+export const getPostLink = (post: any, settings: any = {}) => {
+    // --- THE FIX: Immediate safety check ---
+    if (!post || !post.slug) {
+        return '/blog';
+    }
+
+    const structure = settings?.permalink_structure || 'slug';
+    
+    // Safety check for date
+    let date;
+    try {
+        date = new Date(post.published_date || new Date());
+        if (isNaN(date.getTime())) date = new Date();
+    } catch(e) {
+        date = new Date();
+    }
+    
+    // Pad numbers with leading zeros
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+
+    switch (structure) {
+        case 'date_slug': // /blog/2025/12/08/post-slug
+            return `/blog/${year}/${month}/${day}/${post.slug}`;
+        case 'month_slug': // /blog/2025/12/post-slug
+            return `/blog/${year}/${month}/${post.slug}`;
+        case 'slug': // /blog/post-slug (Default)
+        default:
+            return `/blog/${post.slug}`;
+    }
+};

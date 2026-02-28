@@ -1,0 +1,55 @@
+import { Metadata } from "next";
+import ClientHome from "./client";
+import { 
+  getPageBySlug, 
+  getPublicCalculators, 
+  getPublishedPosts, 
+  getSiteSettings // <--- 1. Import Settings Fetcher
+} from "@/lib/content";
+import { constructMetadata } from "@/lib/seo";
+import StructureSchema from "@/components/seo/schemas/StructureSchema";
+
+export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const [page, settings] = await Promise.all([
+    getPageBySlug("home"),
+    getSiteSettings()
+  ]);
+  
+  if (!page) return {};
+
+  return constructMetadata({
+    data: page,
+    settings,
+    type: "homepage",
+    path: "/"
+  });
+}
+
+export default async function HomePage() {
+  // --- 2. Fetch Settings in Parallel ---
+  const [pageData, calculators, { posts: recentPosts }, settings] = await Promise.all([
+    getPageBySlug("home"),
+    getPublicCalculators(),
+    getPublishedPosts(1, 3),
+    getSiteSettings() // <--- Fetch here
+  ]);
+
+  // Filter Featured Calculators
+  const featuredCalculators = calculators
+    .filter(c => c.is_featured === 1 || c.is_featured === true)
+    .slice(0, 4);
+
+  return (
+    <>
+      <StructureSchema data={pageData} settings={settings} currentPath="/" />
+      <ClientHome 
+        initialData={pageData} 
+        featuredCalculators={featuredCalculators}
+        recentPosts={recentPosts}
+        settings={settings} // --- 3. Pass Settings to Client ---
+      />
+    </>
+  );
+}

@@ -1,0 +1,123 @@
+"use client";
+
+import React, { createContext, useContext, useState, useEffect } from "react";
+import { fetchAPI } from "@/services/api";
+import { useRouter } from "next/navigation";
+import toast from "react-hot-toast";
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  role: string;
+  is_first_login?: boolean;
+  created_at?: string;
+}
+
+interface AuthContextType {
+  user: User | null;
+  login: (userData: User, token?: string) => void;
+  logout: (message?: string) => void;
+  isLoading: boolean;
+}
+
+const AuthContext = createContext<AuthContextType>({
+  user: null,
+  login: () => {},
+  logout: () => {},
+  isLoading: true,
+});
+
+export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const router = useRouter();
+
+  // 1. Initial Load: Trust LocalStorage immediately (Matches old project behavior)
+  useEffect(() => {
+    const initAuth = () => {
+      try {
+        const storedUser = localStorage.getItem("calcpro_user");
+        if (storedUser) {
+          setUser(JSON.parse(storedUser));
+        }
+      } catch (error) {
+        console.error("Failed to parse user from localStorage", error);
+        localStorage.removeItem("calcpro_user");
+      } finally {
+        // Stop loading immediately so the Dashboard can render
+        setIsLoading(false);
+      }
+    };
+
+    initAuth();
+  }, []);
+
+  // 2. Heartbeat Check (Every 30s) - Validates session in background
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout;
+
+    const checkStatus = async () => {
+      if (user && user.id) {
+        try {
+          // Verify user status with backend
+          const response = await fetchAPI(
+            `/public/check_auth_status.php?userId=${user.id}`,
+            {
+              method: "GET",
+            }
+          );
+
+          // SAFEGUARD: Ensure response is actually JSON/Object before checking properties
+          if (response && typeof response === "object") {
+            if (response.success && response.status !== "active") {
+              logout("Your account has been suspended by an administrator.");
+            } else if (!response.success && response.status === "not_found") {
+              logout("Your account could not be found.");
+            }
+          }
+        } catch (error) {
+          console.error("Auth status check failed:", error);
+          // Note: We do NOT logout on network error, keeping the user logged in locally
+        }
+      }
+    };
+
+    if (user) {
+      // Run check immediately on mount/user change, then interval
+      checkStatus();
+      intervalId = setInterval(checkStatus, 30000);
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [user]);
+
+  const login = (userData: User, token?: string) => {
+    localStorage.setItem("calcpro_user", JSON.stringify(userData));
+    if (token) localStorage.setItem("calcpro_token", token);
+
+    if (userData.is_first_login) {
+      sessionStorage.setItem("is_first_login", "true");
+    }
+    setUser(userData);
+  };
+
+  const logout = (message = "You have been logged out.") => {
+    localStorage.removeItem("calcpro_user");
+    localStorage.removeItem("calcpro_token");
+    sessionStorage.removeItem("is_first_login");
+    setUser(null);
+    if (message) toast.error(message);
+    router.push("/login");
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, login, logout, isLoading }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => useContext(AuthContext);

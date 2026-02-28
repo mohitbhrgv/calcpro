@@ -1,0 +1,89 @@
+import { Metadata } from "next";
+import { notFound } from "next/navigation";
+import { 
+  getCalculatorCategories, 
+  getPublicCalculators,
+  getSiteSettings
+} from "@/lib/content";
+import { constructMetadata } from "@/lib/seo";
+import CalculatorCategoryClient from "./client";
+import BreadcrumbSchema from "@/components/seo/schemas/BreadcrumbSchema"; // <--- IMPORTED
+
+export async function generateStaticParams() {
+  const categories = await getCalculatorCategories();
+  return categories.map((cat) => ({
+    slug: cat.slug,
+  }));
+}
+
+export const revalidate = 60;
+
+interface PageProps {
+    params: Promise<{ slug: string }>;
+}
+
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const categories = await getCalculatorCategories();
+  const currentCategory = categories.find((c) => c.slug === slug);
+  const settings = await getSiteSettings();
+
+  if (!currentCategory) return { title: "Category Not Found" };
+
+  return constructMetadata({
+    data: currentCategory,
+    settings,
+    type: "calculator-category",
+    context: { name: currentCategory.name, description: currentCategory.description },
+    path: `/calculators/category/${slug}`
+  });
+}
+
+export default async function CalculatorCategoryPage({ params }: PageProps) {
+  const { slug } = await params;
+
+  const [categories, allCalculators, settings] = await Promise.all([
+    getCalculatorCategories(),
+    getPublicCalculators(),
+    getSiteSettings()
+  ]);
+
+  const currentCategory = categories.find((c) => c.slug === slug);
+  
+  if (!currentCategory) {
+    notFound();
+  }
+
+  const categoryCalculators = allCalculators.filter(calc => {
+      const slugs = calc.category_slugs ? calc.category_slugs.split(',') : [];
+      return slugs.includes(slug);
+  });
+
+  const parentCategory = currentCategory.parent_id 
+    ? categories.find(c => c.id === currentCategory.parent_id) 
+    : undefined;
+
+  const breadcrumbData = {
+      title: currentCategory.name,
+      parent_category_name: parentCategory?.name,
+      parent_category_slug: parentCategory?.slug
+  };
+
+  return (
+    <>
+      {/* --- ADDED BREADCRUMB SCHEMA --- */}
+      <BreadcrumbSchema 
+          data={breadcrumbData} 
+          settings={settings} 
+          currentPath={`/calculators/category/${slug}`} 
+      />
+
+      <CalculatorCategoryClient 
+        category={currentCategory}
+        parentCategory={parentCategory}
+        calculators={categoryCalculators}
+        settings={settings}
+      />
+    </>
+  );
+}

@@ -1,0 +1,56 @@
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  // 1. Image Optimization Domain Allowlist
+  // This allows Next.js to optimize images served from your PHP backend's upload folder
+  images: {
+    remotePatterns: [
+      {
+        protocol: 'http',
+        hostname: 'localhost',
+        port: '', // Match any port if needed, or specify '80'
+        pathname: '/calcpro-api/uploads/**',
+      },
+      // Add production domain here later
+      // { protocol: 'https', hostname: 'your-production-domain.com', pathname: '/uploads/**' }
+    ],
+  },
+
+  // 2. Rewrites (Proxying)
+  // This maps special SEO files to the PHP API without the user seeing the API URL
+  async rewrites() {
+    // Define the backend URL explicitly here or load from env (env is safer but this is config time)
+    // NOTE: process.env.NEXT_PUBLIC_API_URL includes '/api', so we strip it for root rewrites if needed
+    // Assuming backend root is http://localhost/calcpro-api
+    const PHP_BACKEND = 'http://localhost/calcpro-api/api/public';
+
+    return [
+      {
+        // Proxy robots.txt
+        source: '/robots.txt',
+        destination: `${PHP_BACKEND}/robots.php`,
+      },
+      {
+        // Proxy Main Sitemap Index
+        source: '/sitemap.xml',
+        destination: `${PHP_BACKEND}/sitemap.php?type=index`,
+      },
+      {
+        // Proxy Sub-Sitemaps (e.g., post-sitemap.xml, page-sitemap.xml)
+        // Regex catches any filename ending in -sitemap.xml
+        source: '/:path*-sitemap.xml',
+        // We pass the type as a query param. 
+        // Note: The PHP sitemap.php logic handles parsing the type or the filename.
+        // To keep it simple for PHP, we map the pattern directly.
+        destination: `${PHP_BACKEND}/sitemap.php?type=:path*`,
+      },
+      {
+        // Proxy Sitemap Stylesheet
+        source: '/main-sitemap.xsl',
+        destination: `${PHP_BACKEND}/main-sitemap.xsl`,
+      }
+    ];
+  },
+};
+
+export default nextConfig;

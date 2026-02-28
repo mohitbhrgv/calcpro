@@ -1,0 +1,46 @@
+"use client";
+
+import React from "react";
+import { PageContent } from "@/lib/content";
+
+// --- Import Templates ---
+import AboutTemplate from "@/components/templates/AboutTemplate";
+import ContactTemplate from "@/components/templates/ContactTemplate";
+import FaqTemplate from "@/components/templates/FaqTemplate";
+import PolicyTemplate from "@/components/templates/PolicyTemplate";
+import StandardTemplate from "@/components/templates/StandardTemplate";
+
+interface ClientDynamicPageProps {
+  data: PageContent;
+  settings: any;
+}
+
+const ClientDynamicPage = ({ data, settings }: ClientDynamicPageProps) => {
+  // 1. Identify the Template Key
+  // We prioritize 'page_key' (system ID) but fallback to 'slug' if key is missing
+  const templateKey = data.page_key || data.slug;
+
+  // 2. Dispatch the correct component
+  switch (templateKey) {
+    case "about":
+      return <AboutTemplate data={data} settings={settings} />;
+    
+    case "contact":
+    case "contact-us": // Handle legacy slug variations
+      return <ContactTemplate data={data} settings={settings} />;
+    
+    case "faq":
+      return <FaqTemplate data={data} settings={settings} />;
+    
+    case "privacy-policy":
+    case "terms-of-service":
+    case "cookie-policy":
+      return <PolicyTemplate data={data} settings={settings} />;
+    
+    // 3. Default Fallback for all other pages (CMS created pages)
+    default:
+      return <StandardTemplate data={data} settings={settings} />;
+  }
+};
+
+export default ClientDynamicPage;

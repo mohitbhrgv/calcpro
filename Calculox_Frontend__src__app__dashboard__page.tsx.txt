@@ -1,0 +1,17 @@
+import type { Metadata } from 'next';
+import ClientDashboard from './client';
+import { getSiteSettings } from '@/lib/content';
+
+export const dynamic = "force-dynamic";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const settings = await getSiteSettings();
+  return {
+    title: `Dashboard - ${settings.siteName || "Calculox"}`,
+    description: "Manage your saved calculations, bookmarks, and account settings.",
+  };
+}
+
+export default function DashboardPage() {
+  return <ClientDashboard />;
+}

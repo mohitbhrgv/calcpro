@@ -1,0 +1,68 @@
+import { getCookie } from "cookies-next";
+
+// Define the base URL from our environment variables
+const API_URL = process.env.NEXT_PUBLIC_API_URL;
+
+type FetchOptions = RequestInit & {
+  headers?: Record<string, string>;
+  token?: string; // Optional manual token override
+};
+
+/**
+ * A centralized fetch wrapper for Next.js (App Router)
+ * Automatically handles JWT tokens for both Client and Server environments.
+ */
+export async function fetchAPI(endpoint: string, options: FetchOptions = {}) {
+  // 1. Determine the Token
+  let token = options.token;
+
+  // If no token provided, try to find it automatically
+  if (!token) {
+    if (typeof window !== "undefined") {
+      // CLIENT-SIDE: Look in LocalStorage (legacy support) or Cookies
+      token = localStorage.getItem("calcpro_token") || undefined;
+    } else {
+      // SERVER-SIDE: Look in Cookies (via cookies-next helper)
+      // We will install 'cookies-next' in the next step to make this work
+      const cookieStore = await import("cookies-next");
+      // @ts-ignore - We handle the context dynamically
+      token = cookieStore.getCookie("calcpro_token", { req: options.req, res: options.res });
+    }
+  }
+
+  // 2. Construct Headers
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...options.headers,
+  };
+
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  // 3. Make the Request
+  const url = `${API_URL}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
+  
+  try {
+    const res = await fetch(url, {
+      ...options,
+      headers,
+      // Default to 'no-store' to prevent stale data in Next.js caching,
+      // unless the caller explicitly asks for caching.
+      cache: options.cache || "no-store", 
+    });
+
+    // 4. Handle Errors
+    if (!res.ok) {
+      // Try to parse the error message from the PHP API
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || `API Error: ${res.status}`);
+    }
+
+    // 5. Return JSON
+    return await res.json();
+  } catch (error) {
+    console.error(`[API Fetch Error] ${url}:`, error);
+    throw error;
+  }
+}

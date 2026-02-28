@@ -1,0 +1,45 @@
+/**
+ * Generates SEO-friendly links for Next.js
+ */
+
+// 1. Get the dynamic base (Default to 'calculators' for now)
+export const getCalculatorBase = (settings?: any) => {
+    let base = settings?.calculator_base_slug || 'calculators';
+    return base.replace(/^\/+|\/+$/g, ''); 
+};
+
+// 2. Build link for a calculator
+export const getCalculatorLink = (slug: string, settings?: any) => {
+    // For now, hardcode to /calculators/ to ensure routing works
+    // We will make this dynamic in Phase 4
+    return `/calculators/${slug}`;
+};
+
+// 3. Build link for a Blog Post
+export const getPostLink = (post: any, settings?: any) => {
+    const structure = settings?.permalink_structure || 'slug';
+    const slug = post.slug || post.id;
+    
+    // Safety check for date
+    let date;
+    try {
+        date = new Date(post.published_date || new Date());
+        if (isNaN(date.getTime())) date = new Date();
+    } catch(e) {
+        date = new Date();
+    }
+    
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+
+    switch (structure) {
+        case 'date_slug': 
+            return `/blog/${year}/${month}/${day}/${slug}`;
+        case 'month_slug':
+            return `/blog/${year}/${month}/${slug}`;
+        case 'slug': 
+        default:
+            return `/blog/${slug}`;
+    }
+};

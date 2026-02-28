@@ -1,0 +1,255 @@
+import { Metadata } from 'next';
+import { replaceVariables, capitalizeTitle } from './metaHelpers';
+
+interface SeoProps {
+  data: any;        // The page/post data from DB
+  settings: any;    // Global settings from DB
+  type: 'post' | 'page' | 'calculator' | 'blog-category' | 'calculator-category' | 'tag-archive' | '404' | 'search' | 'auth-login' | 'auth-register' | 'auth-reset' | 'date-archive' | 'author-archive' | 'homepage';
+  context?: any;    // Extra data (e.g. category name)
+  path?: string;    // Current URL path
+}
+
+export function constructMetadata({ data = {}, settings = {}, type, context = {}, path = '' }: SeoProps): Metadata {
+  
+  const siteName = settings.siteName || "Calculox";
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://calcpro.com";
+  const currentUrl = `${baseUrl}${path}`;
+
+  // =========================================================
+  // 1. TITLE LOGIC
+  // =========================================================
+  const generateTitle = () => {
+    // Priority 1: Specific Meta Title from DB
+    if (data.meta_title && data.meta_title.trim() !== "") {
+      return replaceVariables(data.meta_title, data, settings, context);
+    }
+
+    // Priority 2: Templates based on Content Type
+    const keyMap: Record<string, string> = {
+      post: "seo_post_title_template",
+      page: "seo_page_title_template",
+      calculator: "seo_calc_title_template",
+      "blog-category": "seo_tax_blog_category_title_template",
+      "calculator-category": "seo_tax_calc_category_title_template",
+      "tag-archive": "seo_tax_tag_title_template",
+      404: "seo_special_404_title",
+      search: "seo_special_search_title",
+      "auth-login": "seo_auth_login_title",
+      "auth-register": "seo_auth_register_title",
+      "auth-reset": "seo_auth_reset_title",
+      "date-archive": "seo_archive_date_title",
+      "author-archive": "seo_archive_author_title",
+    };
+
+    const templateKey = keyMap[type];
+    if (templateKey && settings[templateKey]) {
+      return replaceVariables(settings[templateKey], data, settings, context);
+    }
+
+    // Priority 3: Fallback Construction
+    if (type === 'homepage') {
+        return siteName; 
+    }
+
+    const pageTitle = data.title || data.name || context.name || siteName;
+    const separator = settings.seo_separator || "-";
+
+    return pageTitle === siteName
+      ? siteName
+      : `${pageTitle} ${separator} ${siteName}`;
+  };
+
+  let title = generateTitle();
+
+  if (settings.seo_capitalize_titles === true || settings.seo_capitalize_titles === 'true') {
+      title = capitalizeTitle(title);
+  }
+
+  // =========================================================
+  // 2. DESCRIPTION LOGIC
+  // =========================================================
+  const generateDescription = () => {
+    if (data.meta_description && data.meta_description.trim() !== "") {
+      return replaceVariables(data.meta_description, data, settings, context);
+    }
+    if (data.description && data.description.trim() !== "") {
+      return data.description;
+    }
+    const keyMap: Record<string, string> = {
+      post: "seo_post_desc_template",
+      page: "seo_page_desc_template",
+      calculator: "seo_calc_desc_template",
+      "blog-category": "seo_tax_blog_category_desc_template",
+      "calculator-category": "seo_tax_calc_category_desc_template",
+      "tag-archive": "seo_tax_tag_desc_template",
+    };
+    const templateKey = keyMap[type];
+    if (templateKey && settings[templateKey]) {
+      return replaceVariables(settings[templateKey], data, settings, context);
+    }
+    return data.excerpt || settings.seo_global_description || "";
+  };
+
+  const description = generateDescription();
+
+  // =========================================================
+  // 3. SOCIAL TEXT FALLBACKS
+  // =========================================================
+  const ogTitle = (data.og_title && data.og_title.trim() !== "") ? data.og_title : title;
+  const ogDescription = (data.og_description && data.og_description.trim() !== "") ? data.og_description : description;
+
+  const twitterTitle = (data.twitter_title && data.twitter_title.trim() !== "") ? data.twitter_title : title; 
+  const twitterDescription = (data.twitter_description && data.twitter_description.trim() !== "") ? data.twitter_description : description;
+
+  // =========================================================
+  // 4. IMAGE LOGIC (Smart Alt Text)
+  // =========================================================
+  
+  // Helper to build Image Object
+  const buildImageObject = (url: string, altSource: string, fallbackAlt: string) => ({
+      url: url,
+      width: 1200,
+      height: 630,
+      alt: altSource || fallbackAlt 
+  });
+
+  // A. Open Graph Images (Fallback Chain)
+  const ogImages = [];
+  if (data.og_image && data.og_image.trim() !== "") {
+    // 1. Custom OG Image
+    ogImages.push(buildImageObject(data.og_image, data.og_image_alt, title));
+  } else if (data.featured_image_url) {
+    // 2. Featured Image
+    ogImages.push(buildImageObject(data.featured_image_url, data.featured_image_alt, title));
+  } else if (settings.seo_social_default_og_image) {
+    // 3. Global Default
+    // FIX: Use specific fetched alt text for global image
+    const globalAlt = settings.seo_social_default_og_image_alt || siteName;
+    ogImages.push(buildImageObject(settings.seo_social_default_og_image, globalAlt, siteName));
+  }
+
+  // B. Twitter Images (Separate Chain)
+  let twitterImages = [];
+  if (data.twitter_image && data.twitter_image.trim() !== "") {
+    // 1. Custom Twitter Image
+    twitterImages.push(buildImageObject(data.twitter_image, data.twitter_image_alt, title));
+  } else {
+    // 2. Fallback to OG Result
+    twitterImages = ogImages;
+  }
+
+  // =========================================================
+  // 5. ROBOTS & ICONS
+  // =========================================================
+  const getRobots = () => {
+    const keyMap: Record<string, string> = {
+      post: "seo_post_robots_",
+      page: "seo_page_robots_",
+      calculator: "seo_calc_robots_",
+      "blog-category": "seo_tax_blog_category_robots_",
+      "calculator-category": "seo_tax_calc_category_robots_",
+      "tag-archive": "seo_tax_tag_robots_",
+      "auth-login": "seo_auth_login_robots_",
+      "auth-register": "seo_auth_register_robots_",
+      "auth-reset": "seo_auth_reset_robots_",
+    };
+    const templatePrefix = keyMap[type] || null;
+    const toBool = (val: any) => val === true || val === "true" || val === 1 || val === "1";
+
+    const getDirective = (dataKey: string, settingSuffix: string) => {
+      if (data && data[dataKey] !== undefined && data[dataKey] !== null) return toBool(data[dataKey]);
+      if (templatePrefix) {
+        const customEnabled = settings[`${templatePrefix}custom_enabled`];
+        if (toBool(customEnabled)) {
+          if (settings[`${templatePrefix}${settingSuffix}`] !== undefined) {
+             return toBool(settings[`${templatePrefix}${settingSuffix}`]);
+          }
+        }
+      }
+      return toBool(settings?.[`seo_robots_global_${settingSuffix}`]);
+    };
+
+    const getAdvanced = (dataKey: string, settingSuffix: string, fallback: any) => {
+       if (data && data[dataKey] !== undefined && data[dataKey] !== null) return data[dataKey];
+       if (templatePrefix) {
+           const customEnabled = settings[`${templatePrefix}custom_enabled`];
+           if (toBool(customEnabled)) {
+               return settings[`${templatePrefix}${settingSuffix}`];
+           }
+       }
+       return settings?.[`seo_robots_global_${settingSuffix}`] ?? fallback;
+    };
+
+    const isNoIndex = getDirective("no_index", "noindex");
+    const isNoFollow = getDirective("no_follow", "nofollow");
+    const isNoArchive = getDirective("no_archive", "noarchive");
+    const isNoImageIndex = getDirective("no_image_index", "noimageindex");
+    const isNoSnippet = getDirective("no_snippet", "nosnippet");
+
+    const robots: any = {
+      index: !isNoIndex,
+      follow: !isNoFollow,
+      noarchive: isNoArchive,
+      nocache: isNoArchive,
+    };
+
+    if (type === '404' || type === 'search') robots.index = false;
+
+    if (!isNoSnippet) {
+       robots.googleBot = {
+         index: !isNoIndex,
+         follow: !isNoFollow,
+         'max-video-preview': getAdvanced("max_video_preview", "max_video_preview", -1),
+         'max-image-preview': getAdvanced("max_image_preview", "max_image_preview", "large"),
+         'max-snippet': getAdvanced("max_snippet", "max_snippet", -1),
+       };
+    } else {
+        robots.nosnippet = true;
+    }
+    
+    if (isNoImageIndex) {
+        robots.googleBot = { ...robots.googleBot, noimageindex: true };
+    }
+
+    return robots;
+  };
+
+  const icons: any = {};
+  if (settings.site_icon) {
+     icons.icon = settings.site_icon;
+     icons.apple = settings.site_icon; 
+  }
+
+  // =========================================================
+  // 6. RETURN METADATA
+  // =========================================================
+  return {
+    title: title,
+    description: description,
+    metadataBase: new URL(baseUrl),
+    alternates: {
+      canonical: data.canonical_url || currentUrl,
+    },
+    keywords: data.focus_keywords || data.focusKeywords,
+    robots: getRobots(),
+    icons: icons,
+    
+    openGraph: {
+      title: ogTitle,
+      description: ogDescription,
+      url: currentUrl,
+      siteName: siteName,
+      images: ogImages,
+      locale: 'en_US',
+      type: type === 'post' ? 'article' : 'website',
+    },
+
+    twitter: {
+      card: settings.seo_social_twitter_card_type || 'summary_large_image',
+      title: twitterTitle,
+      description: twitterDescription,
+      images: twitterImages,
+      creator: settings.seo_social_twitter ? `@${settings.seo_social_twitter.replace('@', '')}` : undefined,
+    }
+  };
+}

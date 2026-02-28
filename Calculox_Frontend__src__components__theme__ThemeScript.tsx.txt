@@ -1,0 +1,39 @@
+"use client";
+
+import React from "react";
+
+export const ThemeScript = () => {
+  const scriptCode = `
+    (function() {
+      try {
+        const localTheme = localStorage.getItem("calcpro-theme");
+        const systemTheme = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        
+        let isDark = false;
+        
+        if (localTheme) {
+          // Parse the boolean value from local storage
+          isDark = JSON.parse(localTheme) === true;
+        } else {
+          // Fallback to system preference
+          isDark = systemTheme;
+        }
+
+        if (isDark) {
+          document.documentElement.classList.add("dark");
+        } else {
+          document.documentElement.classList.remove("dark");
+        }
+      } catch (e) {
+        console.error("Error setting theme:", e);
+      }
+    })();
+  `;
+
+  return (
+    <script
+      id="theme-script"
+      dangerouslySetInnerHTML={{ __html: scriptCode }}
+    />
+  );
+};

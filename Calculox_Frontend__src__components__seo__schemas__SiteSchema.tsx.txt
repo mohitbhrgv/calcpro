@@ -1,0 +1,97 @@
+"use client";
+
+import React, { useEffect, useState } from 'react';
+import { usePathname } from 'next/navigation';
+
+interface SiteSchemaProps {
+  settings: any;
+}
+
+const SiteSchema = ({ settings }: SiteSchemaProps) => {
+  const pathname = usePathname();
+  const [shouldRender, setShouldRender] = useState(false);
+
+  // 1. Get the raw JSON string from settings
+  const rawSchema = settings?.seo_local_json_ld;
+
+  useEffect(() => {
+    if (!rawSchema || rawSchema.trim() === '' || !pathname) {
+      setShouldRender(false);
+      return;
+    }
+
+    // --- 2. ROUTE CHECK (Google Guidelines Enforcement) ---
+    // We only want this schema on Home, About, and Contact pages.
+    
+    // Normalize path: lowercase and remove trailing slash for consistent comparison
+    const currentPath = pathname.toLowerCase().replace(/\/$/, "") || "/";
+
+    // Get dynamic slugs from settings (remove leading/trailing slashes)
+    const settingsAbout = (settings.seo_page_for_about || 'about').replace(/^\/|\/$/g, '');
+    const settingsContact = (settings.seo_page_for_contact || 'contact').replace(/^\/|\/$/g, '');
+
+    const isHomepage = currentPath === '/';
+    
+    // Check against DB Settings OR Physical Next.js Routes
+    // We check both because Next.js file-system routes (app/contact) force the URL to '/contact',
+    // but the DB might have 'contact-us' saved. Both should trigger the schema.
+    const isAboutPage = currentPath === `/${settingsAbout}` || currentPath === '/about';
+    const isContactPage = currentPath === `/${settingsContact}` || currentPath === '/contact';
+
+    if (isHomepage || isAboutPage || isContactPage) {
+      setShouldRender(true);
+    } else {
+      setShouldRender(false);
+    }
+  }, [pathname, rawSchema, settings]);
+
+  if (!shouldRender) {
+    return null;
+  }
+
+  // --- 3. URL Sanitization Helper ---
+  const getCanonicalUrl = (url: string) => {
+      if (!url) return "";
+      let cleanUrl = url.trim();
+      
+      // In production, ensure HTTPS
+      if (process.env.NODE_ENV === 'production' && cleanUrl.startsWith('http:')) {
+          cleanUrl = cleanUrl.replace('http:', 'https:');
+      }
+      return cleanUrl.replace(/\/$/, "");
+  };
+
+  // --- 4. Prepare Dynamic Values ---
+  const siteUrl = getCanonicalUrl(settings.seo_local_url || process.env.NEXT_PUBLIC_APP_URL || "");
+  const siteLogo = settings.seo_site_logo ? getCanonicalUrl(settings.seo_site_logo) : "";
+  const siteName = settings.siteName || "Calculox";
+  const siteDesc = settings.siteDescription || "";
+
+  try {
+    // --- 5. Variable Replacement ---
+    // We perform string replacement on the raw JSON *before* parsing it.
+    let processedSchema = rawSchema
+        .replace(/%sitename%/g, siteName)
+        .replace(/%siteurl%/g, siteUrl)
+        .replace(/%sitelogo%/g, siteLogo)
+        .replace(/%sitedesc%/g, siteDesc)
+        .replace(/%currentyear%/g, new Date().getFullYear().toString());
+
+    // --- 6. Validation & Sanitization ---
+    const jsonObject = JSON.parse(processedSchema);
+
+    // --- 7. Render ---
+    return (
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonObject) }}
+      />
+    );
+
+  } catch (error) {
+    console.error("SiteSchema Error: Invalid JSON-LD configuration in settings.", error);
+    return null;
+  }
+};
+
+export default SiteSchema;

@@ -1,0 +1,94 @@
+import React from 'react';
+
+interface StructureSchemaProps {
+  data: any;
+  settings: any;
+  currentPath: string; // Passed from parent page since we are on server
+}
+
+const StructureSchema = ({ data = {}, settings = {}, currentPath }: StructureSchemaProps) => {
+  
+  // Helper: Normalize URL
+  const getCanonicalUrl = (url: string) => {
+    if (!url) return "";
+    let cleanUrl = url.trim();
+    if (cleanUrl.startsWith('http')) return cleanUrl.replace(/\/$/, "");
+    return cleanUrl;
+  };
+
+  const siteUrl = getCanonicalUrl(settings?.seo_local_url || process.env.NEXT_PUBLIC_APP_URL || "");
+  
+  // Normalize current path (remove leading/trailing slashes for comparison)
+  // e.g. "/about/" -> "about"
+  const normalizedPath = currentPath.replace(/^\/|\/$/g, '');
+  
+  const schemas = [];
+
+  // --- 1. Sitelinks Search Box (Homepage Only) ---
+  const isHomepage = normalizedPath === '' || normalizedPath === 'home'; // Handle root
+  const isSearchEnabled = settings?.seo_enable_sitelinks_search === true || settings?.seo_enable_sitelinks_search === 'true';
+
+  if (isHomepage && isSearchEnabled) {
+    schemas.push({
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "url": siteUrl,
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": {
+            "@type": "EntryPoint",
+            "urlTemplate": `${siteUrl}/?s={search_term_string}`
+        },
+        "query-input": "required name=search_term_string"
+      }
+    });
+  }
+
+  // --- 2. About Page Schema ---
+  const aboutSlug = settings?.seo_page_for_about;
+  if (aboutSlug && normalizedPath === aboutSlug) {
+    schemas.push({
+      "@context": "https://schema.org",
+      "@type": "AboutPage",
+      "mainEntity": {
+        "@id": `${siteUrl}/#organization` // Links to the Identity schema
+      },
+      "name": data.title || "About Us",
+      "url": `${siteUrl}/${aboutSlug}`,
+      "description": data.meta_description || data.excerpt || ""
+    });
+  }
+
+  // --- 3. Contact Page Schema ---
+  const contactSlug = settings?.seo_page_for_contact;
+  if (contactSlug && normalizedPath === contactSlug) {
+    schemas.push({
+      "@context": "https://schema.org",
+      "@type": "ContactPage",
+      "mainEntity": {
+        "@id": `${siteUrl}/#organization`
+      },
+      "name": data.title || "Contact Us",
+      "url": `${siteUrl}/${contactSlug}`,
+      "description": data.meta_description || data.excerpt || ""
+    });
+  }
+
+  if (schemas.length === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      {schemas.map((schema, index) => (
+        <script 
+            key={`structure-schema-${index}`} 
+            type="application/ld+json"
+            dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }}
+        />
+      ))}
+    </>
+  );
+};
+
+export default StructureSchema;

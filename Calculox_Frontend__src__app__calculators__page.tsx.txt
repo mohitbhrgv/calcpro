@@ -1,0 +1,51 @@
+import { Metadata } from "next";
+import { getPublicCalculators, getCalculatorCategories, getSiteSettings } from "@/lib/content";
+import CalculatorsClient from "./client";
+import BreadcrumbSchema from "@/components/seo/schemas/BreadcrumbSchema"; // <--- IMPORTED
+
+export const revalidate = 60; // Revalidate page every 60 seconds
+
+export async function generateMetadata(): Promise<Metadata> {
+  const settings = await getSiteSettings();
+  const siteName = settings.siteName || "Calculox";
+  
+  return {
+    title: `All Calculators - ${siteName}`,
+    description: "Browse our complete collection of institutional-grade calculators engineered for finance, health, and strategic business decisions.",
+    openGraph: {
+      title: `All Calculators - ${siteName}`,
+      description: "Browse our complete collection of institutional-grade calculators.",
+      type: "website",
+    },
+  };
+}
+
+export default async function CalculatorsPage() {
+  // Parallel data fetching for performance
+  const [calculators, categories, settings] = await Promise.all([
+    getPublicCalculators(),
+    getCalculatorCategories(),
+    getSiteSettings()
+  ]);
+
+  // Construct a minimal data object for breadcrumbs if pageData isn't available
+  // This ensures the breadcrumb generator has a 'title' to work with
+  const breadcrumbData = { title: "Calculators" };
+
+  return (
+    <>
+      {/* --- ADDED BREADCRUMB SCHEMA --- */}
+      <BreadcrumbSchema 
+          data={breadcrumbData} 
+          settings={settings} 
+          currentPath="/calculators" 
+      />
+
+      <CalculatorsClient 
+        initialCalculators={calculators} 
+        categories={categories}
+        settings={settings}
+      />
+    </>
+  );
+}

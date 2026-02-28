@@ -1,0 +1,73 @@
+import { Metadata } from "next";
+import { notFound } from "next/navigation";
+import ClientBlogPost from "./client";
+import { getPostBySlug, getPublishedPosts, getSiteSettings } from "@/lib/content";
+import { constructMetadata } from "@/lib/seo";
+import BreadcrumbSchema from "@/components/seo/schemas/BreadcrumbSchema"; // <--- IMPORTED
+
+export const dynamic = "force-dynamic";
+
+interface PageProps {
+  params: Promise<{ slug: string }>;
+}
+
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const [post, settings] = await Promise.all([
+    getPostBySlug(slug),
+    getSiteSettings()
+  ]);
+  
+  if (!post) return { title: "Post Not Found" };
+
+  return constructMetadata({
+    data: post,
+    settings,
+    type: "post",
+    path: `/blog/${slug}`
+  });
+}
+
+export default async function BlogPostPage({ params }: PageProps) {
+  const { slug } = await params;
+  
+  const [post, settings] = await Promise.all([
+    getPostBySlug(slug),
+    getSiteSettings()
+  ]);
+
+  if (!post) {
+    notFound();
+  }
+
+  let sidebarPosts = post.related_posts || [];
+  if (!sidebarPosts.length) {
+     const { posts: recentPosts } = await getPublishedPosts(1, 4);
+     sidebarPosts = recentPosts.filter(p => p.id !== post.id).slice(0, 3);
+  }
+
+  // --- PREPARE DATA FOR SCHEMA ---
+  // Ensure the data passed to BreadcrumbSchema matches what generateBreadcrumbs expects
+  const breadcrumbData = {
+    title: post.title,
+    category_name: post.category_name,
+    category_slug: post.category_slugs ? post.category_slugs.split(',')[0] : undefined
+  };
+
+  return (
+    <>
+      {/* --- ADDED BREADCRUMB SCHEMA --- */}
+      <BreadcrumbSchema 
+          data={breadcrumbData} 
+          settings={settings} 
+          currentPath={`/blog/${slug}`} 
+      />
+      
+      <ClientBlogPost 
+        post={post} 
+        relatedPosts={sidebarPosts} 
+        settings={settings}
+      />
+    </>
+  );
+}

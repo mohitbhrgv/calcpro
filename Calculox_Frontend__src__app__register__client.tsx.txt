@@ -1,0 +1,329 @@
+"use client";
+
+import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '@/context/AuthContext';
+import toast from 'react-hot-toast';
+import SafeIcon from '@/components/common/SafeIcon';
+import { fetchAPI } from '@/services/api';
+import { validatePassword } from '@/utils/passwordValidator';
+import * as FiIcons from 'react-icons/fi';
+
+const { FiUser, FiMail, FiLock, FiUserPlus, FiCheckCircle } = FiIcons;
+
+const ClientRegister = () => {
+  const { login } = useAuth();
+  const router = useRouter();
+  const [step, setStep] = useState('register');
+
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    password: '',
+    confirmPassword: '',
+    agreeTerms: false,
+  });
+  const [verificationCode, setVerificationCode] = useState('');
+  
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errors, setErrors] = useState<any>({});
+  
+  const [countdown, setCountdown] = useState(60);
+  const [canResend, setCanResend] = useState(false);
+  const [resendLimitReached, setResendLimitReached] = useState(false);
+
+  useEffect(() => {
+    if (step === 'verify' && !canResend) {
+      const timer = setInterval(() => {
+        setCountdown((prevCountdown) => {
+          if (prevCountdown <= 1) {
+            clearInterval(timer);
+            setCanResend(true);
+            return 0;
+          }
+          return prevCountdown - 1;
+        });
+      }, 1000);
+      
+      return () => clearInterval(timer);
+    }
+  }, [step, canResend]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value, type, checked } = e.target;
+    setFormData((prev) => ({
+      ...prev,
+      [name]: type === 'checkbox' ? checked : value,
+    }));
+    if (errors[name]) setErrors((prev: any) => ({ ...prev, [name]: '' }));
+  };
+
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const newErrors: any = {};
+    if (!formData.name.trim()) newErrors.name = 'Name is required';
+    if (!formData.email) newErrors.email = 'Email is required';
+    else if (!/\S+@\S+\.\S+/.test(formData.email)) newErrors.email = 'Email is invalid';
+    if (!formData.password) newErrors.password = 'Password is required';
+    if (formData.password !== formData.confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
+    if (!formData.agreeTerms) newErrors.agreeTerms = 'You must agree to the Terms of Service and Privacy Policy';
+    
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+    
+    const { isValid, errors: passwordErrors } = validatePassword(formData.password);
+    if (!isValid) {
+      toast.error(`Password must: ${passwordErrors.join(', ')}.`, {
+        id: 'register-toast',
+        duration: 5000
+      });
+      return; 
+    }
+    
+    setIsSubmitting(true);
+    try {
+      const apiCall = fetchAPI('/public/register.php', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: formData.name,
+          email: formData.email,
+          password: formData.password,
+        }),
+      });
+
+      const [result] = await Promise.all([
+        apiCall,
+        new Promise(resolve => setTimeout(resolve, 1000))
+      ]);
+
+      if (result.success) {
+        toast.success(result.message, { id: 'register-toast' });
+        setStep('verify');
+      } else {
+        toast.error(result.message, { id: 'register-toast' });
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error('Could not connect to the server.', { id: 'register-toast' });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleVerifySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!verificationCode || verificationCode.length !== 6) {
+        setErrors({ code: 'Please enter the 6-digit code.' });
+        return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const apiCall = fetchAPI('/public/verify_email.php', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: formData.email,
+          code: verificationCode,
+        }),
+      });
+
+      const [result] = await Promise.all([
+        apiCall,
+        new Promise(resolve => setTimeout(resolve, 1000))
+      ]);
+
+      if (result.success) {
+        // Ensure tokens are passed if available
+        login(result.user, result.token);
+        toast.success(result.message, { id: 'register-toast' });
+        router.push('/dashboard');
+      } else {
+        toast.error(result.message, { id: 'register-toast' });
+      }
+    } catch (error) {
+      toast.error('Could not connect to the server.', { id: 'register-toast' });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleResendCode = async () => {
+      if (!canResend || resendLimitReached) return;
+      
+      setIsSubmitting(true);
+      try {
+          const apiCall = fetchAPI('/public/resend_code.php', {
+              method: 'POST',
+              body: JSON.stringify({ email: formData.email }),
+          });
+
+          const [result] = await Promise.all([
+              apiCall,
+              new Promise(resolve => setTimeout(resolve, 1000))
+          ]);
+
+          if (result.success) {
+              toast.success(result.message, { id: 'register-toast' });
+              setCanResend(false);
+              setCountdown(60);
+          } else {
+              toast.error(result.message, { id: 'register-toast' });
+              if (result.message.includes("maximum number")) {
+                  setResendLimitReached(true);
+              }
+          }
+      } catch (error) {
+          toast.error('Could not connect to the server.', { id: 'register-toast' });
+      } finally {
+          setIsSubmitting(false);
+      }
+  };
+
+  const renderRegisterForm = () => (
+    <motion.div key="register" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
+      <div className="text-center mb-8">
+        <h1 className="text-3xl font-bold text-neutral-900 dark:text-white">Create Account</h1>
+        <p className="text-neutral-600 dark:text-neutral-400 mt-2">Join thousands of professionals using CalcPro</p>
+      </div>
+      <form onSubmit={handleRegisterSubmit} className="space-y-6">
+        <div>
+          <label htmlFor="name" className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">Full Name</label>
+          <div className="relative">
+            <SafeIcon icon={FiUser} className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-neutral-400" />
+            <input id="name" name="name" type="text" value={formData.name} onChange={handleChange} className={`w-full pl-10 px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-neutral-700 text-neutral-900 dark:text-white ${errors.name ? 'border-red-500' : 'border-neutral-300 dark:border-neutral-600'}`} placeholder="John Doe" />
+          </div>
+          {errors.name && <p className="mt-1 text-sm text-red-500">{errors.name}</p>}
+        </div>
+        <div>
+          <label htmlFor="email" className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">Email Address</label>
+          <div className="relative">
+            <SafeIcon icon={FiMail} className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-neutral-400" />
+            <input id="email" name="email" type="email" value={formData.email} onChange={handleChange} className={`w-full pl-10 px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-neutral-700 text-neutral-900 dark:text-white ${errors.email ? 'border-red-500' : 'border-neutral-300 dark:border-neutral-600'}`} placeholder="you@example.com" />
+          </div>
+          {errors.email && <p className="mt-1 text-sm text-red-500">{errors.email}</p>}
+        </div>
+        <div>
+          <label htmlFor="password" className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">Password</label>
+          <div className="relative">
+            <SafeIcon icon={FiLock} className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-neutral-400" />
+            <input id="password" name="password" type="password" value={formData.password} onChange={handleChange} className={`w-full pl-10 px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-neutral-700 text-neutral-900 dark:text-white ${errors.password ? 'border-red-500' : 'border-neutral-300 dark:border-neutral-600'}`} placeholder="••••••••" />
+          </div>
+          <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+            At least 8 characters, including a letter, number, and symbol.
+          </p>
+        </div>
+        <div>
+          <label htmlFor="confirmPassword" className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">Confirm Password</label>
+          <div className="relative">
+            <SafeIcon icon={FiLock} className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-neutral-400" />
+            <input id="confirmPassword" name="confirmPassword" type="password" value={formData.confirmPassword} onChange={handleChange} className={`w-full pl-10 px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-neutral-700 text-neutral-900 dark:text-white ${errors.confirmPassword ? 'border-red-500' : 'border-neutral-300 dark:border-neutral-600'}`} placeholder="••••••••" />
+          </div>
+          {errors.confirmPassword && <p className="mt-1 text-sm text-red-500">{errors.confirmPassword}</p>}
+        </div>
+        
+        <div>
+            <div className={`flex items-start p-3 rounded-lg transition-colors duration-200 ${errors.agreeTerms ? 'bg-red-50 dark:bg-red-900/10 border border-red-500' : ''}`}>
+                <div className="flex items-center h-5">
+                    <input id="agreeTerms" name="agreeTerms" type="checkbox" checked={formData.agreeTerms} onChange={handleChange} className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-neutral-300 rounded" />
+                </div>
+                <div className="ml-3 text-sm">
+                    <label htmlFor="agreeTerms" className="text-neutral-600 dark:text-neutral-400">
+                        I agree to the <Link href="/terms-of-service" className="text-indigo-600 hover:text-indigo-500">Terms of Service</Link> and <Link href="/privacy-policy" className="text-indigo-600 hover:text-indigo-500">Privacy Policy</Link>
+                    </label>
+                </div>
+            </div>
+            {errors.agreeTerms && <p className="mt-1 text-sm text-red-500">{errors.agreeTerms}</p>}
+        </div>
+
+        <button type="submit" disabled={isSubmitting} className="w-full flex items-center justify-center space-x-2 bg-gradient-to-r from-indigo-500 to-violet-600 text-white px-6 py-3 rounded-lg hover:from-indigo-600 hover:to-violet-700 transition-all duration-200 font-medium disabled:opacity-60">
+            {isSubmitting ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <><SafeIcon icon={FiUserPlus} className="w-5 h-5" /><span>Create Account</span></>}
+        </button>
+      </form>
+    </motion.div>
+  );
+
+  const renderVerifyForm = () => (
+    <motion.div key="verify" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
+      <div className="text-center mb-8">
+        <h1 className="text-3xl font-bold text-neutral-900 dark:text-white">Verify Your Email</h1>
+        <p className="text-neutral-600 dark:text-neutral-400 mt-2">
+          A 6-digit code has been sent to <br/> <span className="font-medium text-indigo-600 dark:text-indigo-400">{formData.email}</span>
+        </p>
+      </div>
+      
+      <form onSubmit={handleVerifySubmit} className="space-y-6">
+        <div>
+          <label htmlFor="verificationCode" className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">Verification Code</label>
+          <div className="relative">
+            <input
+              id="verificationCode" name="verificationCode" type="text" maxLength={6}
+              value={verificationCode} onChange={(e) => {
+                  setVerificationCode(e.target.value.replace(/\D/g, ''));
+                  if (errors.code) setErrors((prev:any) => ({ ...prev, code: '' }));
+              }}
+              className={`w-full text-center tracking-[0.5em] text-2xl font-semibold px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-neutral-700 text-neutral-900 dark:text-white ${errors.code ? 'border-red-500' : 'border-neutral-300 dark:border-neutral-600'}`}
+              placeholder="••••••"
+            />
+          </div>
+          {errors.code && <p className="mt-1 text-sm text-red-500">{errors.code}</p>}
+        </div>
+        
+        <div className="mt-4 text-center text-sm">
+          {resendLimitReached ? (
+              <p className="text-red-500">Resend limit reached. Please try signing up again later.</p>
+          ) : (
+              <p className="text-neutral-600 dark:text-neutral-400">
+                  Did not receive your code yet?{' '}
+                  {canResend ? (
+                      <button
+                          type="button"
+                          onClick={handleResendCode}
+                          disabled={isSubmitting}
+                          className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                          Resend Email
+                      </button>
+                  ) : (
+                      <span className="font-medium text-neutral-800 dark:text-neutral-200">
+                          00:{countdown.toString().padStart(2, '0')}
+                      </span>
+                  )}
+              </p>
+          )}
+        </div>
+
+        <button type="submit" disabled={isSubmitting} className="w-full flex items-center justify-center space-x-2 bg-gradient-to-r from-indigo-500 to-violet-600 text-white px-6 py-3 rounded-lg hover:from-indigo-600 hover:to-violet-700 transition-all duration-200 font-medium disabled:opacity-60">
+            {isSubmitting ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <><SafeIcon icon={FiCheckCircle} className="w-5 h-5" /><span>Verify Account</span></>}
+        </button>
+      </form>
+    </motion.div>
+  );
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-neutral-50 dark:bg-neutral-900 py-12 px-4 sm:px-6 lg:px-8 font-inter">
+      <div className="max-w-md w-full">
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }} className="bg-white dark:bg-neutral-800 rounded-xl shadow-xl overflow-hidden">
+          <div className="p-8">
+            <AnimatePresence mode="wait">
+              {step === 'register' ? renderRegisterForm() : renderVerifyForm()}
+            </AnimatePresence>
+            <div className="mt-8 text-center">
+              <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                Already have an account?{' '}
+                <Link href="/login" className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300">
+                  Sign in
+                </Link>
+              </p>
+            </div>
+          </div>
+        </motion.div>
+      </div>
+    </div>
+  );
+};
+
+export default ClientRegister;

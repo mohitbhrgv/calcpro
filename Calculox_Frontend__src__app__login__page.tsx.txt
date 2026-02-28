@@ -1,0 +1,19 @@
+import { Metadata } from "next";
+import ClientLogin from "./client";
+import { getSiteSettings } from "@/lib/content";
+import { constructMetadata } from "@/lib/seo";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const settings = await getSiteSettings();
+  
+  return constructMetadata({
+    data: { title: "Login" },
+    settings,
+    type: "auth-login",
+    path: "/login"
+  });
+}
+
+export default function LoginPage() {
+  return <ClientLogin />;
+}

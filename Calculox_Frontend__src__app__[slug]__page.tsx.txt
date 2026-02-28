@@ -1,0 +1,55 @@
+import { Metadata } from "next";
+import { notFound } from "next/navigation";
+import ClientDynamicPage from "./client";
+import { getPageBySlug, getSiteSettings } from "@/lib/content";
+import { constructMetadata } from "@/lib/seo";
+import StructureSchema from "@/components/seo/schemas/StructureSchema";
+import BreadcrumbSchema from "@/components/seo/schemas/BreadcrumbSchema"; // <--- IMPORTED
+
+export const dynamic = "force-dynamic";
+
+interface PageProps {
+  params: Promise<{ slug: string }>;
+}
+
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const [page, settings] = await Promise.all([
+    getPageBySlug(slug),
+    getSiteSettings()
+  ]);
+  
+  if (!page) return { title: "Page Not Found" };
+
+  return constructMetadata({
+    data: page,
+    settings,
+    type: "page",
+    path: `/${slug}`
+  });
+}
+
+export default async function DynamicPage({ params }: PageProps) {
+  const { slug } = await params;
+
+  const [pageData, settings] = await Promise.all([
+    getPageBySlug(slug),
+    getSiteSettings()
+  ]);
+
+  if (!pageData) {
+    notFound();
+  }
+
+  const currentPath = `/${slug}`;
+
+  return (
+    <>
+      <StructureSchema data={pageData} settings={settings} currentPath={currentPath} />
+      {/* --- ADDED BREADCRUMB SCHEMA --- */}
+      <BreadcrumbSchema data={pageData} settings={settings} currentPath={currentPath} />
+      
+      <ClientDynamicPage data={pageData} settings={settings} />
+    </>
+  );
+}

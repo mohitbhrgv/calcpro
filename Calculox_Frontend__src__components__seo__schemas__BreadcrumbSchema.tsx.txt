@@ -1,0 +1,56 @@
+import React from 'react';
+import { generateBreadcrumbs } from '@/lib/generateBreadcrumbs';
+
+interface SchemaProps {
+  data?: any;
+  settings?: any;
+  currentPath: string; // Critical: Passed from Server Page
+}
+
+const BreadcrumbSchema = ({ data = {}, settings = {}, currentPath }: SchemaProps) => {
+
+  // 1. Generate the structure
+  // We pass currentPath explicitly because usePathname() isn't available in Server Components
+  const crumbs = generateBreadcrumbs(settings, currentPath, data);
+
+  // 2. Validation
+  if (!crumbs || crumbs.length === 0) {
+    return null;
+  }
+
+  // 3. Construct JSON-LD
+  const schemaData = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": crumbs.map((crumb, index) => {
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://calcpro.com';
+      
+      let itemUrl;
+      if (crumb.url) {
+        const cleanPath = crumb.url.startsWith('/') ? crumb.url : `/${crumb.url}`;
+        itemUrl = `${baseUrl}${cleanPath}`;
+      } else {
+        // Fallback for current page if url is null
+        const cleanCurrent = currentPath.startsWith('/') ? currentPath : `/${currentPath}`;
+        itemUrl = `${baseUrl}${cleanCurrent}`;
+      }
+
+      return {
+        "@type": "ListItem",
+        "position": index + 1,
+        "name": crumb.label,
+        "item": itemUrl
+      };
+    })
+  };
+
+  // 4. Inject script
+  return (
+    <script
+      type="application/ld+json"
+      dangerouslySetInnerHTML={{ __html: JSON.stringify(schemaData) }}
+    />
+  );
+};
+
+export default BreadcrumbSchema;

@@ -1,0 +1,91 @@
+import React, { useState, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import { useAuth } from "../../context/AuthContext";
+
+const { FiClock, FiLogOut } = FiIcons;
+
+/**
+ * A modal that warns the user of an impending automatic logout due to inactivity.
+ * It displays a countdown and provides options to stay logged in or log out immediately.
+ *
+ * @param {object} props - The component props.
+ * @param {boolean} props.isOpen - Controls the visibility of the modal.
+ * @param {Function} props.onStay - The function to call when the user chooses to stay logged in.
+ * @param {number} props.countdownStart - The initial time for the countdown, in seconds.
+ * @returns {JSX.Element} The rendered inactivity warning modal.
+ */
+const InactivityWarningModal = ({ isOpen, onStay, countdownStart = 30 }) => {
+  // --- MODIFIED (1 of 2): Get the new initiateLogout function from context ---
+  const { initiateLogout } = useAuth();
+  const [countdown, setCountdown] = useState(countdownStart);
+
+  useEffect(() => {
+    if (isOpen) {
+      setCountdown(countdownStart);
+      const interval = setInterval(() => {
+        setCountdown((prev) => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [isOpen, countdownStart]);
+
+  // --- MODIFIED (2 of 2): The logout handler now calls the initiator function ---
+  // This ensures the modal's exit animation runs *before* the user is logged out.
+  const handleLogout = () => {
+    initiateLogout("You have been logged out.");
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <Modal
+          isOpen={isOpen}
+          onClose={() => {
+            /* This is now irrelevant as the close button is hidden */
+          }}
+          title="Session Timeout Warning"
+          size="sm"
+          type="warning"
+          zIndexClass="z-[999]"
+          showCloseButton={false}
+        >
+          <div className="text-center">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/30 mb-4">
+              <SafeIcon
+                icon={FiClock}
+                className="h-8 w-8 text-amber-500 dark:text-amber-400"
+              />
+            </div>
+            <p className="text-neutral-600 dark:text-neutral-300 mb-2">
+              For your security, your session is about to expire due to
+              inactivity.
+            </p>
+            <p className="text-2xl font-bold text-neutral-800 dark:text-white mb-6">
+              Logging out in {countdown} second{countdown !== 1 ? "s" : ""}...
+            </p>
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              <button
+                onClick={handleLogout}
+                className="w-full sm:w-auto flex-1 inline-flex justify-center items-center gap-2 rounded-md border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-200 shadow-sm hover:bg-neutral-50 dark:hover:bg-neutral-700"
+              >
+                <SafeIcon icon={FiLogOut} className="w-4 h-4" />
+                Logout Now
+              </button>
+              <button
+                onClick={onStay}
+                className="w-full sm:w-auto flex-1 inline-flex justify-center rounded-md border border-transparent bg-calcpro-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-calcpro-primary/90"
+              >
+                Stay Logged In
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </AnimatePresence>
+  );
+};
+
+export default InactivityWarningModal;

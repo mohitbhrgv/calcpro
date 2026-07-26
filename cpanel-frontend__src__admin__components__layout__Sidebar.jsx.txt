@@ -1,0 +1,412 @@
+import React from "react";
+import { NavLink, useLocation } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import * as HiIcons from "react-icons/hi";
+import * as IoIcons from "react-icons/io5";
+import * as BiIcons from "react-icons/bi";
+import * as AiIcons from "react-icons/ai";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+const Sidebar = ({ isOpen }) => {
+  const location = useLocation();
+
+  // --- Dynamic Identity Logic ---
+  const { getCache } = useAdminCache();
+  const settings = getCache("settings_general") || {};
+  const siteName = settings.siteName || "CalcPro";
+  // The firstLetter variable is preserved for potential fallback logic, though replaced by the logo icon.
+  const firstLetter = siteName.charAt(0).toUpperCase();
+  // -----------------------------------
+
+  // Initialize expanded state based on current URL
+  const [expandedMenus, setExpandedMenus] = React.useState(() => {
+    const currentPath = location.pathname;
+    if (currentPath.startsWith("/content")) return { content: true };
+    if (currentPath.startsWith("/security")) return { security: true };
+    if (currentPath.startsWith("/seo")) return { seo: true };
+    if (currentPath.startsWith("/settings")) return { settings: true };
+    if (currentPath.startsWith("/backups")) return { backups: true };
+    return {};
+  });
+
+  const menuItems = [
+    {
+      path: "/dashboard",
+      icon: HiIcons.HiOutlineChartSquareBar,
+      label: "Dashboard",
+      color: "text-blue-500 dark:text-blue-400",
+    },
+    {
+      label: "Content",
+      icon: BiIcons.BiEditAlt,
+      key: "content",
+      color: "text-emerald-500 dark:text-emerald-400",
+      children: [
+        { isHeader: true, label: "Website Pages" },
+        {
+          path: "/content/pages",
+          icon: IoIcons.IoDocumentOutline,
+          label: "Pages",
+          color: "text-emerald-500 dark:text-emerald-400",
+        },
+        { isHeader: true, label: "Blog Content" },
+        {
+          path: "/content/posts",
+          icon: BiIcons.BiNews,
+          label: "Posts",
+          color: "text-emerald-500 dark:text-emerald-400",
+        },
+        {
+          path: "/content/authors",
+          icon: FiIcons.FiUsers,
+          label: "Authors",
+          color: "text-emerald-500 dark:text-emerald-400",
+        },
+        {
+          path: "/content/categories",
+          icon: IoIcons.IoFolderOutline,
+          label: "Categories",
+          color: "text-emerald-500 dark:text-emerald-400",
+        },
+        {
+          path: "/content/tags?context=post",
+          icon: HiIcons.HiOutlineTag,
+          label: "Tags",
+          color: "text-emerald-500 dark:text-emerald-400",
+        },
+        { isHeader: true, label: "Calculator Content" },
+        {
+          path: "/content/calculators",
+          icon: BiIcons.BiCalculator,
+          label: "Calculators",
+          color: "text-emerald-500 dark:text-emerald-400",
+          end: true,
+        },
+        {
+          path: "/content/calculators/categories",
+          icon: IoIcons.IoPricetagsOutline,
+          label: "Categories",
+          color: "text-emerald-500 dark:text-emerald-400",
+        },
+        {
+          path: "/content/tags?context=calculator",
+          icon: HiIcons.HiOutlineTag,
+          label: "Tags",
+          color: "text-emerald-500 dark:text-emerald-400",
+        },
+      ],
+    },
+    {
+      path: "/media",
+      icon: IoIcons.IoImagesOutline,
+      label: "Media",
+      color: "text-sky-500 dark:text-sky-400",
+    },
+    {
+      label: "SEO & Analytics",
+      icon: AiIcons.AiOutlineLineChart,
+      key: "seo",
+      color: "text-indigo-500 dark:text-indigo-400",
+      children: [
+        {
+          path: "/seo/general",
+          icon: FiIcons.FiSettings,
+          label: "General Settings",
+          color: "text-indigo-500 dark:text-indigo-400",
+        },
+        {
+          path: "/seo/titles-meta",
+          icon: FiIcons.FiGlobe,
+          label: "Titles & Meta",
+          color: "text-indigo-500 dark:text-indigo-400",
+        },
+        {
+          path: "/seo/crawling",
+          icon: FiIcons.FiMap,
+          label: "Sitemap & Crawling",
+          color: "text-indigo-500 dark:text-indigo-400",
+        },
+        {
+          path: "/seo/redirects",
+          icon: FiIcons.FiCornerUpRight,
+          label: "Redirection Manager",
+          color: "text-indigo-500 dark:text-indigo-400",
+        },
+        {
+          path: "/seo/404-monitor",
+          icon: FiIcons.FiActivity,
+          label: "404 Monitor",
+          color: "text-indigo-500 dark:text-indigo-400",
+        },
+      ],
+    },
+    {
+      label: "Security",
+      icon: IoIcons.IoShieldOutline,
+      key: "security",
+      color: "text-red-500 dark:text-red-400",
+      children: [
+        {
+          path: "/security/brute-force",
+          icon: IoIcons.IoLockOpenOutline,
+          label: "Brute Force",
+          color: "text-red-500 dark:text-red-400",
+        },
+        {
+          path: "/security/2fa",
+          icon: IoIcons.IoKeyOutline,
+          label: "Two-Factor Auth",
+          color: "text-red-500 dark:text-red-400",
+        },
+        {
+          path: "/security/inactivity",
+          icon: IoIcons.IoTimerOutline,
+          label: "Auto-Logout",
+          color: "text-red-500 dark:text-red-400",
+        },
+      ],
+    },
+    {
+      label: "Backups",
+      icon: FiIcons.FiDatabase,
+      key: "backups",
+      color: "text-purple-500 dark:text-purple-400",
+      children: [
+        {
+          path: "/backups/manual",
+          icon: FiIcons.FiHardDrive,
+          label: "Manual Vault",
+          color: "text-purple-500 dark:text-purple-400",
+        },
+        {
+          path: "/backups/automatic",
+          icon: FiIcons.FiCloud,
+          label: "Cloud Vault",
+          color: "text-purple-500 dark:text-purple-400",
+        }
+      ]
+    },
+    {
+      label: "Settings",
+      icon: IoIcons.IoSettingsOutline,
+      key: "settings",
+      color: "text-slate-500 dark:text-slate-400",
+      children: [
+        {
+          path: "/settings/general",
+          icon: FiIcons.FiLayout,
+          label: "Site Configuration",
+          color: "text-slate-500 dark:text-slate-400",
+        },
+        {
+          path: "/settings/integrations",
+          icon: FiIcons.FiCpu,
+          label: "Integrations",
+          color: "text-slate-500 dark:text-slate-400",
+        },
+        {
+          path: "/settings/environment",
+          icon: FiIcons.FiServer,
+          label: "System Env",
+          color: "text-slate-500 dark:text-slate-400",
+        },
+        {
+          path: "/settings/data-retention",
+          icon: FiIcons.FiDatabase,
+          label: "Data Retention",
+          color: "text-slate-500 dark:text-slate-400",
+        },
+        {
+          path: "/settings/system-logs",
+          icon: FiIcons.FiTerminal,
+          label: "System Logs",
+          color: "text-slate-500 dark:text-slate-400",
+        },
+      ],
+    },
+  ];
+
+  const toggleSubmenu = (key) => {
+    setExpandedMenus((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const getGradient = (key) => {
+    const gradients = {
+      content: "bg-gradient-to-r from-emerald-600 to-emerald-500",
+      security: "bg-gradient-to-r from-red-600 to-red-500",
+      seo: "bg-gradient-to-r from-indigo-600 to-indigo-500",
+      settings: "bg-gradient-to-r from-slate-700 to-slate-600",
+      backups: "bg-gradient-to-r from-purple-600 to-purple-500", 
+      "/dashboard": "bg-gradient-to-r from-blue-600 to-blue-500",
+      "/media": "bg-gradient-to-r from-sky-600 to-sky-500",
+    };
+    return gradients[key] || "bg-gray-100 dark:bg-slate-700";
+  };
+
+  const isParentActive = (key) => location.pathname.startsWith(`/${key}`);
+
+  const isLinkActive = (path) => {
+    const [linkPath, linkQuery] = path.split("?");
+    if (linkQuery) {
+      return (
+        location.pathname === linkPath && location.search === `?${linkQuery}`
+      );
+    }
+    return location.pathname === path;
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.aside
+          initial={{ x: -256 }}
+          animate={{ x: 0 }}
+          exit={{ x: -256 }}
+          transition={{ duration: 0.3, ease: "easeInOut" }}
+          className="w-64 bg-white/80 dark:bg-[#0B1221]/80 backdrop-blur-2xl shadow-lg border-r border-gray-200/50 dark:border-slate-800/60 flex flex-col shrink-0 h-screen sticky top-0 z-50 transition-colors duration-700"
+        >
+          {/* Header - Fixed at Top */}
+          <div className="p-6 border-b border-gray-200/50 dark:border-slate-800/60 shrink-0">
+            <div className="flex items-center space-x-3">
+              
+              {/* CRISP FHD ENTERPRISE LOGO: Theme-aware adaptive UI */}
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 relative group transition-all duration-300 bg-gradient-to-br from-white to-slate-100 dark:from-slate-800 dark:to-[#020617] border border-slate-200 dark:border-none dark:ring-1 dark:ring-slate-700/60 shadow-sm dark:shadow-[0_4px_10px_rgba(0,0,0,0.3)]">
+                <div className="absolute inset-0 rounded-xl transition-colors duration-300 bg-blue-50/50 group-hover:bg-blue-100/50 dark:bg-blue-500/10 dark:group-hover:bg-blue-500/20"></div>
+                <SafeIcon icon={IoIcons.IoGridOutline} className="w-5 h-5 relative z-10 transition-colors duration-300 text-blue-600 dark:text-blue-400 drop-shadow-sm dark:drop-shadow-[0_0_5px_rgba(96,165,250,0.4)]" />
+              </div>
+              
+              <div className="min-w-0 overflow-hidden">
+                <h1 className="text-xl font-montserrat font-bold text-slate-900 dark:text-white truncate">
+                  {siteName}
+                </h1>
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-widest mt-0.5">
+                  Admin Panel
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Navigation - Scrollable Area */}
+          <nav className="flex-1 overflow-y-auto py-4 custom-scrollbar">
+            <ul className="space-y-1 px-3">
+              {menuItems.map((item) => (
+                <li key={item.key || item.path}>
+                  {item.children ? (
+                    <div>
+                      <button
+                        onClick={() => toggleSubmenu(item.key)}
+                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 ${
+                          isParentActive(item.key)
+                            ? `${getGradient(item.key)} text-white shadow-md border border-transparent`
+                            : "text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/50 border border-transparent"
+                        }`}
+                      >
+                        <div className="flex items-center space-x-3">
+                          <SafeIcon
+                            icon={item.icon}
+                            className={`w-5 h-5 transition-colors ${isParentActive(item.key) ? "text-white drop-shadow-sm" : item.color}`}
+                          />
+                          <span>{item.label}</span>
+                        </div>
+                        <SafeIcon
+                          icon={FiIcons.FiChevronDown}
+                          className={`w-4 h-4 transition-transform ${expandedMenus[item.key] ? "rotate-180" : ""} ${isParentActive(item.key) ? "text-white/80" : "text-slate-500"}`}
+                        />
+                      </button>
+                      <AnimatePresence>
+                        {expandedMenus[item.key] && (
+                          <motion.ul
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="ml-4 mt-2 space-y-1 overflow-hidden border-l border-gray-200/80 dark:border-slate-700/80"
+                          >
+                            {item.children.map((child, index) => (
+                              <li
+                                key={child.path || `header-${index}`}
+                                className="pl-4"
+                              >
+                                {child.isHeader ? (
+                                  <h4 className="px-3 pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+                                    {child.label}
+                                  </h4>
+                                ) : (
+                                  <NavLink
+                                    to={child.path}
+                                    end={child.end || false}
+                                  >
+                                    {({ isActive }) => {
+                                      const active = isLinkActive(child.path);
+                                      return (
+                                        <div
+                                          className={`flex items-center space-x-3 px-3 py-2 rounded-lg text-sm font-medium transition-all ${active ? "bg-slate-200/50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 shadow-[inset_0_1px_2px_rgba(0,0,0,0.1)] dark:shadow-[inset_0_1px_2px_rgba(0,0,0,0.3)]" : "text-gray-600 dark:text-slate-400 hover:bg-gray-100/50 dark:hover:bg-slate-800/40"}`}
+                                        >
+                                          <SafeIcon
+                                            icon={child.icon}
+                                            className={`w-4 h-4 transition-colors ${active ? "text-blue-600 dark:text-blue-400" : child.color}`}
+                                          />
+                                          <span>{child.label}</span>
+                                        </div>
+                                      );
+                                    }}
+                                  </NavLink>
+                                )}
+                              </li>
+                            ))}
+                          </motion.ul>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  ) : (
+                    <NavLink to={item.path}>
+                      {({ isActive }) => (
+                        <div
+                          className={`flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 ${isActive ? `${getGradient(item.path)} text-white shadow-md border border-transparent` : "text-gray-700 dark:text-slate-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/50 border border-transparent"}`}
+                        >
+                          <SafeIcon
+                            icon={item.icon}
+                            className={`w-5 h-5 transition-colors ${isActive ? "text-white drop-shadow-sm" : item.color}`}
+                          />
+                          <span>{item.label}</span>
+                        </div>
+                      )}
+                    </NavLink>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </nav>
+
+          {/* Footer / System Identity - Fixed at Bottom */}
+          <div className="p-4 border-t border-gray-200/50 dark:border-slate-800/60 shrink-0 bg-gray-50/50 dark:bg-slate-900/30">
+             <div className="flex items-center justify-between">
+                 <div className="flex flex-col">
+                      <span className="text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-widest">
+                          Release
+                      </span>
+                     <div className="flex items-center gap-2 mt-0.5">
+                          <span className="relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                          </span>
+                          <span className="text-xs font-bold text-slate-700 dark:text-slate-200 font-montserrat tracking-tight">
+                              Prism
+                          </span>
+                      </div>
+                 </div>
+                 {/* Decorative Icon */}
+                   <div className="px-2 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/30">
+                     <SafeIcon icon={FiIcons.FiZap} className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                 </div>
+             </div>
+          </div>
+        </motion.aside>
+      )}
+    </AnimatePresence>
+  );
+};
+
+export default Sidebar;

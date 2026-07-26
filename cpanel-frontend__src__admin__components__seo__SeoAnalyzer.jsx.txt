@@ -1,0 +1,123 @@
+import React, { useState, useEffect } from "react";
+import { analyzeSeo } from "@/admin/utils/seoAnalyzer";
+import SeoScore from "./SeoScore";
+import SeoChecklist from "./SeoChecklist";
+import SerpPreview from "./SerpPreview";
+import SafeIcon from "@/common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+import PreviewSnippetEditor from "./PreviewSnippetEditor";
+
+/**
+ * The main component for SEO analysis, displayed in the PostEditor sidebar.
+ * It provides a live SERP preview, an overall SEO score, a keyword input,
+ * and a detailed checklist of SEO optimizations.
+ *
+ * @param {object} props - The component props.
+ * @param {object} props.formData - The current state of the post form.
+ * @param {Function} props.onFormDataChange - Handler to update the form data.
+ * @returns {JSX.Element} The rendered SEO analyzer component.
+ */
+const SeoAnalyzer = ({ formData, onFormDataChange }) => {
+  const [analysis, setAnalysis] = useState({ score: 0, checklist: [] });
+  const [isSnippetModalOpen, setIsSnippetModalOpen] = useState(false);
+
+  // Re-run the analysis when relevant post data changes
+  useEffect(() => {
+    const newAnalysis = analyzeSeo(formData);
+    setAnalysis(newAnalysis);
+  }, [
+    formData.title,
+    formData.content,
+    formData.metaDescription,
+    formData.focusKeywords,
+  ]);
+
+  const handleOpenSnippetEditor = () => {
+    setIsSnippetModalOpen(true);
+  };
+
+  const keywords = (formData.focusKeywords || "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean);
+
+  return (
+    <>
+      {/* --- THIS IS WHERE THE basePath IS PASSED TO THE MODAL --- */}
+      <PreviewSnippetEditor
+        isOpen={isSnippetModalOpen}
+        onClose={() => setIsSnippetModalOpen(false)}
+        formData={formData}
+        onFormDataChange={onFormDataChange}
+        basePath="blog/"
+      />
+
+      <div className="space-y-4">
+        {/* --- THIS IS THE FIX --- */}
+        {/* We must also pass the correct basePath to the SERP Preview here. */}
+        <div>
+          <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-2">
+            Preview
+          </h4>
+          <SerpPreview
+            title={formData.metaTitle || formData.title}
+            slug={formData.slug}
+            description={formData.metaDescription || formData.excerpt}
+            basePath="blog/"
+          />
+          {/* --- END OF FIX --- */}
+          <button
+            onClick={handleOpenSnippetEditor}
+            className="mt-2 w-full text-center py-2 px-4 bg-calcpro-primary/10 text-calcpro-primary dark:bg-calcpro-primary/20 dark:text-calcpro-accent rounded-lg text-sm font-medium hover:bg-calcpro-primary/20 dark:hover:bg-calcpro-primary/30 transition-colors"
+          >
+            Edit Snippet
+          </button>
+        </div>
+
+        <div className="border-t border-gray-200 dark:border-gray-700"></div>
+
+        {/* 2. Focus Keyword Section */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            Focus Keyword
+          </label>
+          <input
+            type="text"
+            name="focusKeywords"
+            value={formData.focusKeywords || ""}
+            onChange={onFormDataChange}
+            placeholder="Enter keyword(s), comma separated"
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-calcpro-primary focus:border-transparent dark:bg-gray-700 dark:text-white"
+          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            {keywords.map((keyword, index) => (
+              <div
+                key={index}
+                className={`flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full ${index === 0 ? "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300" : "bg-gray-100 text-gray-700 dark:bg-gray-600 dark:text-gray-200"}`}
+              >
+                {index === 0 && (
+                  <SafeIcon icon={FiIcons.FiStar} className="w-3 h-3" />
+                )}
+                <span>{keyword}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="border-t border-gray-200 dark:border-gray-700"></div>
+
+        {/* 3. SEO Score & Checklist */}
+        <div className="flex items-center gap-4">
+          <SeoScore score={analysis.score} />
+          <h4 className="text-md font-semibold text-gray-800 dark:text-gray-200 flex-1">
+            SEO Analysis
+          </h4>
+        </div>
+        <SeoChecklist checklist={analysis.checklist} />
+      </div>
+    </>
+  );
+};
+
+export default SeoAnalyzer;

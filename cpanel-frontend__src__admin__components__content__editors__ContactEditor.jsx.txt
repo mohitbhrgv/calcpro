@@ -1,0 +1,129 @@
+import React from "react";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiMail } = FiIcons;
+
+const ContactEditor = ({ content, onContentChange }) => {
+  const handleTextChange = (e) => {
+    const { name, value } = e.target;
+    onContentChange({ ...content, [name]: value });
+  };
+
+  const inputClass = "w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 transition-colors";
+  const labelClass = "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1";
+  const sectionClass = "p-5 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-700/30 space-y-4";
+
+  return (
+    <div className="space-y-6">
+      {/* Header Info */}
+      <div className={sectionClass}>
+        <h3 className="font-bold text-lg text-gray-900 dark:text-white mb-2">Page Header</h3>
+        <div>
+            <label className={labelClass}>Page Heading</label>
+            <input
+                type="text"
+                name="pageHeading"
+                value={content.pageHeading || ""}
+                onChange={handleTextChange}
+                className={inputClass}
+                placeholder="Get in Touch"
+            />
+        </div>
+        <div>
+            <label className={labelClass}>Intro Paragraph 1</label>
+            <textarea
+                name="contactIntro1"
+                value={content.contactIntro1 || ""}
+                onChange={handleTextChange}
+                rows="2"
+                className={inputClass}
+                placeholder="For support, email us at [email]. We reply within 24 hours."
+            />
+        </div>
+        <div>
+            <label className={labelClass}>Intro Paragraph 2 (Technical)</label>
+            <textarea
+                name="contactIntro2"
+                value={content.contactIntro2 || ""}
+                onChange={handleTextChange}
+                rows="2"
+                className={inputClass}
+                placeholder="If you have a technical question, please include as many details as possible so that we can provide you with the best support."
+            />
+        </div>
+      </div>
+
+      {/* Form Settings */}
+      <div className={sectionClass}>
+        <h3 className="font-bold text-lg text-gray-900 dark:text-white mb-2 flex items-center gap-2">
+            <SafeIcon icon={FiMail} className="w-5 h-5 text-indigo-500" />
+            Form Settings
+        </h3>
+        <div>
+            <label className={labelClass}>Form Heading</label>
+            <input
+                type="text"
+                name="formHeading"
+                value={content.formHeading || ""}
+                onChange={handleTextChange}
+                className={inputClass}
+                placeholder="Send Us a Message"
+            />
+        </div>
+        <div>
+            <label className={labelClass}>Form Subheading</label>
+            <input
+                type="text"
+                name="formSubheading"
+                value={content.formSubheading || ""}
+                onChange={handleTextChange}
+                className={inputClass}
+                placeholder="We'll get back to you as soon as possible"
+            />
+        </div>
+        <div>
+            <label className={labelClass}>Direct Email Address</label>
+            <input
+                type="text"
+                name="emailAddress"
+                value={content.emailAddress || ""}
+                onChange={handleTextChange}
+                className={inputClass}
+                placeholder="support@calculox.com"
+            />
+            <p className="text-xs text-gray-500 mt-1">This email replaces the [email] shortcode on the public page.</p>
+        </div>
+      </div>
+
+      {/* FAQ CTA */}
+      <div className={sectionClass}>
+        <h3 className="font-bold text-lg text-gray-900 dark:text-white mb-2">Help Section CTA</h3>
+        <div>
+            <label className={labelClass}>Heading</label>
+            <input
+                type="text"
+                name="faqCtaHeading"
+                value={content.faqCtaHeading || ""}
+                onChange={handleTextChange}
+                className={inputClass}
+                placeholder="Looking for Quick Answers?"
+            />
+        </div>
+        <div>
+            <label className={labelClass}>Subheading</label>
+            <textarea
+                name="faqCtaSubheading"
+                value={content.faqCtaSubheading || ""}
+                onChange={handleTextChange}
+                rows="2"
+                className={inputClass}
+                placeholder="Check our FAQ section for instant answers to common questions about using our calculators and features."
+            />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default ContactEditor;

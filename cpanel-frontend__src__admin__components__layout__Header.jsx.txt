@@ -1,0 +1,617 @@
+// cPanel_Frontend/src/admin/components/layout/Header.jsx
+
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+import { useTheme } from "../../context/ThemeContext";
+import { useAdminCache } from "../../context/AdminCacheContext";
+import { motion, AnimatePresence } from "framer-motion";
+import SafeIcon from "../../../common/SafeIcon";
+import { authenticatedFetch } from "../../utils/apiService";
+import * as FiIcons from "react-icons/fi";
+import * as IoIcons from "react-icons/io5";
+import * as HiIcons from "react-icons/hi";
+import toast from "react-hot-toast";
+import EditProfileModal from "../auth/EditProfileModal";
+import DailyWarningModal from "../common/DailyWarningModal";
+import PasswordReminderBanner from "../auth/PasswordReminderBanner";
+
+const Header = () => {
+  const { user, logout } = useAuth();
+  const { isDark, toggleTheme } = useTheme();
+  const { getCache } = useAdminCache();
+  const navigate = useNavigate();
+
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [showDailyWarning, setShowDailyWarning] = useState(false);
+
+  // --- Strict Evaluation Lock State ---
+  const [isInitialFetchComplete, setIsInitialFetchComplete] = useState(false);
+
+  // --- [NEW] PHASE 2: Walkie-Talkie Safety Net Flag ---
+  const isPollingPaused = useRef(false);
+
+  // --- Refs for Click Outside Logic ---
+  const notificationRef = useRef(null);
+  const notificationBtnRef = useRef(null);
+  const userMenuRef = useRef(null);
+  const userMenuBtnRef = useRef(null);
+
+  // --- Live Data States ---
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  
+  // --- AURA TELEMETRY STATES ---
+  const [telemetryState, setTelemetryState] = useState('stable');
+  const [telemetryCount, setTelemetryCount] = useState(0);
+  
+  const [viewAll, setViewAll] = useState(false); 
+  const lastNotifIdRef = useRef(0);
+
+  // --- Global Settings Fetch ---
+  const settings = getCache("settings_general") || {};
+  const warningFrequency = settings.system_crash_warning_frequency || 'daily';
+
+  // --- 1. Fetch Notifications & Telemetry Logic ---
+  const fetchLiveMetrics = useCallback(async (isPolling = false) => {
+    // Phase 2: If walkie-talkie signal says pause, immediately abort any flying requests
+    if (isPollingPaused.current) return;
+
+    try {
+      const notifPromise = authenticatedFetch("/api/admin/get_notifications.php");
+      const newLogsPromise = authenticatedFetch("/api/admin/get_system_logs.php?limit=1&status=new");
+      const invLogsPromise = authenticatedFetch("/api/admin/get_system_logs.php?limit=1&status=investigating");
+
+      const [notifResult, newResult, invResult] = await Promise.all([notifPromise, newLogsPromise, invLogsPromise]);
+
+      // --- Process Telemetry Radar ---
+      const countNew = newResult?.success ? newResult.data.pagination.total_records : 0;
+      const countInv = invResult?.success ? invResult.data.pagination.total_records : 0;
+
+      if (countNew > 0) {
+        setTelemetryState('critical');
+        setTelemetryCount(countNew);
+      } else if (countInv > 0) {
+        setTelemetryState('investigating');
+        setTelemetryCount(countInv);
+      } else {
+        setTelemetryState('stable');
+        setTelemetryCount(0);
+      }
+
+      // --- Process Notifications ---
+      if (notifResult.success) {
+        const newNotifs = notifResult.data.notifications;
+        if (isPolling && newNotifs.length > 0) {
+          const latestId = newNotifs[0].id;
+          if (latestId > lastNotifIdRef.current) {
+                const newItems = newNotifs.filter(n => n.id > lastNotifIdRef.current);
+                if(newItems.length > 0) {
+                     toast.custom((t) => (
+                        <div className={`${t.visible ? 'animate-enter' : 'animate-leave'} max-w-md w-full bg-blue-600 dark:bg-blue-700 shadow-xl rounded-lg pointer-events-auto flex ring-1 ring-black ring-opacity-5 border-l-4 border-white`}>
+                          <div className="flex-1 w-0 p-4">
+                              <div className="flex items-start">
+                              <div className="ml-3 flex-1">
+                                <p className="text-sm font-bold text-white">
+                                    {newItems[0].title}
+                                </p>
+                                <p className="mt-1 text-sm text-blue-100">
+                                    {newItems[0].message}
+                                </p>
+                              </div>
+                              </div>
+                          </div>
+                          <div className="flex border-l border-blue-500">
+                              <button
+                              onClick={() => { setShowNotifications(true); toast.dismiss(t.id); }}
+                              className="w-full border border-transparent rounded-none rounded-r-lg p-4 flex items-center justify-center text-sm font-medium text-white hover:bg-blue-700 focus:outline-none transition-colors"
+                            >
+                                View
+                            </button>
+                          </div>
+                        </div>
+                      ), { duration: 8000, position: "bottom-right" });
+                }
+            }
+        }
+        
+        if (newNotifs.length > 0) {
+            lastNotifIdRef.current = newNotifs[0].id;
+        }
+
+        setNotifications(newNotifs);
+        setUnreadCount(notifResult.data.unreadCount);
+      }
+    } catch (error) {
+      console.error("Live metrics polling failed", error);
+    } finally {
+      if (!isPolling) {
+         setIsInitialFetchComplete(true);
+      }
+    }
+  }, []);
+
+  // --- 2. Poll Every 30 Seconds & Real-Time Event Listener ---
+  useEffect(() => {
+    fetchLiveMetrics(false);
+    
+    const interval = setInterval(() => {
+        // Only fire if not locked by the walkie-talkie
+        if (!isPollingPaused.current) {
+            fetchLiveMetrics(true);
+        }
+    }, 30000);
+    
+    const handleTelemetryUpdate = () => {
+        if (!isPollingPaused.current) {
+            fetchLiveMetrics(false);
+        }
+    };
+
+    // --- [NEW] PHASE 2: The Walkie-Talkie Listener ---
+    const handlePasswordHalt = () => {
+        isPollingPaused.current = true;
+        clearInterval(interval); // Instantly stop the physical timer
+    };
+
+    window.addEventListener('telemetry-data-update', handleTelemetryUpdate);
+    window.addEventListener('password-expired-halt', handlePasswordHalt);
+    
+    return () => {
+        clearInterval(interval);
+        window.removeEventListener('telemetry-data-update', handleTelemetryUpdate);
+        window.removeEventListener('password-expired-halt', handlePasswordHalt);
+    };
+  }, [fetchLiveMetrics]);
+
+  // --- Global Intelligent Warning Popup Trigger (Strict Interval Evaluation) ---
+  useEffect(() => {
+    if (warningFrequency === 'off' || !isInitialFetchComplete) return;
+
+    const nowTime = Date.now();
+    const todayStr = new Date().toDateString();
+    
+    let shouldShow = false;
+
+    if (warningFrequency === 'every_login') {
+        const sessionSeen = sessionStorage.getItem('system_crash_warning_session');
+        if (!sessionSeen) {
+            if (telemetryState === 'critical' || telemetryState === 'investigating') {
+                shouldShow = true;
+            }
+            sessionStorage.setItem('system_crash_warning_session', 'true');
+        }
+    } else {
+        const lastSeenStr = localStorage.getItem('system_crash_warning_time');
+        let intervalElapsed = false;
+
+        if (!lastSeenStr) {
+            intervalElapsed = true;
+        } else {
+            const lastSeenTime = parseInt(lastSeenStr, 10);
+            if (warningFrequency === 'daily') {
+                const lastSeenDate = new Date(lastSeenTime).toDateString();
+                if (lastSeenDate !== todayStr) intervalElapsed = true;
+            } else if (warningFrequency === 'every_3_days') {
+                if (nowTime - lastSeenTime > 3 * 24 * 60 * 60 * 1000) intervalElapsed = true;
+            } else if (warningFrequency === 'weekly') {
+                if (nowTime - lastSeenTime > 7 * 24 * 60 * 60 * 1000) intervalElapsed = true;
+            }
+        }
+
+        if (intervalElapsed) {
+            if (telemetryState === 'critical' || telemetryState === 'investigating') {
+                shouldShow = true;
+            }
+            localStorage.setItem('system_crash_warning_time', nowTime.toString());
+        }
+    }
+
+    if (shouldShow) {
+        setShowDailyWarning(true);
+    }
+  }, [telemetryState, warningFrequency, isInitialFetchComplete]);
+
+  // --- 3. Click Outside Handler ---
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showNotifications && notificationRef.current && !notificationRef.current.contains(event.target) && !notificationBtnRef.current.contains(event.target)) {
+        setShowNotifications(false);
+      }
+      if (showUserMenu && userMenuRef.current && !userMenuRef.current.contains(event.target) && !userMenuBtnRef.current.contains(event.target)) {
+        setShowUserMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showNotifications, showUserMenu]);
+
+  // --- 4. Grouping Helper (Date-based) ---
+  const getGroupedNotifications = () => {
+    const visibleList = viewAll ? notifications : notifications.slice(0, 3);
+    const groups = {};
+    const today = new Date().toDateString();
+    const yesterday = new Date(Date.now() - 86400000).toDateString();
+
+    visibleList.forEach(note => {
+        const safeDateStr = note.created_at.replace(" ", "T") + "Z";
+        const noteDate = new Date(safeDateStr).toDateString();
+        let key; 
+        
+        if (noteDate === today) key = "Today";
+        else if (noteDate === yesterday) key = "Yesterday";
+        else key = new Date(safeDateStr).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(note);
+    });
+
+    return groups;
+  };
+
+  const groupedNotifications = getGroupedNotifications();
+
+  // --- 5. Action Handlers ---
+  const handleMarkAllAsRead = async () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    setUnreadCount(0);
+    try {
+      await authenticatedFetch("/api/admin/mark_notification_read.php", {
+        method: "POST",
+        body: JSON.stringify({ mark_all: true }),
+      });
+    } catch (error) { console.error(error); }
+  };
+
+  const handleDelete = async (e, id) => {
+      e.stopPropagation();
+      setNotifications(prev => prev.filter(n => n.id !== id)); 
+      try {
+        await authenticatedFetch("/api/admin/delete_notification.php", {
+            method: "POST",
+            body: JSON.stringify({ id }),
+        });
+      } catch (error) { console.error(error); }
+  };
+
+  const handleDeleteAll = async () => {
+      if(!window.confirm("Are you sure you want to clear all notifications?")) return;
+      setNotifications([]);
+      setUnreadCount(0);
+      try {
+        await authenticatedFetch("/api/admin/delete_notification.php", {
+            method: "POST",
+            body: JSON.stringify({ delete_all: true }),
+        });
+      } catch (error) { console.error(error); }
+  };
+
+  const handleNotificationClick = async (notification) => {
+    if (notification.link) {
+      // [ENTERPRISE SEC FIX] Safely sanitize legacy internal '/admin/' prefix for production routing
+      const secureLink = notification.link.replace(/^\/?admin\//, '/');
+      navigate(secureLink);
+      setShowNotifications(false);
+      
+      if (secureLink.includes('security') || secureLink.includes('brute-force')) {
+          setTimeout(() => window.dispatchEvent(new Event('security-data-update')), 50);
+      }
+      if (secureLink.includes('users')) {
+          setTimeout(() => window.dispatchEvent(new Event('user-data-update')), 50);
+      }
+    }
+    
+    if (!notification.read) {
+      setNotifications((prev) => prev.map((n) => (n.id === notification.id ? { ...n, read: true } : n)));
+      setUnreadCount((prev) => Math.max(0, prev - 1));
+      try {
+        await authenticatedFetch("/api/admin/mark_notification_read.php", {
+          method: "POST",
+          body: JSON.stringify({ id: notification.id }),
+        });
+      } catch (error) { console.error(error); }
+    }
+  };
+
+  const getNotificationIcon = (type) => {
+    switch (type) {
+      case "user": return HiIcons.HiOutlineUserAdd;
+      case "security": return IoIcons.IoShieldCheckmarkOutline;
+      case "milestone": return IoIcons.IoTrophyOutline;
+      case "system": default: return IoIcons.IoNotificationsOutline;
+    }
+  };
+
+  const getNotificationColor = (type, severity) => {
+    if (type === "security" && severity === "critical") return "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400";
+    if (severity === "warning") return "bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400";
+    switch (type) {
+      case "user": return "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400";
+      case "milestone": return "bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400";
+      case "security": return "bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400";
+      default: return "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400";
+    }
+  };
+
+  // --- DYNAMIC AURA CONFIGURATION ---
+  const auraConfig = {
+    critical: {
+        wrapperStyle: 'p-[2px] shadow-lg shadow-red-500/20 hover:scale-[1.02]',
+        spinClasses: 'absolute inset-[-1000%] animate-[spin_4s_linear_infinite] bg-[conic-gradient(from_90deg_at_50%_50%,#0000_0%,#0000_50%,#fb7185_75%,#e11d48_90%,#ffffff_100%)] dark:bg-[conic-gradient(from_90deg_at_50%_50%,#0000_0%,#0000_50%,#f43f5e_75%,#9f1239_90%,#ffffff_100%)]',
+        bgInner: 'bg-white dark:bg-[#0B1221]', 
+        text: 'text-red-700 dark:text-red-400 font-bold',
+        icon: 'text-red-600 dark:text-red-400',
+        dot: 'bg-red-500',
+        ping: 'bg-red-400 animate-ping',
+        label: `Crash Detected (${telemetryCount})`
+    },
+    investigating: {
+        wrapperStyle: 'p-[2px] shadow-md shadow-amber-500/10 hover:scale-[1.02]',
+        spinClasses: 'absolute inset-[-1000%] animate-[spin_6s_linear_infinite] bg-[conic-gradient(from_90deg_at_50%_50%,#0000_0%,#0000_50%,#fcd34d_75%,#d97706_90%,#ffffff_100%)] dark:bg-[conic-gradient(from_90deg_at_50%_50%,#0000_0%,#0000_50%,#f59e0b_75%,#92400e_90%,#ffffff_100%)]',
+        bgInner: 'bg-white dark:bg-[#0B1221]',
+        text: 'text-amber-700 dark:text-amber-400 font-bold',
+        icon: 'text-amber-600 dark:text-amber-400',
+        dot: 'bg-amber-500',
+        ping: 'bg-amber-400 animate-[pulse_2s_cubic-bezier(0.4,0,0.6,1)_infinite]',
+        label: `Investigating (${telemetryCount})`
+    },
+    stable: {
+        wrapperStyle: 'p-[1px] bg-gray-200/50 dark:bg-slate-700/50 hover:bg-emerald-200/50 dark:hover:bg-emerald-800/50 shadow-sm backdrop-blur-md',
+        spinClasses: 'hidden', 
+        bgInner: 'bg-white/80 dark:bg-[#0B1221]/80 hover:bg-emerald-50/80 dark:hover:bg-emerald-900/40 backdrop-blur-xl',
+        text: 'text-gray-600 dark:text-gray-300 font-semibold group-hover:text-emerald-600 dark:group-hover:text-emerald-400',
+        icon: 'text-gray-500 dark:text-gray-400 group-hover:text-emerald-500',
+        dot: 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]',
+        ping: 'hidden',
+        label: 'System Stable'
+    }
+  };
+
+  const currentAura = auraConfig[telemetryState];
+
+  return (
+    <>
+      <EditProfileModal isOpen={isProfileModalOpen} onClose={() => setIsProfileModalOpen(false)} />
+      
+      <DailyWarningModal 
+        isOpen={showDailyWarning} 
+        onClose={() => setShowDailyWarning(false)} 
+        count={telemetryCount} 
+        stateType={telemetryState} 
+        navigate={navigate} 
+      />
+
+      {/* [NEW] Contextual Password Expiry Warning Banner (Displays globally across all pages when triggered) */}
+      <PasswordReminderBanner onUpdateClick={() => setIsProfileModalOpen(true)} />
+
+      {/* ENTERPRISE UPGRADE: Glassmorphism Header */}
+      <header className="bg-white/80 dark:bg-[#0B1221]/80 backdrop-blur-xl shadow-sm border-b border-gray-200/50 dark:border-slate-800/60 sticky top-0 z-40 transition-colors duration-700">
+        <div className="flex items-center justify-end px-6 py-4">
+          <div className="flex items-center space-x-2 md:space-x-4">
+            
+            <div className={`hidden sm:flex relative inline-flex overflow-hidden rounded-lg mr-2 focus:outline-none transition-all duration-300 ${currentAura.wrapperStyle}`}>
+              {telemetryState !== 'stable' && (
+                <span className={currentAura.spinClasses} />
+              )}
+              <button
+                onClick={() => navigate("/settings/system-logs")}
+                className={`relative inline-flex h-full w-full items-center gap-2.5 px-3.5 py-1.5 rounded-[6px] transition-colors z-10 cursor-pointer ${currentAura.bgInner}`}
+                title="System Health Radar"
+              >
+                <div className="relative flex h-2 w-2 items-center justify-center">
+                  <span className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${currentAura.ping}`}></span>
+                  <span className={`relative inline-flex rounded-full h-2 w-2 transition-colors ${currentAura.dot}`}></span>
+                </div>
+                <SafeIcon icon={FiIcons.FiActivity} className={`w-4 h-4 transition-colors ${currentAura.icon}`} />
+                <span className={`text-[11px] tracking-wide uppercase transition-colors ${currentAura.text}`}>
+                  {currentAura.label}
+                </span>
+              </button>
+             </div>
+
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={toggleTheme}
+              className="p-2 rounded-lg hover:bg-gray-100/50 dark:hover:bg-slate-800/50 transition-colors"
+            >
+               <SafeIcon icon={isDark ? IoIcons.IoSunnyOutline : IoIcons.IoMoonOutline} className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+            </motion.button>
+
+            {/* Notifications */}
+            <div className="relative">
+              <motion.button
+                ref={notificationBtnRef}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => { setShowNotifications(!showNotifications); if (showUserMenu) setShowUserMenu(false); }}
+                className="p-2 rounded-lg hover:bg-gray-100/50 dark:hover:bg-slate-800/50 transition-colors relative"
+              >
+                <SafeIcon icon={IoIcons.IoNotificationsOutline} className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 flex h-5 w-5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                    {/* UI BUG FIX: Changed bg-red-50 to bg-red-500 and ensured text is visible white */}
+                    <span className="relative flex rounded-full h-5 w-5 bg-red-500 text-xs text-white items-center justify-center font-bold shadow-sm">
+                      {unreadCount > 9 ? "9+" : unreadCount}
+                    </span>
+                  </span>
+                )}
+              </motion.button>
+
+              <AnimatePresence>
+                {showNotifications && (
+                  <motion.div
+                    ref={notificationRef}
+                    initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.98 }}
+                    transition={{ duration: 0.2 }}
+                    className="absolute right-0 mt-2 w-80 sm:w-96 bg-white/95 dark:bg-[#0B1221]/95 backdrop-blur-2xl rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] dark:shadow-[0_20px_40px_rgb(0,0,0,0.5)] border border-gray-200/50 dark:border-slate-800/60 z-50 overflow-hidden flex flex-col"
+                    style={{ maxHeight: viewAll ? '80vh' : 'auto' }}
+                  >
+                    <div className="p-4 border-b border-gray-200/50 dark:border-slate-800/60 flex justify-between items-center bg-gray-50/50 dark:bg-slate-800/50 shrink-0">
+                      <div className="flex items-center gap-2">
+                          <h3 className="font-bold text-gray-900 dark:text-white">Notifications</h3>
+                          {notifications.length > 0 && (
+                              <span className="bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300 px-2 py-0.5 rounded-full text-xs font-bold">{notifications.length}</span>
+                          )}
+                      </div>
+                      <div className="flex gap-3">
+                          {unreadCount > 0 && (
+                            <button onClick={handleMarkAllAsRead} className="text-xs text-blue-600 dark:text-blue-400 hover:underline font-medium">Mark read</button>
+                          )}
+                          {notifications.length > 0 && (
+                            <button onClick={handleDeleteAll} className="text-xs text-red-600 dark:text-red-400 hover:underline font-medium">Clear all</button>
+                          )}
+                      </div>
+                    </div>
+                    
+                    <div className={`overflow-y-auto custom-scrollbar ${viewAll ? 'max-h-[24rem]' : 'max-h-auto'}`}>
+                      {notifications.length === 0 ? (
+                        <div className="p-8 text-center text-gray-500 dark:text-gray-400">
+                           <SafeIcon icon={IoIcons.IoNotificationsOffOutline} className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                           <p className="text-sm">No notifications yet.</p>
+                        </div>
+                      ) : (
+                        Object.entries(groupedNotifications).map(([dateLabel, groupNotes]) => (
+                            <div key={dateLabel}>
+                                <div className="px-4 py-1.5 bg-gray-50/80 dark:bg-slate-800/80 border-y border-gray-100/50 dark:border-slate-700/50 text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider sticky top-0 backdrop-blur-md z-10">
+                                    {dateLabel}
+                                </div>
+                                {groupNotes.map((notification) => (
+                                    <div
+                                        key={notification.id}
+                                        onClick={() => handleNotificationClick(notification)}
+                                        className={`group relative p-4 border-b border-gray-100/50 dark:border-slate-800/50 last:border-0 cursor-pointer transition-colors hover:bg-gray-50/50 dark:hover:bg-slate-800/30 ${!notification.read ? "bg-blue-50/30 dark:bg-blue-900/10" : ""}`}
+                                    >
+                                        <div className="flex items-start space-x-3">
+                                            <div className={`p-2 rounded-lg shrink-0 ${getNotificationColor(notification.type, notification.severity)}`}>
+                                                <SafeIcon icon={getNotificationIcon(notification.type)} className="w-5 h-5" />
+                                            </div>
+                                            <div className="flex-1 min-w-0 pr-6">
+                                                <div className="flex justify-between items-start">
+                                                    <p className={`text-sm ${!notification.read ? "font-bold" : "font-medium"} text-gray-900 dark:text-white truncate`}>
+                                                        {notification.title}
+                                                    </p>
+                                                    <span className="text-[10px] text-gray-400 dark:text-gray-500 whitespace-nowrap ml-2">
+                                                        {notification.time}
+                                                    </span>
+                                                </div>
+                                                <p className="text-xs text-gray-600 dark:text-gray-300 mt-1 line-clamp-2">
+                                                    {notification.message}
+                                                </p>
+                                            </div>
+                                            {!notification.read && <span className="absolute right-4 top-5 w-2 h-2 bg-blue-600 rounded-full shadow-[0_0_8px_rgba(37,99,235,0.6)]"></span>}
+                                            
+                                            <button 
+                                                onClick={(e) => handleDelete(e, notification.id)}
+                                                className="absolute right-2 bottom-2 p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md opacity-0 group-hover:opacity-100 transition-all"
+                                                title="Delete"
+                                            >
+                                                <SafeIcon icon={FiIcons.FiTrash2} className="w-3.5 h-3.5" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ))
+                      )}
+                    </div>
+
+                    {notifications.length > 3 && (
+                        <div className="p-0 border-t border-gray-200/50 dark:border-slate-800/60 bg-gray-50/50 dark:bg-slate-800/50 shrink-0">
+                            <button 
+                                className="w-full py-3 text-xs text-indigo-600 dark:text-indigo-400 font-bold flex items-center justify-center gap-1 hover:bg-gray-100/50 dark:hover:bg-slate-700/50 transition-colors"
+                                onClick={() => setViewAll(!viewAll)}
+                            >
+                                {viewAll ? "Show Less" : "View All Notifications"}
+                                <SafeIcon icon={viewAll ? FiIcons.FiChevronUp : FiIcons.FiChevronDown} className="w-3 h-3" />
+                            </button>
+                        </div>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Profile Dropdown */}
+            <div className="relative">
+              <motion.button
+                ref={userMenuBtnRef}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => {
+                  setShowUserMenu(!showUserMenu);
+                  if (showNotifications) setShowNotifications(false);
+                }}
+                className="flex items-center space-x-3 p-1.5 rounded-lg hover:bg-gray-100/50 dark:hover:bg-slate-800/50 transition-colors"
+              >
+                <div className="relative">
+                  <img
+                    src={user?.avatar || `https://ui-avatars.com/api/?name=${user?.name.replace(/\s/g,"+")}&background=3949ab&color=fff`}
+                    alt={user?.name}
+                    className="w-8 h-8 rounded-full border-2 border-white/50 dark:border-slate-700 shadow-sm"
+                  />
+                  <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-white dark:border-[#0B1221]"></span>
+                </div>
+                <span className="hidden md:inline-block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {user?.name}
+                </span>
+                <SafeIcon icon={FiIcons.FiChevronDown} className="w-4 h-4 text-gray-500 hidden md:inline-block" />
+              </motion.button>
+
+              <AnimatePresence>
+                {showUserMenu && (
+                  <motion.div
+                    ref={userMenuRef}
+                    initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.98 }}
+                    transition={{ duration: 0.2 }}
+                    className="absolute right-0 mt-2 w-56 bg-white/95 dark:bg-[#0B1221]/95 backdrop-blur-2xl rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] dark:shadow-[0_20px_40px_rgb(0,0,0,0.5)] border border-gray-200/50 dark:border-slate-800/60 z-50 overflow-hidden"
+                  >
+                    <div className="p-4 border-b border-gray-200/50 dark:border-slate-800/60 bg-gray-50/50 dark:bg-slate-800/30">
+                      <div className="flex items-center space-x-3">
+                        <img
+                          src={user?.avatar || `https://ui-avatars.com/api/?name=${user?.name.replace(/\s/g,"+")}&background=3949ab&color=fff`}
+                          alt={user?.name}
+                          className="w-10 h-10 rounded-full shadow-sm"
+                        />
+                        <div className="min-w-0">
+                          <h3 className="font-medium text-gray-900 dark:text-white truncate">{user?.name}</h3>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{user?.email}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="py-2">
+                      <button onClick={() => { setIsProfileModalOpen(true); setShowUserMenu(false); }} className="flex items-center space-x-3 w-full px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100/80 dark:hover:bg-slate-800/50 transition-colors">
+                        <SafeIcon icon={HiIcons.HiOutlinePencilAlt} className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+                        <span className="font-medium">Edit Profile</span>
+                      </button>
+                      <div className="border-t border-gray-200/50 dark:border-slate-800/60 my-1"></div>
+                      <button 
+                        onClick={() => {
+                          sessionStorage.removeItem('system_crash_warning_session');
+                          logout("You have logged out successfully.");
+                        }} 
+                        className="flex items-center space-x-3 w-full px-4 py-2.5 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                      >
+                        <SafeIcon icon={IoIcons.IoLogOutOutline} className="w-4 h-4" />
+                        <span className="font-medium">Logout</span>
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+        </div>
+      </header>
+    </>
+  );
+};
+
+export default Header;

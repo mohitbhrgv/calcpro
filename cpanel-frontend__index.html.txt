@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Calculox - Administrator Control Panel</title>
+    <meta name="robots" content="noindex, nofollow" />
+    
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        /* Ensure layout stability during initial load */
+        width: 100%;
+        height: 100%;
+      }
+      
+      /* Light Mode Initial Pre-Paint (Matches your Tailwind calcpro-light) */
+      html { background-color: #F8FAFC; color: #0F172A; }
+      
+      /* Dark Mode Initial Pre-Paint (Matches your Login Gateway midnight slate) */
+      html.dark { background-color: #020617; color: #ffffff; }
+
+      #root {
+        width: 100%;
+        min-height: 100vh;
+      }
+    </style>
+
+    <script>
+      (function() {
+        try {
+          // Check local storage immediately before DOM body loads
+          var isDark = localStorage.getItem('calcpro-theme') === 'true';
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch (e) {
+          // Failsafe: if strict privacy settings block localStorage, fail silently.
+          console.warn('Theme pre-initialization bypassed.');
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

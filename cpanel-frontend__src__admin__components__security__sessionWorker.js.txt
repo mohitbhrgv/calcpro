@@ -1,0 +1,95 @@
+// cPanel_Frontend/src/admin/components/security/sessionWorker.js
+
+let checkInterval = null;
+let refreshInterval = null;
+let lastActivity = Date.now();
+let timeoutMs = 0;
+let warningBufferMs = 0;
+let isExpiredState = false;
+let pauseTimestamp = null;
+let refreshTriggerMs = 0;
+
+function startIntervals() {
+    if (checkInterval) clearInterval(checkInterval);
+    if (refreshInterval) clearInterval(refreshInterval);
+
+    // 1. Absolute Inactivity Countdown Loop (1-second precision)
+    checkInterval = setInterval(() => {
+        const now = Date.now();
+        const timeInactive = now - lastActivity;
+        const timeRemaining = timeoutMs - timeInactive;
+
+        if (timeRemaining <= 0) {
+            // Hard Kill Threshold Reached
+            self.postMessage({ type: 'TERMINATE' });
+            clearInterval(checkInterval);
+            clearInterval(refreshInterval);
+        } else if (timeRemaining <= warningBufferMs) {
+            // Warning Phase: Stream the countdown to the UI (if not in forced password update)
+            if (!isExpiredState) {
+                self.postMessage({ type: 'SHOW_WARNING', remaining: Math.ceil(timeRemaining / 1000) });
+            } else {
+                // For expired passwords, stream remaining time without the warning UI flag
+                self.postMessage({ type: 'UPDATE_TIME_ONLY', remaining: Math.ceil(timeRemaining / 1000) });
+            }
+        } else {
+            self.postMessage({ type: 'HIDE_WARNING' });
+        }
+    }, 1000);
+
+    // 2. Background Silent Token Rotation Loop
+    refreshInterval = setInterval(() => {
+        const now = Date.now();
+        const timeInactive = now - lastActivity;
+        
+        // Only fire the silent background refresh if the session hasn't completely died
+        if (timeInactive < timeoutMs) {
+            self.postMessage({ type: 'SILENT_REFRESH' });
+        }
+    }, refreshTriggerMs);
+}
+
+self.onmessage = (e) => {
+    const { type, payload } = e.data;
+
+    if (type === 'INIT') {
+        timeoutMs = payload.timeoutMinutes * 60 * 1000;
+        warningBufferMs = payload.warningBufferMs;
+        lastActivity = payload.lastActivity || Date.now();
+        isExpiredState = payload.isExpired || false;
+        pauseTimestamp = null;
+
+        // Enterprise Math: Access Token Validity is 50% of T. Silent Renewal at 75% of Access Token lifespan.
+        const accessLifespanMs = timeoutMs / 2;
+        refreshTriggerMs = accessLifespanMs * 0.75;
+
+        startIntervals();
+    }
+
+    if (type === 'ACTIVITY') {
+        lastActivity = payload.lastActivity || Date.now();
+    }
+
+    if (type === 'PAUSE') {
+        if (pauseTimestamp === null) {
+            pauseTimestamp = Date.now();
+            if (checkInterval) clearInterval(checkInterval);
+            if (refreshInterval) clearInterval(refreshInterval);
+        }
+    }
+
+    if (type === 'RESUME') {
+        if (pauseTimestamp !== null) {
+            const pausedDuration = Date.now() - pauseTimestamp;
+            lastActivity += pausedDuration;
+            pauseTimestamp = null;
+            startIntervals();
+        }
+    }
+
+    if (type === 'STOP') {
+        if (checkInterval) clearInterval(checkInterval);
+        if (refreshInterval) clearInterval(refreshInterval);
+        pauseTimestamp = null;
+    }
+};

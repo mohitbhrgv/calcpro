@@ -1,0 +1,582 @@
+import React from "react";
+// Go up 3 levels to reach src/common (the root common folder)
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+// FIX: Go up 1 level to 'components', then into 'common'
+import PublishCard from "../common/PublishCard";
+import ChipInput from "../common/ChipInput";
+
+// FIX: Go up 1 level to 'components', then into 'seo'
+import SerpPreview from "../seo/SerpPreview";
+
+const {
+  FiGlobe,
+  FiChevronUp,
+  FiChevronDown,
+  FiEdit2,
+  FiLayers,
+  FiLock,
+  FiUnlock,
+  FiCornerUpRight,
+  FiImage,
+  FiStar,
+  FiGrid // Icon for Calc Categories
+} = FiIcons;
+
+const CalculatorSidebar = ({
+  // Data
+  formData,
+  initialData,
+  categoryTree, // Specific to Calculators (Now a flat array)
+  allTags,
+  globalSettings,
+  featuredImage,
+  
+  // UI State
+  expandedSections,
+  toggleSection,
+  isRobotsDefault,
+  
+  // Handlers
+  handleChange, 
+  handleSlugChange,
+  handleStatusChange,
+  handleCategoryChange, // Specific to Calculators
+  handleTagsChange,
+  handleKeywordsChange,
+  getKeywordsArray,
+  
+  // SEO Handlers
+  toggleRobotsDefault,
+  setIsSnippetModalOpen,
+  
+  // Media Handlers
+  setIsFeaturedMediaLibraryOpen,
+  handleRemoveFeaturedImage,
+  
+  // Advanced SEO Setters
+  onMaxSnippetChange,
+  onMaxVideoChange,
+  onMaxImageChange
+}) => {
+
+  return (
+    <div className="space-y-6">
+      
+      {/* 1. Publish Card */}
+      <PublishCard
+        status={formData.status}
+        slug={formData.slug}
+        onSlugChange={handleSlugChange}
+        onStatusChange={handleStatusChange}
+        onMinorEditChange={() => {}} 
+        createdAt={initialData?.created_at}
+        updatedAt={initialData?.updated_at}
+      />
+
+      {/* 2. Categories (Specific to Calculators) */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+        <button
+          onClick={() => toggleSection("categories")}
+          className="w-full flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700 rounded-t-xl hover:bg-gray-100 dark:hover:bg-gray-600/50 transition-colors focus:outline-none"
+        >
+          <div className="flex items-center gap-2">
+             <SafeIcon icon={FiGrid} className="w-4 h-4 text-purple-500" />
+            <h3 className="font-semibold text-sm uppercase tracking-wide text-gray-700 dark:text-gray-300">
+                Categories
+            </h3>
+          </div>
+          <SafeIcon
+            icon={expandedSections.categories ? FiChevronUp : FiChevronDown}
+            className="w-4 h-4 text-gray-500"
+          />
+        </button>
+        {expandedSections.categories && (
+          <div className="p-4">
+            <div className="max-h-48 overflow-y-auto space-y-2 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 mb-3 pr-1">
+              {categoryTree.map((c) => {
+                const isChecked = formData.categories.includes(c.id);
+                const isPrimary = formData.primary_category_id === c.id;
+
+                return (
+                  <div
+                    key={c.id}
+                    className="flex items-center justify-between p-1.5 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-colors"
+                  >
+                    <label className="flex items-center space-x-3 cursor-pointer flex-1">
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => handleCategoryChange(c.id)}
+                        className="rounded text-blue-600 focus:ring-blue-500 border-gray-300 w-4 h-4 bg-white dark:bg-gray-700 cursor-pointer"
+                      />
+                      <span className="text-sm font-medium text-gray-800 dark:text-gray-200 select-none">
+                        {c.name}
+                      </span>
+                    </label>
+ 
+                    {/* Primary Category Selector */}
+                    {isChecked && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          // Pass explicitly to the parent's generic handleChange
+                          handleChange({ target: { name: 'primary_category_id', value: c.id } });
+                        }}
+                        title={isPrimary ? "Primary Category" : "Set as Primary Category"}
+                        className={`p-1.5 rounded-md transition-all focus:outline-none ${
+                          isPrimary 
+                            ? "text-amber-500 bg-amber-50 dark:bg-amber-500/10" 
+                            : "text-gray-400 hover:text-amber-500 hover:bg-gray-100 dark:hover:bg-gray-600"
+                        }`}
+                      >
+                        <SafeIcon icon={FiStar} className={`w-3.5 h-3.5 ${isPrimary ? "fill-current" : ""}`} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {categoryTree.length === 0 && (
+                <p className="text-xs text-gray-400 text-center italic">No categories found.</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 3. SEO & Schema Section */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+        <button
+          onClick={() => toggleSection("seo")}
+          className="w-full flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700 rounded-t-xl hover:bg-gray-100 dark:hover:bg-gray-600/50 transition-colors focus:outline-none"
+        >
+          <div className="flex items-center gap-2">
+            <SafeIcon icon={FiGlobe} className="w-4 h-4 text-blue-500" />
+            <h3 className="font-semibold text-sm uppercase tracking-wide text-gray-700 dark:text-gray-300">
+              SEO & Schema
+            </h3>
+          </div>
+          <SafeIcon
+            icon={expandedSections.seo ? FiChevronUp : FiChevronDown}
+            className="w-4 h-4 text-gray-500"
+          />
+        </button>
+        
+        {expandedSections.seo && (
+          <div className="p-4 space-y-5">
+            
+            {/* SERP Preview */}
+            <div>
+              <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-2">
+                Snippet Preview
+              </label>
+              <div
+                className="bg-gray-50 dark:bg-gray-900/50 p-3 rounded-lg border border-gray-200 dark:border-gray-700 mb-2 cursor-pointer hover:border-blue-300 dark:hover:border-blue-700 transition-colors"
+                onClick={() => setIsSnippetModalOpen(true)}
+              >
+                <SerpPreview
+                  title={formData.metaTitle || formData.name}
+                  slug={formData.slug}
+                  description={formData.metaDescription}
+                  basePath="calculator/"
+                  globalSettings={globalSettings}
+                  formData={formData}
+                />
+              </div>
+              <button
+                onClick={() => setIsSnippetModalOpen(true)}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 rounded-lg text-xs font-bold hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <SafeIcon icon={FiEdit2} className="w-3.5 h-3.5" />{" "}
+                Customize Snippet
+              </button>
+            </div>
+
+            {/* Focus Keywords */}
+            <div>
+              <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1">
+                Focus Keyword(s)
+              </label>
+              <ChipInput
+                value={getKeywordsArray()}
+                onChange={handleKeywordsChange}
+                mode="creatable"
+                placeholder="Enter keywords..."
+              />
+            </div>
+
+            {/* NEW: Automatic Schema Toggle */}
+            <div className="pt-4 border-t border-gray-100 dark:border-gray-700">
+              <label className="block text-[10px] font-bold text-gray-400 uppercase mb-3">
+                Automatic Schema
+              </label>
+              <div className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/30 rounded-lg border border-gray-200 dark:border-gray-600">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 rounded-md">
+                    <SafeIcon icon={FiLayers} className="w-4 h-4" />
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                      Enable Schema
+                    </span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                      Auto-inject optimized JSON-LD
+                    </span>
+                  </div>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="schema_enabled"
+                    checked={formData.schema_enabled}
+                    onChange={handleChange}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-500 peer-checked:bg-blue-600"></div>
+                </label>
+              </div>
+            </div>
+
+            {/* Advanced SEO Settings */}
+            <div className="pt-2 border-t border-gray-100 dark:border-gray-700">
+              <details className="group" open>
+                <summary className="flex justify-between items-center cursor-pointer text-xs font-bold text-gray-600 dark:text-gray-400 hover:text-blue-600 mb-3 select-none p-1 rounded hover:bg-gray-50 dark:hover:bg-gray-700/30 focus:outline-none">
+                  <div className="flex items-center gap-2">
+                    <span>Advanced SEO Settings</span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        toggleRobotsDefault();
+                      }}
+                      className={`ml-2 p-1.5 rounded-md transition-colors outline-none focus:outline-none ${
+                        isRobotsDefault
+                          ? "text-blue-600 bg-blue-100 hover:bg-blue-200 dark:text-blue-400 dark:bg-blue-900/40 dark:hover:bg-blue-900/60"
+                          : "text-gray-500 hover:text-gray-700 bg-transparent hover:bg-gray-200 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700"
+                      }`}
+                      title={
+                        isRobotsDefault
+                          ? "Using Global Defaults (Click to unlock)"
+                          : "Custom Settings Active (Click to lock)"
+                      }
+                    >
+                      <SafeIcon
+                        icon={isRobotsDefault ? FiLock : FiUnlock}
+                        className="w-3.5 h-3.5"
+                      />
+                    </button>
+                  </div>
+                  <SafeIcon
+                    icon={FiChevronDown}
+                    className="w-3.5 h-3.5 transition-transform group-open:rotate-180"
+                  />
+                </summary>
+
+                <div className="mt-3 space-y-5 pl-1 pb-2 animate-fade-in">
+                  
+                  {/* ROBOTS META */}
+                  <div className={isRobotsDefault ? "opacity-60 pointer-events-none grayscale" : ""}>
+                    <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2">
+                      Robots Meta
+                    </label>
+                    
+                    {/* Index / No Index Toggle */}
+                    <div className="flex rounded-lg shadow-sm overflow-hidden border border-gray-200 dark:border-gray-600">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleChange({
+                            target: {
+                              name: "no_index",
+                              value: false,
+                              type: "checkbox",
+                              checked: false,
+                            },
+                          })
+                        }
+                        className={`flex-1 py-2 text-xs font-medium transition-colors focus:outline-none ${
+                          !formData.no_index
+                            ? "bg-blue-50 text-blue-700 shadow-inner"
+                            : "bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50"
+                        }`}
+                      >
+                        Index
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleChange({
+                            target: {
+                              name: "no_index",
+                              value: true,
+                              type: "checkbox",
+                              checked: true,
+                            },
+                          })
+                        }
+                        className={`flex-1 py-2 text-xs font-medium border-l border-gray-200 dark:border-gray-600 transition-colors focus:outline-none ${
+                          formData.no_index
+                            ? "bg-blue-50 text-blue-700 shadow-inner"
+                            : "bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50"
+                        }`}
+                      >
+                        No Index
+                      </button>
+                    </div>
+
+                    {/* Cascading Checkboxes */}
+                    <div className="space-y-1 mt-3">
+                      {["no_follow", "no_archive", "no_image_index", "no_snippet"].map(
+                        (key) => {
+                          const isForcedByNoIndex = formData.no_index && key !== "no_follow";
+                          return (
+                            <label
+                              key={key}
+                              className={`flex items-center justify-between group p-2 rounded-md transition-colors ${
+                                isForcedByNoIndex ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                              }`}
+                            >
+                              <span className={`text-xs font-medium capitalize ${
+                                isForcedByNoIndex ? "text-gray-400 dark:text-gray-500" : "text-gray-600 dark:text-gray-300 group-hover:text-gray-900 dark:group-hover:text-white"
+                              }`}>
+                                {key.replace("no_", "No ").replace("_", " ")}
+                                {isForcedByNoIndex && <span className="ml-1 text-[10px] font-normal italic text-amber-500">(Forced)</span>}
+                              </span>
+                              <input
+                                type="checkbox"
+                                name={key}
+                                checked={isForcedByNoIndex ? true : formData[key]}
+                                disabled={isForcedByNoIndex}
+                                onChange={handleChange}
+                                className={`rounded w-4 h-4 border-gray-300 dark:border-gray-500 bg-white dark:bg-gray-700 cursor-pointer focus:outline-none ${
+                                  isForcedByNoIndex ? "text-gray-400 cursor-not-allowed" : "text-blue-600 focus:ring-blue-500"
+                                }`}
+                              />
+                            </label>
+                          )
+                        }
+                      )}
+                    </div>
+
+                    {/* Advanced Meta Inputs */}
+                    <div className="mt-5 pt-4 border-t border-gray-100 dark:border-gray-700">
+                      <label className="block text-[10px] font-bold text-gray-400 uppercase mb-3">
+                        Advanced Robot Meta
+                      </label>
+                      <div className="space-y-4">
+                        <div>
+                          <label className={`block text-xs font-medium mb-1 transition-colors ${(formData.no_index || formData.no_snippet) ? "text-gray-400 dark:text-gray-500" : "text-gray-600 dark:text-gray-400"}`}>
+                            Max Snippet (chars)
+                            {formData.no_index ? (
+                              <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-400">
+                                (Forced by "No Index")
+                              </span>
+                            ) : formData.no_snippet ? (
+                              <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-400">
+                                (Disabled by "No Snippet")
+                              </span>
+                            ) : null}
+                          </label>
+                          {/* FIX: Explicit background and text color added for light mode */}
+                          <input
+                            type="number"
+                            name="maxSnippet"
+                            disabled={formData.no_index || formData.no_snippet}
+                            value={
+                              isRobotsDefault
+                                ? globalSettings?.seo_robots_global_max_snippet ?? -1
+                                : formData.maxSnippet ?? -1
+                            }
+                            onChange={(e) => onMaxSnippetChange(e.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white text-gray-900 placeholder-gray-400 dark:bg-gray-800 dark:text-white disabled:opacity-50 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:cursor-not-allowed transition-colors focus:ring-2 focus:ring-blue-500 outline-none"
+                            placeholder="-1 for unlimited"
+                          />
+                        </div>
+                        <div>
+                          <label className={`block text-xs font-medium mb-1 transition-colors ${(formData.no_index || formData.no_snippet) ? "text-gray-400 dark:text-gray-500" : "text-gray-600 dark:text-gray-400"}`}>
+                            Max Video Preview (sec)
+                            {formData.no_index ? (
+                              <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-400">
+                                (Forced by "No Index")
+                              </span>
+                            ) : formData.no_snippet ? (
+                              <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-400">
+                                (Disabled by "No Snippet")
+                              </span>
+                            ) : null}
+                          </label>
+                          {/* FIX: Explicit background and text color added for light mode */}
+                          <input
+                            type="number"
+                            name="maxVideoPreview"
+                            disabled={formData.no_index || formData.no_snippet}
+                            value={
+                              isRobotsDefault
+                                ? globalSettings?.seo_robots_global_max_video_preview ?? -1
+                                : formData.maxVideoPreview ?? -1
+                            }
+                            onChange={(e) => onMaxVideoChange(e.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white text-gray-900 placeholder-gray-400 dark:bg-gray-800 dark:text-white disabled:opacity-50 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:cursor-not-allowed transition-colors focus:ring-2 focus:ring-blue-500 outline-none"
+                            placeholder="-1 for unlimited"
+                          />
+                        </div>
+                        <div>
+                          <label className={`block text-xs font-medium mb-1 transition-colors ${(formData.no_index || formData.no_snippet || formData.no_image_index) ? "text-gray-400 dark:text-gray-500" : "text-gray-600 dark:text-gray-400"}`}>
+                            Max Image Preview
+                            {formData.no_index ? (
+                              <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-400">
+                                (Forced by "No Index")
+                              </span>
+                            ) : formData.no_snippet ? (
+                              <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-400">
+                                (Disabled by "No Snippet")
+                              </span>
+                            ) : formData.no_image_index ? (
+                              <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-400">
+                                (Disabled by "No Image Index")
+                              </span>
+                            ) : null}
+                          </label>
+                          {/* FIX: Explicit background and text color added for light mode */}
+                          <select
+                            name="maxImagePreview"
+                            disabled={formData.no_index || formData.no_snippet || formData.no_image_index}
+                            value={
+                              isRobotsDefault
+                                ? globalSettings?.seo_robots_global_max_image_preview ?? "large"
+                                : formData.maxImagePreview ?? "large"
+                            }
+                            onChange={(e) => onMaxImageChange(e.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white text-gray-900 dark:bg-gray-800 dark:text-white disabled:opacity-50 disabled:bg-gray-100 dark:disabled:bg-gray-900 disabled:cursor-not-allowed transition-colors focus:ring-2 focus:ring-blue-500 outline-none"
+                          >
+                            <option value="large">Large</option>
+                            <option value="standard">Standard</option>
+                            <option value="none">None</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* CANONICAL URL: Always Active */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2 mt-4">
+                      Canonical URL
+                    </label>
+                    <div className="relative group">
+                      <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none text-gray-400 group-focus-within:text-blue-500">
+                        <SafeIcon
+                          icon={FiCornerUpRight}
+                          className="w-3.5 h-3.5"
+                        />
+                      </div>
+                      {/* FIX: Explicit background and text color added for light mode */}
+                      <input
+                        type="text"
+                        name="canonical_url"
+                        value={formData.canonical_url || ""}
+                        onChange={handleChange}
+                        placeholder="https://example.com/original-post"
+                        className="w-full border border-gray-300 dark:border-gray-600 rounded-lg pl-8 pr-3 py-2 text-xs bg-white text-gray-900 placeholder-gray-400 dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-shadow"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 4. Tags */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+        <button
+          onClick={() => toggleSection("tags")}
+          className="w-full flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700 rounded-t-xl hover:bg-gray-100 dark:hover:bg-gray-600/50 transition-colors focus:outline-none"
+        >
+          <h3 className="font-semibold text-sm uppercase tracking-wide text-gray-700 dark:text-gray-300">
+            Tags
+          </h3>
+          <SafeIcon
+            icon={expandedSections.tags ? FiChevronUp : FiChevronDown}
+            className="w-4 h-4 text-gray-500"
+          />
+        </button>
+        {expandedSections.tags && (
+          <div className="p-4">
+            <ChipInput
+              suggestions={allTags}
+              value={formData.tags}
+              onChange={handleTagsChange}
+              mode="select"
+              placeholder="Type to search..."
+            />
+          </div>
+        )}
+      </div>
+
+      {/* 5. Featured Image */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+        <button
+          onClick={() => toggleSection("featuredImage")}
+          className="w-full flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700 rounded-t-xl hover:bg-gray-100 dark:hover:bg-gray-600/50 transition-colors focus:outline-none"
+        >
+          <h3 className="font-semibold text-sm uppercase tracking-wide text-gray-700 dark:text-gray-300">
+            Featured Image
+          </h3>
+          <SafeIcon
+            icon={expandedSections.featuredImage ? FiChevronUp : FiChevronDown}
+            className="w-4 h-4 text-gray-500"
+          />
+        </button>
+        {expandedSections.featuredImage && (
+          <div className="p-4 text-center">
+            {featuredImage ? (
+              <div className="space-y-3 relative group">
+                <img
+                  src={featuredImage.full_url}
+                  alt={featuredImage.alt_text || "Featured Image"} 
+                  className="w-full h-48 object-cover rounded-lg border border-gray-200 dark:border-gray-600 shadow-sm transition-all group-hover:brightness-90"
+                />
+                <div className="flex justify-center gap-3 pt-1">
+                  <button
+                    onClick={() => setIsFeaturedMediaLibraryOpen(true)}
+                    className="text-xs font-medium text-blue-600 hover:underline focus:outline-none"
+                  >
+                    Replace
+                  </button>
+                  <button
+                    onClick={handleRemoveFeaturedImage}
+                    className="text-xs font-medium text-red-500 hover:underline focus:outline-none"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setIsFeaturedMediaLibraryOpen(true)}
+                className="flex flex-col items-center justify-center w-full h-36 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700/50 hover:border-blue-400 transition-all group cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <div className="p-3 bg-gray-100 dark:bg-gray-700 rounded-full group-hover:bg-blue-50 dark:group-hover:bg-blue-900/20 transition-colors">
+                  <SafeIcon
+                    icon={FiImage}
+                    className="w-6 h-6 text-gray-400 group-hover:text-blue-500"
+                  />
+                </div>
+                <span className="text-xs font-medium text-gray-500 mt-2 group-hover:text-blue-600">
+                  Set Featured Image
+                </span>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+    </div>
+  );
+};
+
+export default CalculatorSidebar;

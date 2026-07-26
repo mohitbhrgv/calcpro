@@ -1,0 +1,743 @@
+import React, { useState, useEffect } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+
+import MediaLibrary from "../../media/MediaLibrary";
+import LoadingSpinner from "../../common/LoadingSpinner";
+import { authenticatedFetch } from "../../../utils/apiService";
+
+const {
+  FiArrowLeft, FiSave, FiUser, FiCamera, FiPlus, FiTrash2,
+  FiLink, FiChevronDown, FiCheck, FiEdit2, FiLinkedin,
+  FiTwitter, FiFacebook, FiInstagram, FiYoutube, FiGithub,
+  FiGlobe, FiExternalLink, FiShield, FiTag, FiInfo
+} = FiIcons;
+
+const SOCIAL_PLATFORMS = [
+  { label: "LinkedIn",         icon: FiLinkedin,    color: "#0A66C2", placeholder: "linkedin.com/in/username" },
+  { label: "Twitter / X",      icon: FiTwitter,     color: "#1DA1F2", placeholder: "twitter.com/username" },
+  { label: "Facebook",         icon: FiFacebook,    color: "#1877F2", placeholder: "facebook.com/username" },
+  { label: "Instagram",        icon: FiInstagram,   color: "#E1306C", placeholder: "instagram.com/username" },
+  { label: "YouTube",          icon: FiYoutube,     color: "#FF0000", placeholder: "youtube.com/@channel" },
+  { label: "GitHub",           icon: FiGithub,      color: "#24292E", placeholder: "github.com/username" },
+  { label: "Medium",           icon: FiGlobe,       color: "#00AB6C", placeholder: "medium.com/@username" },
+  { label: "Personal Website", icon: FiGlobe,       color: "#6366F1", placeholder: "yourdomain.com" },
+  { label: "Other",            icon: FiLink,        color: "#6B7280", placeholder: "example.com/profile" },
+];
+
+const getPlatformMeta = (label) =>
+  SOCIAL_PLATFORMS.find(p => p.label === label) || { icon: FiLink, color: "#6B7280", placeholder: "" };
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// ---------------------------------------------------------------------------
+// Premium field wrapper
+// ---------------------------------------------------------------------------
+const Field = ({ label, required, hint, currentLength, maxLength, children }) => (
+  <div className="space-y-1.5 flex flex-col">
+    <div className="flex items-center justify-between">
+      <label className="block text-[12px] font-bold text-gray-700 dark:text-gray-300 tracking-wider uppercase">
+        {label}{required && <span className="text-red-500 ml-1">*</span>}
+      </label>
+      {maxLength ? (
+        <span className={`text-[11px] font-semibold transition-colors ${currentLength >= maxLength ? 'text-red-600 dark:text-red-400' : currentLength >= maxLength * 0.9 ? 'text-amber-500' : 'text-gray-400 dark:text-gray-500'}`}>
+          {currentLength} / {maxLength}
+        </span>
+      ) : hint ? (
+        <span className="text-[11px] text-gray-400 dark:text-gray-500 font-medium">{hint}</span>
+      ) : null}
+    </div>
+    {children}
+  </div>
+);
+
+// ---------------------------------------------------------------------------
+// Section card — premium panel style
+// ---------------------------------------------------------------------------
+const SectionCard = ({ children, className = "" }) => (
+  <div className={`bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden ${className}`}>
+    {children}
+  </div>
+);
+
+const SectionHeader = ({ title, subtitle, action }) => (
+  <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700/60 flex items-center justify-between bg-gray-50/50 dark:bg-gray-800/50">
+    <div>
+      <h3 className="text-[13px] font-extrabold text-gray-800 dark:text-gray-100 tracking-wide uppercase">{title}</h3>
+      {subtitle && <p className="text-[12px] text-gray-500 dark:text-gray-400 mt-0.5 font-medium">{subtitle}</p>}
+    </div>
+    {action}
+  </div>
+);
+
+// ---------------------------------------------------------------------------
+// Input / Textarea styled
+// ---------------------------------------------------------------------------
+const inputBase =
+  "w-full px-4 py-2.5 text-[13px] font-medium bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:bg-white dark:focus:bg-gray-800 focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 outline-none transition-all duration-200 shadow-sm";
+
+// ---------------------------------------------------------------------------
+// Social platform icon pill
+// ---------------------------------------------------------------------------
+const SocialPill = ({ link }) => {
+  const meta = getPlatformMeta(link.platform);
+  const Icon = meta.icon;
+
+  return (
+    <a
+      href={link.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={link.platform}
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-white text-[11px] font-bold shadow-sm hover:opacity-85 hover:-translate-y-0.5 transition-all duration-200"
+      style={{ backgroundColor: meta.color }}
+    >
+      <Icon className="w-3.5 h-3.5 shrink-0" />
+      {link.platform}
+    </a>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Main Component
+// ---------------------------------------------------------------------------
+const AuthorProfileEditor = () => {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const isEditing = Boolean(id);
+
+  const [loading, setLoading] = useState(isEditing);
+  const [submitting, setSubmitting] = useState(false);
+  const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
+  const [slugManuallyEdited, setSlugManuallyEdited] = useState(false);
+  const [rowProcessing, setRowProcessing] = useState(null);
+
+  const [formData, setFormData] = useState({
+    name: "",
+    slug: "",
+    role: "Author",
+    expertise: "",
+    short_description: "",
+    bio: "",
+    profile_image_id: null,
+    is_super_admin: 0,
+    internal_admin_name: "",
+  });
+
+  const [socialLinksList, setSocialLinksList] = useState([]);
+  const [previewImage, setPreviewImage] = useState(null);
+
+  // ---- Data Fetch ----
+  useEffect(() => {
+    const fetchAuthor = async () => {
+      if (!isEditing) return;
+      try {
+        const response = await authenticatedFetch(
+          `/api/admin/get_author_profiles.php?id=${id}`
+        );
+        if (response.success) {
+          const data = response.data;
+          setFormData({
+            name: data.name || "",
+            slug: data.slug || "",
+            role: data.role || "Author",
+            expertise: data.expertise || "",
+            short_description: data.short_description || "",
+            bio: data.bio || "",
+            profile_image_id: data.profile_image_id,
+            is_super_admin: data.is_super_admin || 0,
+            internal_admin_name: data.internal_admin_name || "",
+          });
+          if (data.profile_image_url) setPreviewImage(data.profile_image_url);
+          if (data.slug) setSlugManuallyEdited(true);
+          if (data.social_links && typeof data.social_links === "object") {
+            const loadedLinks = Object.entries(data.social_links).map(([platform, url]) => ({
+              id: Math.random().toString(36).substr(2, 9),
+              platform,
+              url,
+              isEditing: false,
+            }));
+            setSocialLinksList(loadedLinks);
+          }
+        } else {
+          toast.error("Author not found.");
+          navigate("/content/authors");
+        }
+      } catch {
+        toast.error("Error fetching author data.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchAuthor();
+  }, [id, isEditing, navigate]);
+
+  // ---- Handlers ----
+  const handleNameChange = (e) => {
+    const value = e.target.value;
+    setFormData((prev) => {
+      const updates = { name: value };
+      if (!slugManuallyEdited) {
+        updates.slug = value
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/(^-|-$)+/g, "");
+      }
+      return { ...prev, ...updates };
+    });
+  };
+
+  const handleSlugChange = (e) => {
+    setSlugManuallyEdited(true);
+    const safeSlug = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "");
+    setFormData((prev) => ({ ...prev, slug: safeSlug }));
+  };
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleAddSocial = () => {
+    setSocialLinksList((prev) => [
+      ...prev,
+      { id: Math.random().toString(36).substr(2, 9), platform: "", url: "", isEditing: true },
+    ]);
+  };
+
+  const updateSocialLink = (id, field, value) => {
+    setSocialLinksList((prev) =>
+      prev.map((link) => (link.id === id ? { ...link, [field]: value } : link))
+    );
+  };
+
+  const handleSaveSocialRow = async (id) => {
+    const link = socialLinksList.find((l) => l.id === id);
+    if (!link.platform) { toast.error("Please select a platform."); return; }
+    if (!link.url.trim()) { toast.error("Please enter a URL."); return; }
+    
+    setRowProcessing(id);
+    await sleep(350);
+    let finalUrl = link.url.trim();
+    if (!/^https?:\/\//i.test(finalUrl)) finalUrl = "https://" + finalUrl;
+
+    setSocialLinksList((prev) =>
+      prev.map((l) => (l.id === id ? { ...l, url: finalUrl, isEditing: false } : l))
+    );
+    setRowProcessing(null);
+  };
+
+  const handleEditSocialRow = (id) => {
+    setSocialLinksList((prev) =>
+      prev.map((l) => (l.id === id ? { ...l, isEditing: true } : l))
+    );
+  };
+
+  const removeSocialLink = (id) => {
+    setSocialLinksList((prev) => prev.filter((link) => link.id !== id));
+  };
+
+  const handleSelectMedia = (media) => {
+    setFormData((prev) => ({ ...prev, profile_image_id: media.id }));
+    setPreviewImage(media.full_url);
+    setIsMediaLibraryOpen(false);
+  };
+
+  const handleSubmit = async () => {
+    if (!formData.name.trim()) { toast.error("Public Display Name is required."); return; }
+    
+    setSubmitting(true);
+    const toastId = toast.loading(isEditing ? "Updating profile…" : "Creating profile…");
+    await sleep(600);
+
+    try {
+      const url = isEditing
+        ? "/api/admin/update_author_profile.php"
+        : "/api/admin/add_author_profile.php";
+      
+      const payloadSocialLinks = {};
+      socialLinksList.forEach((link) => {
+        if (link.platform && link.url.trim()) {
+          let finalUrl = link.url.trim();
+          if (!/^https?:\/\//i.test(finalUrl)) finalUrl = "https://" + finalUrl;
+          payloadSocialLinks[link.platform] = finalUrl;
+        }
+      });
+
+      const payload = { ...formData, social_links: payloadSocialLinks };
+      if (isEditing) payload.id = id;
+
+      const response = await authenticatedFetch(url, {
+        method: isEditing ? "PUT" : "POST",
+        body: JSON.stringify(payload),
+      });
+
+      if (response.success) {
+        toast.success(response.message, { id: toastId });
+        navigate("/content/authors");
+      } else {
+        toast.error(response.message, { id: toastId });
+      }
+    } catch (error) {
+      if (error.errorCode === 'SLUG_DUPLICATE') {
+        toast.error("This slug is already taken. Please choose another.", { id: toastId });
+      } else {
+        toast.error(error.message || "Server error. Please try again.", { id: toastId });
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loading) return <LoadingSpinner size="xl" className="h-64" />;
+
+  const visibleSocials = socialLinksList.filter((l) => l.platform && !l.isEditing);
+
+  return (
+    <div className="space-y-6 max-w-6xl mx-auto pb-10">
+      <MediaLibrary
+        isOpen={isMediaLibraryOpen}
+        onClose={() => setIsMediaLibraryOpen(false)}
+        onSelectMedia={handleSelectMedia}
+        initialSelectedUrl={previewImage}
+        disableAnimation={true}
+        zIndexClass="z-[100]"
+      />
+
+      {/* ── Page Header ────────────────────────────────────────────────────── */}
+      <motion.div 
+        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} 
+        className="flex items-start justify-between bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-800/30 p-5 rounded-xl shadow-sm"
+      >
+        <div className="flex items-start gap-4">
+          <button
+            onClick={() => navigate("/content/authors")}
+            className="mt-1 p-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg text-gray-500 dark:text-gray-400 transition-colors shadow-sm focus:outline-none"
+            aria-label="Back to authors"
+          >
+            <SafeIcon icon={FiArrowLeft} className="w-4 h-4" />
+          </button>
+          <div>
+            <h1 className="text-xl font-bold text-gray-900 dark:text-white tracking-tight">
+              {isEditing
+                ? formData.is_super_admin == 1
+                  ? "Edit System Profile"
+                  : "Edit Guest Profile"
+                : "New Guest Profile"}
+            </h1>
+            <p className="text-[13px] text-gray-600 dark:text-gray-300 mt-1.5 leading-relaxed max-w-lg font-medium">
+              {isEditing ? "Manage public-facing author details and external social connections." : "Establish a new identity for publishing articles on your blog."}
+            </p>
+          </div>
+        </div>
+
+        <button
+          onClick={handleSubmit}
+          disabled={submitting}
+          className="hidden sm:inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-lg transition-all duration-150 shadow-sm focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {submitting ? <LoadingSpinner size="xs" color="white" /> : <SafeIcon icon={FiSave} className="w-4 h-4" />}
+          {submitting ? "Saving…" : "Save Profile"}
+        </button>
+      </motion.div>
+
+      {/* ── Main Grid ───────────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+        {/* LEFT — Premium Preview Card */}
+        <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }} className="lg:col-span-4 space-y-5">
+          <SectionCard className="overflow-hidden">
+            <div className="relative pb-8 flex flex-col items-center text-center">
+              
+              {/* Premium Banner Background */}
+              <div className="absolute top-0 left-0 right-0 h-28 bg-gradient-to-br from-emerald-500 to-teal-700 dark:from-emerald-800 dark:to-teal-900"></div>
+
+              {/* Avatar Container */}
+              <div className="relative mt-14 z-10 mb-4 group">
+                <div
+                  className="w-28 h-28 rounded-full border-4 border-white dark:border-gray-800 shadow-lg overflow-hidden bg-white dark:bg-gray-800 flex items-center justify-center cursor-pointer transition-transform duration-300 group-hover:scale-105"
+                  onClick={() => setIsMediaLibraryOpen(true)}
+                  role="button"
+                >
+                  {previewImage ? (
+                    <img src={previewImage} alt="Author preview" className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center">
+                      <SafeIcon icon={FiUser} className="w-12 h-12 text-emerald-300 dark:text-emerald-500/50" />
+                    </div>
+                  )}
+                </div>
+                
+                {/* ALWAYS VISIBLE Edit Badge */}
+                <button
+                  type="button"
+                  onClick={() => setIsMediaLibraryOpen(true)}
+                  className="absolute bottom-0 right-0 w-8 h-8 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full border-2 border-white dark:border-gray-800 flex items-center justify-center shadow-md transition-colors focus:outline-none"
+                  title="Change Profile Photo"
+                >
+                  <SafeIcon icon={FiCamera} className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {/* Identity Content */}
+              <div className="px-6 w-full flex flex-col items-center">
+                <h2 className="text-xl font-extrabold text-gray-900 dark:text-white truncate w-full leading-snug">
+                  {formData.name || <span className="text-gray-300 dark:text-gray-600">Display Name</span>}
+                </h2>
+                <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400 mt-1 uppercase tracking-wider">
+                  {formData.role || "Author"}
+                </p>
+                <p className="text-[12px] font-medium text-gray-500 dark:text-gray-400 font-mono mt-2 bg-gray-100 dark:bg-gray-700/50 px-3 py-1 rounded-full shadow-inner">
+                  @{formData.slug || "url-slug"}
+                </p>
+
+                {/* Bio */}
+                {formData.bio ? (
+                  <p className="text-[13px] text-gray-600 dark:text-gray-300 mt-4 leading-relaxed line-clamp-4 text-center w-full break-words">
+                    {formData.bio}
+                  </p>
+                ) : (
+                  <p className="text-[12px] text-gray-400 dark:text-gray-500 italic mt-4 w-full">
+                    No biography provided yet.
+                  </p>
+                )}
+
+                {/* Social Badges */}
+                {visibleSocials.length > 0 && (
+                  <div className="mt-6 w-full pt-5 border-t border-gray-100 dark:border-gray-700">
+                    <p className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">
+                      Social Profiles
+                    </p>
+                    <div className="flex flex-wrap justify-center gap-2">
+                      {visibleSocials.map((link) => (
+                        <SocialPill key={link.id} link={link} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </SectionCard>
+
+          {/* Tips card */}
+          <div className="flex items-start gap-3 p-4 bg-blue-50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-800/30 rounded-xl shadow-sm">
+            <SafeIcon icon={FiInfo} className="w-5 h-5 text-blue-500 dark:text-blue-400 shrink-0 mt-0.5" />
+            <div>
+               <h4 className="text-[13px] font-bold text-blue-900 dark:text-blue-300 mb-1">Why complete this?</h4>
+               <p className="text-[12px] font-medium text-blue-700 dark:text-blue-400/80 leading-relaxed">
+                 A complete profile with a high-quality photo and detailed bio significantly boosts reader trust and article credibility.
+               </p>
+            </div>
+          </div>
+        </motion.div>
+
+        {/* RIGHT — Premium Editor Form */}
+        <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.15 }} className="lg:col-span-8 space-y-6">
+
+          {/* Admin notice */}
+          {formData.is_super_admin == 1 && (
+            <div className="flex items-start gap-3 p-4 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-700/30 rounded-xl shadow-sm">
+               <SafeIcon icon={FiShield} className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-[13px] font-bold text-amber-900 dark:text-amber-300">System Admin Profile</p>
+                <p className="text-[12px] font-medium text-amber-700 dark:text-amber-400/80 mt-1 leading-relaxed">
+                  Your private login identifier remains <strong className="font-extrabold text-amber-800 dark:text-amber-200">{formData.internal_admin_name || "Admin"}</strong>. 
+                  The fields below strictly control your public identity displayed to readers.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Identity Section */}
+          <SectionCard>
+            <SectionHeader title="Public Identity" subtitle="Core information displayed on your articles" />
+            <div className="p-6 space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                <Field label="Display Name" required currentLength={formData.name.length} maxLength={100}>
+                  <input
+                    type="text"
+                    name="name"
+                    value={formData.name}
+                    onChange={handleNameChange}
+                    placeholder="e.g., Dr. Jane Smith"
+                    maxLength={100} 
+                    className={inputBase}
+                  />
+                </Field>
+
+                <Field label="URL Slug" required currentLength={formData.slug.length} maxLength={100}>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-400 text-sm pointer-events-none select-none font-mono font-bold">@</span>
+                     <input
+                      type="text"
+                      name="slug"
+                      value={formData.slug}
+                      onChange={handleSlugChange}
+                      placeholder="dr-jane-smith"
+                      maxLength={100} 
+                      className={`${inputBase} pl-9 font-mono text-[13px]`}
+                    />
+                  </div>
+                </Field>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <Field label="Public Role" required currentLength={formData.role.length} maxLength={100}>
+                    <input
+                      type="text"
+                      name="role"
+                      value={formData.role}
+                      onChange={handleChange}
+                      placeholder="e.g., Founder & Lead Editor"
+                      maxLength={100} 
+                      className={inputBase}
+                    />
+                  </Field>
+    
+                  <Field label="Area of Expertise" currentLength={formData.expertise.length} maxLength={100}>
+                    <input
+                      type="text"
+                      name="expertise"
+                      value={formData.expertise}
+                      onChange={handleChange}
+                      placeholder="e.g., Tax Planning"
+                      maxLength={100} 
+                      className={inputBase}
+                    />
+                  </Field>
+              </div>
+
+              {/* --- NEW ENTERPRISE FEATURE: SHORT DESCRIPTION --- */}
+              <Field label="Short Description" currentLength={formData.short_description.length} maxLength={500}>
+                <textarea
+                  name="short_description"
+                  value={formData.short_description}
+                  onChange={handleChange}
+                  rows={2}
+                  maxLength={500} 
+                  placeholder="A concise 1-2 sentence introduction displayed at the bottom of blog posts…"
+                  className={`${inputBase} resize-none`}
+                />
+              </Field>
+
+              <Field label="Author Biography" currentLength={formData.bio.length} maxLength={1000}>
+                <textarea
+                  name="bio"
+                  value={formData.bio}
+                  onChange={handleChange}
+                  rows={4}
+                  maxLength={1000} 
+                  placeholder="Briefly describe the author's credentials, expertise, and background…"
+                  className={`${inputBase} resize-none`}
+                />
+                <div className="mt-1.5 text-right">
+                    <p className="text-[11px] font-medium text-gray-400 dark:text-gray-500">
+                        Aim for 100–300 characters for optimal layout.
+                    </p>
+                </div>
+              </Field>
+            </div>
+          </SectionCard>
+
+          {/* Social Connections Section */}
+          <SectionCard>
+            <SectionHeader
+              title="Social Authority"
+              subtitle="Link external profiles to build cross-platform presence"
+              action={
+                <button
+                  type="button"
+                  onClick={handleAddSocial}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-[12px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 rounded-lg border border-emerald-200 dark:border-emerald-700 transition-colors focus:outline-none shadow-sm"
+                >
+                  <SafeIcon icon={FiPlus} className="w-3.5 h-3.5" />
+                  Add Connection
+                </button>
+              }
+            />
+
+            <div className="p-6 bg-gray-50/30 dark:bg-gray-800/20">
+              {socialLinksList.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center bg-white dark:bg-gray-800 rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 shadow-sm">
+                  <div className="w-12 h-12 rounded-full bg-gray-50 dark:bg-gray-700 flex items-center justify-center mb-3 border border-gray-100 dark:border-gray-600">
+                    <SafeIcon icon={FiLink} className="w-5 h-5 text-gray-400 dark:text-gray-500" />
+                  </div>
+                  <h4 className="text-sm font-bold text-gray-700 dark:text-gray-300">No social connections</h4>
+                  <p className="text-[12px] font-medium text-gray-500 dark:text-gray-400 mt-1 max-w-xs">
+                    Enhance this profile by linking to Twitter, LinkedIn, or personal websites.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleAddSocial}
+                    className="mt-4 px-4 py-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-[12px] font-bold text-gray-700 dark:text-gray-200 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors focus:outline-none"
+                  >
+                     Add First Link
+                  </button>
+                 </div>
+              ) : (
+                <div className="space-y-3">
+                  <AnimatePresence>
+                    {socialLinksList.map((link) => {
+                      const isProcessing = rowProcessing === link.id;
+                      const meta = getPlatformMeta(link.platform);
+                      const PlatformIcon = meta.icon;
+
+                      return (
+                        <motion.div
+                          initial={{ opacity: 0, y: -10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, height: 0, marginBottom: 0 }}
+                          key={link.id}
+                          className="flex flex-col sm:flex-row items-center gap-3 p-3 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm transition-all hover:shadow-md hover:border-gray-300 dark:hover:border-gray-600"
+                        >
+                          {link.isEditing ? (
+                            /* ── EDIT MODE ── */
+                            <>
+                              <div
+                                className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 shadow-inner border border-gray-100 dark:border-gray-700"
+                                style={{ backgroundColor: meta.color + "1A" }}
+                              >
+                                <PlatformIcon className="w-4 h-4" style={{ color: meta.color }} />
+                              </div>
+
+                              <div className="w-full sm:w-48 shrink-0 relative">
+                                <select
+                                  value={link.platform}
+                                  onChange={(e) => updateSocialLink(link.id, "platform", e.target.value)}
+                                  className="w-full appearance-none px-3.5 py-2.5 text-[13px] font-bold bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 outline-none text-gray-800 dark:text-gray-200 shadow-sm cursor-pointer pr-8 transition-all"
+                                >
+                                  <option value="" disabled>Select Platform</option>
+                                  {SOCIAL_PLATFORMS.filter(p => !socialLinksList.some(l => l.platform === p.label && l.id !== link.id)).map((p) => (
+                                    <option key={p.label} value={p.label}>{p.label}</option>
+                                  ))}
+                                </select>
+                                <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none text-gray-400">
+                                  <SafeIcon icon={FiChevronDown} className="w-4 h-4" />
+                                </div>
+                              </div>
+            
+                              <div className="w-full flex-1 relative">
+                                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                                  <SafeIcon icon={FiLink} className="h-4 w-4 text-gray-400" />
+                                </div>
+                                <input
+                                  type="url"
+                                  value={link.url}
+                                  maxLength={500} 
+                                  onChange={(e) => updateSocialLink(link.id, "url", e.target.value)}
+                                  placeholder={meta.placeholder || "https://…"}
+                                  className="w-full pl-9 pr-3.5 py-2.5 text-[13px] font-medium bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 outline-none text-gray-800 dark:text-gray-200 shadow-sm transition-all"
+                                  onKeyDown={(e) => { if (e.key === "Enter") handleSaveSocialRow(link.id); }}
+                                />
+                              </div>
+              
+                              <div className="flex items-center gap-1.5 shrink-0 pl-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveSocialRow(link.id)}
+                                  disabled={isProcessing}
+                                  title="Save link"
+                                  className="flex items-center justify-center w-10 h-10 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:hover:bg-emerald-900/50 dark:text-emerald-400 rounded-lg transition-colors focus:outline-none disabled:opacity-50 border border-emerald-100 dark:border-emerald-800/50 shadow-sm"
+                                >
+                                  {isProcessing ? <LoadingSpinner size="xs" /> : <SafeIcon icon={FiCheck} className="w-4 h-4" />}
+                                </button>
+                          
+                                <button
+                                  type="button"
+                                  onClick={() => removeSocialLink(link.id)}
+                                  disabled={isProcessing}
+                                  title="Remove link"
+                                  className="flex items-center justify-center w-10 h-10 bg-red-50 hover:bg-red-100 text-red-600 dark:bg-red-900/20 dark:hover:bg-red-900/40 dark:text-red-400 rounded-lg transition-colors focus:outline-none disabled:opacity-50 border border-red-100 dark:border-red-800/50 shadow-sm"
+                                >
+                                  <SafeIcon icon={FiTrash2} className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            /* ── DISPLAY MODE — PERMANENTLY VISIBLE ACTION ICONS ── */
+                            <>
+                              <div
+                                className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 border border-gray-100 dark:border-gray-700 shadow-inner"
+                                style={{ backgroundColor: meta.color + "15" }}
+                              >
+                                <PlatformIcon className="w-4 h-4" style={{ color: meta.color }} />
+                              </div>
+
+                              <div className="w-full sm:w-40 shrink-0">
+                                <span className="text-[13px] font-extrabold text-gray-800 dark:text-gray-200">
+                                  {link.platform}
+                                </span>
+                              </div>
+
+                              <div className="flex-1 min-w-0 bg-gray-50 dark:bg-gray-900/50 px-3 py-2 rounded-lg border border-gray-100 dark:border-gray-700/80">
+                                <a
+                                  href={link.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1.5 text-[13px] font-mono text-gray-500 dark:text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors truncate max-w-full"
+                                >
+                                  <SafeIcon icon={FiExternalLink} className="w-3.5 h-3.5 shrink-0" />
+                                  <span className="truncate">{link.url.replace(/^https?:\/\//, "")}</span>
+                                </a>
+                              </div>
+
+                              {/* Action buttons — prominently visible solid buttons */}
+                              <div className="flex items-center gap-1.5 shrink-0 pl-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleEditSocialRow(link.id)}
+                                  title="Edit link"
+                                  className="flex items-center justify-center w-10 h-10 bg-white dark:bg-gray-800 text-gray-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:text-blue-400 dark:hover:bg-blue-900/20 border border-gray-200 dark:border-gray-700 hover:border-blue-200 dark:hover:border-blue-800 rounded-lg transition-all focus:outline-none shadow-sm"
+                                >
+                                  <SafeIcon icon={FiEdit2} className="w-4 h-4" />
+                                </button>
+                           
+                                <button
+                                  type="button"
+                                  onClick={() => removeSocialLink(link.id)}
+                                  title="Remove link"
+                                  className="flex items-center justify-center w-10 h-10 bg-white dark:bg-gray-800 text-gray-500 hover:text-red-600 hover:bg-red-50 dark:hover:text-red-400 dark:hover:bg-red-900/20 border border-gray-200 dark:border-gray-700 hover:border-red-200 dark:hover:border-red-800 rounded-lg transition-all focus:outline-none shadow-sm"
+                                >
+                                  <SafeIcon icon={FiTrash2} className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
+          </SectionCard>
+
+          {/* Bottom Action Footer */}
+          <div className="flex items-center justify-between pt-4 pb-2">
+            <button
+              type="button"
+              onClick={() => navigate("/content/authors")}
+              className="px-4 py-2.5 text-[13px] font-bold text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-sm hover:shadow transition-all focus:outline-none"
+            >
+              Cancel & Discard
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={submitting}
+              className="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-bold rounded-lg transition-all duration-150 shadow-md focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {submitting ? <LoadingSpinner size="xs" color="white" /> : <SafeIcon icon={FiSave} className="w-4 h-4" />}
+              {submitting ? "Saving Data…" : "Save Profile Details"}
+            </button>
+          </div>
+        </motion.div>
+      </div>
+    </div>
+  );
+};
+
+export default AuthorProfileEditor;

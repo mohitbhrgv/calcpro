@@ -1,0 +1,1702 @@
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useEditor, EditorContent, NodeViewWrapper, ReactNodeViewRenderer } from '@tiptap/react';
+import { Node, mergeAttributes } from '@tiptap/core';
+import { StarterKit } from '@tiptap/starter-kit';
+import { Underline } from '@tiptap/extension-underline';
+import { Link } from '@tiptap/extension-link';
+import { Image } from '@tiptap/extension-image';
+import { Table } from '@tiptap/extension-table';
+import { TableRow } from '@tiptap/extension-table-row';
+import { TableCell as BaseTableCell } from '@tiptap/extension-table-cell';
+import { TableHeader as BaseTableHeader } from '@tiptap/extension-table-header';
+import { Color } from '@tiptap/extension-color';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { Highlight } from '@tiptap/extension-highlight';
+import { TextAlign } from '@tiptap/extension-text-align';
+import { Subscript } from '@tiptap/extension-subscript';
+import { Superscript } from '@tiptap/extension-superscript';
+import DOMPurify from 'dompurify';
+import {
+  Bold, Italic, Underline as UnderlineIcon, Strikethrough,
+  Subscript as SubscriptIcon, Superscript as SuperscriptIcon,
+  AlignLeft, AlignCenter, AlignRight, AlignJustify,
+  List, ListOrdered, Link as LinkIcon, Image as ImageIcon,
+  Table as TableIcon, Undo, Redo, Columns, Rows, Trash2, Code, 
+  RemoveFormatting, Highlighter, ChevronDown,
+  Quote, Type, Eraser, Combine, Split, LayoutGrid,
+  PanelTop, PanelLeft, MousePointerClick, FileCode, Check, X,
+  ExternalLink, Palette, MoveHorizontal, Sparkles, Edit
+} from 'lucide-react';
+
+// --- GLOBAL SMART URL FORMATTER ---
+const formatSmartUrl = (url) => {
+  if (!url) return '';
+  const trimmed = url.trim();
+  if (
+    /^https?:\/\//i.test(trimmed) || 
+    trimmed.startsWith('mailto:') || 
+    trimmed.startsWith('tel:') || 
+    trimmed.startsWith('/') || 
+    trimmed.startsWith('#')
+  ) {
+    return trimmed;
+  }
+  return `https://${trimmed}`;
+};
+
+const CustomLink = Link.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      rel: { default: 'noopener noreferrer' },
+      target: { default: '_blank' },
+    }
+  }
+});
+
+const NodeColorControl = ({ label, value, onChange }) => (
+  <div className="flex flex-col gap-1">
+    <label className="block text-[10px] font-bold text-gray-500 uppercase truncate">{label}</label>
+    <div className="flex items-center gap-1 p-1 border border-gray-200 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-gray-900 focus-within:ring-1 focus-within:ring-indigo-500 transition-all">
+       <input type="color" value={value || '#000000'} onChange={e => onChange(e.target.value)} className="w-5 h-5 rounded cursor-pointer border-none p-0 shrink-0 bg-transparent" />
+       <input type="text" value={value || '#000000'} onChange={e => onChange(e.target.value)} className="w-full text-[10px] font-mono bg-transparent border-none outline-none p-0 uppercase text-gray-700 dark:text-gray-300" maxLength={7} />
+    </div>
+  </div>
+);
+
+const CtaButtonComponent = ({ node, updateAttributes, selected, editor, getPos, deleteNode }) => {
+  const [activeTab, setActiveTab] = useState('content');
+  const [popoverPos, setPopoverPos] = useState('above');
+  const wrapperRef = useRef(null);
+
+  const { 
+     text, href, bgColor, textColor, hoverBgColor, hoverTextColor, align, 
+     openInNewTab, nofollow, sponsored, paddingX, paddingY, hoverEffect,
+     isBold, isItalic, isUnderline
+  } = node.attrs;
+
+  const safePx = parseInt(paddingX, 10) || 32;
+  const safePy = parseInt(paddingY, 10) || 14;
+  const currentEffect = hoverEffect || 'none';
+
+  const justifyClass = align === 'center' ? 'justify-center' : align === 'right' ? 'justify-end' : 'justify-start';
+
+  useEffect(() => {
+    if (selected && wrapperRef.current) {
+       const rect = wrapperRef.current.getBoundingClientRect();
+       if (rect.top < 350) setPopoverPos('below');
+       else setPopoverPos('above');
+    }
+  }, [selected]);
+
+  const stopPropagation = useCallback((e) => {
+    e.stopPropagation();
+    e.nativeEvent?.stopImmediatePropagation();
+  }, []);
+
+  const handleApplySettings = () => {
+    if (typeof getPos === 'function') {
+       editor.chain().focus().setTextSelection(getPos() + node.nodeSize).run();
+    }
+  };
+
+  const handleResetDefaults = () => {
+    updateAttributes({
+      bgColor: '#4f46e5',
+      textColor: '#ffffff',
+      hoverBgColor: '#4338ca',
+      hoverTextColor: '#ffffff',
+      align: 'center',
+      openInNewTab: true,
+      nofollow: false,
+      sponsored: false,
+      paddingX: 32,
+      paddingY: 14,
+      hoverEffect: 'none',
+      isBold: 'true',
+      isItalic: 'false',
+      isUnderline: 'false'
+    });
+  };
+
+  const popoverClass = popoverPos === 'above' 
+    ? 'absolute bottom-full mb-4 left-1/2 -translate-x-1/2' 
+    : 'absolute top-full mt-4 left-1/2 -translate-x-1/2';
+
+  const arrowClass = popoverPos === 'above'
+    ? 'absolute top-full left-1/2 -translate-x-1/2 -mt-px border-8 border-transparent border-t-white dark:border-t-gray-800'
+    : 'absolute bottom-full left-1/2 -translate-x-1/2 -mb-px border-8 border-transparent border-b-white dark:border-b-gray-800';
+
+  const effectOptions = [
+    { id: 'none', label: 'None' },
+    { id: 'lift', label: 'Subtle Lift' },
+    { id: 'scale', label: 'Minimal Scale' },
+    { id: 'glow', label: 'Soft Glow' },
+    { id: 'slide', label: 'Slide Right' }
+  ];
+
+  return (
+    <NodeViewWrapper ref={wrapperRef} className={`relative w-full my-8 p-4 pt-8 rounded-xl border-2 transition-all duration-200 group select-none ${selected ? 'border-indigo-400 bg-indigo-50/30 dark:bg-indigo-900/20' : 'border-dashed border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-600'}`}>
+      
+      <div className={`absolute top-0 left-0 px-3 py-1 rounded-br-lg rounded-tl-lg text-[10px] font-bold uppercase tracking-wider z-10 transition-colors ${selected ? 'bg-indigo-500 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-500'}`}>
+         CTA Button Block
+      </div>
+
+      {selected && (
+        <button 
+           type="button"
+           onClick={(e) => {
+             e.preventDefault();
+             e.stopPropagation();
+             deleteNode();
+           }}
+           className="absolute top-2 right-2 p-1.5 text-gray-400 hover:text-red-600 dark:text-gray-500 dark:hover:text-red-400 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors focus:outline-none z-10 flex items-center justify-center"
+           title="Remove CTA Button"
+        >
+           <Trash2 size={16} />
+        </button>
+      )}
+
+      {selected && (
+        <div 
+          contentEditable={false} 
+          className={`${popoverClass} bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-2xl rounded-xl z-[100] flex flex-col w-[380px] overflow-visible animate-in fade-in zoom-in-95`}
+          onMouseDown={stopPropagation}
+          onMouseUp={stopPropagation}
+          onPointerDown={stopPropagation}
+          onClick={stopPropagation}
+          onKeyDown={stopPropagation}
+          onDragStart={stopPropagation}
+        >
+          <div className="flex border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 rounded-t-xl overflow-hidden">
+             <button type="button" onClick={() => setActiveTab('content')} className={`flex-1 py-2 text-[9px] font-bold uppercase flex flex-col items-center justify-center gap-1 transition-colors ${activeTab === 'content' ? 'bg-white dark:bg-gray-800 text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-600' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'}`}><Type size={14}/> Content</button>
+             <button type="button" onClick={() => setActiveTab('colors')} className={`flex-1 py-2 text-[9px] font-bold uppercase flex flex-col items-center justify-center gap-1 transition-colors ${activeTab === 'colors' ? 'bg-white dark:bg-gray-800 text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-600' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'}`}><Palette size={14}/> Colors</button>
+             <button type="button" onClick={() => setActiveTab('layout')} className={`flex-1 py-2 text-[9px] font-bold uppercase flex flex-col items-center justify-center gap-1 transition-colors ${activeTab === 'layout' ? 'bg-white dark:bg-gray-800 text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-600' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'}`}><MoveHorizontal size={14}/> Layout</button>
+             <button type="button" onClick={() => setActiveTab('effects')} className={`flex-1 py-2 text-[9px] font-bold uppercase flex flex-col items-center justify-center gap-1 transition-colors ${activeTab === 'effects' ? 'bg-white dark:bg-gray-800 text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-600' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'}`}><Sparkles size={14}/> Effects</button>
+          </div>
+
+          <div className="p-4 h-[280px] overflow-y-auto custom-scrollbar">
+             {activeTab === 'content' && (
+                <div className="space-y-4">
+                   <div>
+                      <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Button Label</label>
+                      <input type="text" value={text} onChange={e => updateAttributes({ text: e.target.value })} className="w-full text-sm px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all" />
+                   </div>
+                   <div>
+                      <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Destination URL</label>
+                      <input 
+                        type="url" 
+                        value={href} 
+                        onChange={e => updateAttributes({ href: e.target.value })} 
+                        onBlur={e => updateAttributes({ href: formatSmartUrl(e.target.value) })}
+                        placeholder="https://" 
+                        className="w-full text-sm px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all" 
+                      />
+                   </div>
+
+                   <div className="pt-2 border-t border-gray-100 dark:border-gray-700 space-y-2">
+                     <label className="flex items-center gap-2.5 text-[11.5px] font-semibold text-gray-700 dark:text-gray-300 cursor-pointer hover:text-indigo-600 transition-colors">
+                        <input type="checkbox" checked={openInNewTab} onChange={e => updateAttributes({ openInNewTab: e.target.checked })} className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer" />
+                        <ExternalLink size={13} className="opacity-70" /> Open in new tab (target="_blank")
+                     </label>
+                     <label className="flex items-center gap-2.5 text-[11.5px] font-semibold text-gray-700 dark:text-gray-300 cursor-pointer hover:text-indigo-600 transition-colors pl-6">
+                        <input type="checkbox" checked={nofollow} onChange={e => updateAttributes({ nofollow: e.target.checked })} className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer" />
+                        Set to nofollow
+                     </label>
+                     <label className="flex items-center gap-2.5 text-[11.5px] font-semibold text-gray-700 dark:text-gray-300 cursor-pointer hover:text-indigo-600 transition-colors pl-6">
+                        <input type="checkbox" checked={sponsored} onChange={e => updateAttributes({ sponsored: e.target.checked })} className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer" />
+                        Set to sponsored
+                     </label>
+                   </div>
+                </div>
+             )}
+
+             {activeTab === 'colors' && (
+                <div className="grid grid-cols-2 gap-4">
+                   <NodeColorControl label="Background Color" value={bgColor} onChange={v => updateAttributes({ bgColor: v })} />
+                   <NodeColorControl label="Text Color" value={textColor} onChange={v => updateAttributes({ textColor: v })} />
+                   <NodeColorControl label="Hover Background" value={hoverBgColor} onChange={v => updateAttributes({ hoverBgColor: v })} />
+                   <NodeColorControl label="Hover Text" value={hoverTextColor} onChange={v => updateAttributes({ hoverTextColor: v })} />
+                </div>
+             )}
+
+             {activeTab === 'layout' && (
+                <div className="space-y-4">
+                   <div>
+                      <div className="flex justify-between mb-1">
+                         <label className="block text-[10px] font-bold text-gray-500 uppercase">Horizontal Size (Width)</label>
+                         <span className="text-[10px] text-gray-400 font-mono">{safePx}px</span>
+                      </div>
+                      <input type="range" min="12" max="120" step="2" value={safePx} onChange={e => updateAttributes({ paddingX: parseInt(e.target.value, 10) })} className="w-full accent-indigo-600 cursor-pointer" />
+                   </div>
+                   <div>
+                      <div className="flex justify-between mb-1">
+                         <label className="block text-[10px] font-bold text-gray-500 uppercase">Vertical Size (Height)</label>
+                         <span className="text-[10px] text-gray-400 font-mono">{safePy}px</span>
+                      </div>
+                      <input type="range" min="8" max="60" step="2" value={safePy} onChange={e => updateAttributes({ paddingY: parseInt(e.target.value, 10) })} className="w-full accent-indigo-600 cursor-pointer" />
+                   </div>
+
+                   <div className="pt-3 border-t border-gray-100 dark:border-gray-700">
+                      <div className="flex items-center justify-between mb-3">
+                         <span className="text-[10px] font-bold text-gray-500 uppercase">Alignment</span>
+                         <div className="flex bg-gray-100 dark:bg-gray-900 rounded-lg p-0.5 border border-gray-200 dark:border-gray-700">
+                            {['left', 'center', 'right'].map(a => (
+                              <button key={a} type="button" onClick={() => updateAttributes({ align: a })} className={`p-1 rounded-md transition-colors ${align === a ? 'bg-white dark:bg-gray-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-300'}`}>
+                                 {a === 'left' ? <AlignLeft size={16}/> : a === 'center' ? <AlignCenter size={16}/> : <AlignRight size={16}/>}
+                              </button>
+                            ))}
+                         </div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                         <span className="text-[10px] font-bold text-gray-500 uppercase">Text Style</span>
+                         <div className="flex bg-gray-100 dark:bg-gray-900 rounded-lg p-0.5 border border-gray-200 dark:border-gray-700">
+                            <button type="button" onClick={() => updateAttributes({ isBold: isBold === 'true' ? 'false' : 'true' })} className={`p-1.5 rounded-md transition-colors ${isBold === 'true' ? 'bg-white dark:bg-gray-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-300'}`}><Bold size={14}/></button>
+                            <button type="button" onClick={() => updateAttributes({ isItalic: isItalic === 'true' ? 'false' : 'true' })} className={`p-1.5 rounded-md transition-colors ${isItalic === 'true' ? 'bg-white dark:bg-gray-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-300'}`}><Italic size={14}/></button>
+                            <button type="button" onClick={() => updateAttributes({ isUnderline: isUnderline === 'true' ? 'false' : 'true' })} className={`p-1.5 rounded-md transition-colors ${isUnderline === 'true' ? 'bg-white dark:bg-gray-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-300'}`}><UnderlineIcon size={14}/></button>
+                         </div>
+                      </div>
+                   </div>
+                </div>
+             )}
+
+             {activeTab === 'effects' && (
+                <div className="space-y-2">
+                   {effectOptions.map(anim => {
+                      const isActive = currentEffect === anim.id;
+                      return (
+                        <button 
+                           key={anim.id}
+                           type="button"
+                           onPointerDown={(e) => e.stopPropagation()}
+                           onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              updateAttributes({ hoverEffect: anim.id });
+                           }}
+                           className={`w-full flex items-center justify-between px-4 py-2.5 rounded-lg border transition-all duration-200 focus:outline-none ${isActive ? 'bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-900/30 dark:border-indigo-800 dark:text-indigo-300 font-semibold' : 'bg-transparent border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800'}`}
+                        >
+                           <span className="text-xs uppercase tracking-wide">{anim.label}</span>
+                           {isActive && <Check size={16} className="text-indigo-500" />}
+                        </button>
+                      );
+                   })}
+                </div>
+             )}
+          </div>
+
+          <div className="p-3 bg-gray-50 dark:bg-gray-900/80 border-t border-gray-200 dark:border-gray-700 rounded-b-xl flex justify-between items-center">
+             <button type="button" onClick={handleResetDefaults} className="text-[10px] text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400 font-bold uppercase tracking-wide transition-colors focus:outline-none flex items-center gap-1">
+                 <Undo size={12} /> Reset
+             </button>
+             <button type="button" onClick={handleApplySettings} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold uppercase tracking-wide rounded-md shadow transition-colors flex items-center gap-1.5 focus:outline-none">
+                <Check size={14} /> Apply Settings
+             </button>
+          </div>
+
+          <div className={arrowClass} />
+        </div>
+      )}
+      
+      <div className={`flex w-full my-10 ${justifyClass}`}>
+         <a
+            role="button"
+            onClick={(e) => {
+               e.preventDefault();
+               e.stopPropagation();
+            }}
+            data-type="cta-button"
+            data-hover-effect={currentEffect}
+            data-bold={isBold}
+            data-italic={isItalic}
+            data-underline={isUnderline}
+            className={`inline-block rounded-xl shadow-lg transition-all duration-200 cursor-pointer text-center ${selected ? 'ring-4 ring-indigo-500/30' : ''}`}
+            style={{ 
+               '--btn-bg': bgColor, 
+               '--btn-color': textColor, 
+               '--btn-hover-bg': hoverBgColor, 
+               '--btn-hover-color': hoverTextColor, 
+               backgroundColor: 'var(--btn-bg)', 
+               color: 'var(--btn-color)', 
+               padding: `${safePy}px ${safePx}px`, 
+               width: 'auto'
+            }}
+         >
+            {text || 'Empty Button'}
+         </a>
+      </div>
+    </NodeViewWrapper>
+  );
+};
+
+const CtaButton = Node.create({
+  name: 'ctaButton',
+  group: 'block',
+  atom: true,
+  addAttributes() {
+    return {
+      text: { default: 'Click Here' },
+      href: { default: '' },
+      bgColor: { default: '#4f46e5' },
+      textColor: { default: '#ffffff' },
+      hoverBgColor: { default: '#4338ca' },
+      hoverTextColor: { default: '#ffffff' },
+      align: { default: 'center' },
+      openInNewTab: { default: true },
+      nofollow: { default: false },
+      sponsored: { default: false },
+      paddingX: { default: 32 },
+      paddingY: { default: 14 },
+      hoverEffect: { default: 'none' },
+      isBold: { default: 'true' },
+      isItalic: { default: 'false' },
+      isUnderline: { default: 'false' }
+    };
+  },
+  parseHTML() {
+    return [{
+      tag: 'div[data-type="cta-wrapper"]',
+      getAttrs: dom => {
+        const a = dom.querySelector('a[data-type="cta-button"]');
+        if (!a) return false;
+        const rel = a.getAttribute('rel') || '';
+        
+        const pxRaw = a.getAttribute('data-px') || '32';
+        const pyRaw = a.getAttribute('data-py') || '14';
+        const px = pxRaw.includes('rem') ? parseFloat(pxRaw) * 16 : parseInt(pxRaw, 10);
+        const py = pyRaw.includes('rem') ? parseFloat(pyRaw) * 16 : parseInt(pyRaw, 10);
+
+        return {
+          align: dom.getAttribute('data-align') || 'center',
+          href: a.getAttribute('href') || '',
+          text: a.innerText || 'Click Here',
+          bgColor: a.getAttribute('data-bg') || '#4f46e5',
+          textColor: a.getAttribute('data-text') || '#ffffff',
+          hoverBgColor: a.getAttribute('data-hover-bg') || '#4338ca',
+          hoverTextColor: a.getAttribute('data-hover-text') || '#ffffff',
+          openInNewTab: a.getAttribute('target') === '_blank',
+          nofollow: rel.includes('nofollow'),
+          sponsored: rel.includes('sponsored'),
+          paddingX: isNaN(px) ? 32 : px,
+          paddingY: isNaN(py) ? 14 : py,
+          hoverEffect: a.getAttribute('data-hover-effect') || 'none',
+          isBold: a.getAttribute('data-bold') || 'true',
+          isItalic: a.getAttribute('data-italic') || 'false',
+          isUnderline: a.getAttribute('data-underline') || 'false'
+        };
+      }
+    }];
+  },
+  renderHTML({ node }) {
+    const { 
+       text, href, bgColor, textColor, hoverBgColor, hoverTextColor, align, 
+       openInNewTab, nofollow, sponsored, paddingX, paddingY, hoverEffect,
+       isBold, isItalic, isUnderline
+    } = node.attrs;
+
+    const justifyClass = align === 'center' ? 'justify-center' : align === 'right' ? 'justify-end' : 'justify-start';
+
+    let rels = ['noopener', 'noreferrer'];
+    if (nofollow) rels.push('nofollow');
+    if (sponsored) rels.push('sponsored');
+
+    return [
+      'div',
+      {
+        class: `flex w-full my-10 ${justifyClass}`,
+        'data-type': 'cta-wrapper',
+        'data-align': align
+      },
+      [
+        'a',
+        {
+          'data-type': 'cta-button',
+          href: href || '#',
+          class: 'inline-block rounded-xl shadow-lg transition-all duration-200 cursor-pointer text-center no-underline',
+          target: openInNewTab ? '_blank' : '_self',
+          rel: rels.join(' '),
+          'data-bg': bgColor,
+          'data-text': textColor,
+          'data-hover-bg': hoverBgColor,
+          'data-hover-text': hoverTextColor,
+          'data-px': paddingX,
+          'data-py': paddingY,
+          'data-hover-effect': hoverEffect,
+          'data-bold': isBold,
+          'data-italic': isItalic,
+          'data-underline': isUnderline,
+          style: `--btn-bg: ${bgColor}; --btn-color: ${textColor}; --btn-hover-bg: ${hoverBgColor}; --btn-hover-color: ${hoverTextColor}; background-color: var(--btn-bg); color: var(--btn-color); padding: ${paddingY}px ${paddingX}px; width: auto;`
+        },
+        text
+      ]
+    ];
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(CtaButtonComponent);
+  }
+});
+
+const RawHtmlComponent = ({ node, updateAttributes, selected, deleteNode }) => {
+  const [isEditing, setIsEditing] = useState(!node.attrs.html);
+
+  const stopPropagation = useCallback((e) => {
+    e.stopPropagation();
+    e.nativeEvent?.stopImmediatePropagation();
+  }, []);
+
+  useEffect(() => { if (!selected && node.attrs.html) setIsEditing(false); }, [selected, node.attrs.html]);
+
+  const hasTargetBlank = node.attrs.html?.includes('target="_blank"') || false;
+  const hasNofollow = node.attrs.html?.includes('nofollow') || false;
+  const hasSponsored = node.attrs.html?.includes('sponsored') || false;
+
+  const applySeoMacro = (config) => {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = node.attrs.html || '';
+    const links = tempDiv.querySelectorAll('a');
+    
+    links.forEach(a => {
+        if (config.openInNewTab) a.setAttribute('target', '_blank');
+        else a.removeAttribute('target');
+        
+        let rels = ['noopener', 'noreferrer'];
+        if (config.nofollow) rels.push('nofollow');
+        if (config.sponsored) rels.push('sponsored');
+        
+        if (rels.length > 2 || config.nofollow || config.sponsored) {
+            a.setAttribute('rel', rels.join(' '));
+        } else {
+            a.setAttribute('rel', 'noopener noreferrer');
+        }
+    });
+    
+    updateAttributes({ html: tempDiv.innerHTML });
+  };
+
+  return (
+    <NodeViewWrapper className={`relative w-full mt-10 mb-8 border-2 border-dashed rounded-xl transition-all bg-gray-50 dark:bg-gray-800/50 ${selected ? 'border-amber-400 ring-4 ring-amber-400/20 shadow-lg' : 'border-gray-300 dark:border-gray-600'}`}>
+      
+      <div className={`absolute -top-3 left-4 bg-white dark:bg-gray-800 border-2 transition-colors px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider z-10 ${selected ? 'border-amber-400 text-amber-600 dark:text-amber-500' : 'border-gray-200 dark:border-gray-700 text-gray-400 group-hover:text-amber-500'}`}>
+         Raw HTML Block
+      </div>
+      
+      <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-700 flex justify-end items-center gap-2 bg-gray-100 dark:bg-gray-800 mt-[2px] rounded-t-lg">
+         {selected && (
+           <div className="flex items-center gap-2">
+             <button onClick={() => setIsEditing(!isEditing)} className="text-xs font-semibold px-3 py-1.5 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 shadow-sm border border-gray-200 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors focus:outline-none">
+               {isEditing ? 'Preview Output' : 'Edit Tag Source'}
+             </button>
+             <div className="w-px h-5 bg-gray-300 dark:bg-gray-600 mx-0.5" />
+             <button onClick={deleteNode} className="p-1.5 text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors focus:outline-none flex items-center justify-center" title="Remove HTML Block">
+               <Trash2 size={16} />
+             </button>
+           </div>
+         )}
+      </div>
+      
+      <div 
+         className="p-4" 
+         onKeyDown={stopPropagation} 
+         onMouseDown={stopPropagation} 
+         onClick={stopPropagation}
+      >
+         {isEditing ? (
+            <div className="flex flex-col">
+              <textarea
+                className="w-full h-32 font-mono text-sm p-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-amber-500 outline-none transition-all resize-y"
+                value={node.attrs.html}
+                onChange={e => updateAttributes({ html: e.target.value })}
+                onPointerDown={stopPropagation}
+                placeholder="<a href='https://...'><img src='...' alt='Banner'/></a>"
+              />
+              
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-3 pt-4 mt-3 border-t border-gray-200 dark:border-gray-700">
+                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider w-full mb-[-8px]">Auto-Inject SEO Attributes</span>
+                <label className="flex items-center gap-2 text-xs font-semibold text-gray-700 dark:text-gray-300 cursor-pointer hover:text-amber-600 transition-colors">
+                  <input type="checkbox" checked={hasTargetBlank} onChange={e => applySeoMacro({ openInNewTab: e.target.checked, nofollow: hasNofollow, sponsored: hasSponsored })} className="rounded border-gray-300 text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer" />
+                  Open in new tab
+                </label>
+                <label className="flex items-center gap-2 text-xs font-semibold text-gray-700 dark:text-gray-300 cursor-pointer hover:text-amber-600 transition-colors">
+                  <input type="checkbox" checked={hasNofollow} onChange={e => applySeoMacro({ openInNewTab: hasTargetBlank, nofollow: e.target.checked, sponsored: hasSponsored })} className="rounded border-gray-300 text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer" />
+                  Nofollow
+                </label>
+                <label className="flex items-center gap-2 text-xs font-semibold text-gray-700 dark:text-gray-300 cursor-pointer hover:text-amber-600 transition-colors">
+                  <input type="checkbox" checked={hasSponsored} onChange={e => applySeoMacro({ openInNewTab: hasTargetBlank, nofollow: hasNofollow, sponsored: e.target.checked })} className="rounded border-gray-300 text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer" />
+                  Sponsored
+                </label>
+              </div>
+            </div>
+         ) : (
+            <div dangerouslySetInnerHTML={{ 
+                __html: node.attrs.html 
+                    ? DOMPurify.sanitize(node.attrs.html, {
+                        ADD_TAGS: ['iframe', 'style'],
+                        ADD_ATTR: ['target', 'rel', 'class', 'style', 'allow', 'allowfullscreen', 'frameborder', 'scrolling']
+                      })
+                    : '<p class="text-sm text-gray-400 italic font-medium">Empty HTML Block. Click to edit.</p>' 
+              }} className="pointer-events-none opacity-90 transition-opacity overflow-hidden" />
+         )}
+      </div>
+    </NodeViewWrapper>
+  );
+};
+
+const RawHtmlBlock = Node.create({
+  name: 'rawHtmlBlock',
+  group: 'block',
+  atom: true,
+  addAttributes() { 
+    return { html: { default: '' } }; 
+  },
+  parseHTML() { 
+    return [{ 
+      tag: 'div[data-type="raw-html"]', 
+      getAttrs: dom => ({ html: dom.innerHTML }) 
+    }]; 
+  },
+  renderHTML({ node }) {
+    const div = document.createElement('div');
+    div.setAttribute('data-type', 'raw-html');
+    div.innerHTML = node.attrs.html; 
+    return div;
+  },
+  addNodeView() { return ReactNodeViewRenderer(RawHtmlComponent); }
+});
+
+const ImageNodeComponent = ({ node, updateAttributes, selected, editor, getPos, deleteNode }) => {
+  const [showLinkMenu, setShowLinkMenu] = useState(false);
+  
+  useEffect(() => {
+    if (!selected) setShowLinkMenu(false);
+  }, [selected]);
+
+  const stopPropagation = useCallback((e) => {
+    e.stopPropagation();
+  }, []);
+
+  return (
+    <NodeViewWrapper className={`relative inline-block max-w-full mt-10 mb-4 transition-all duration-200 ${selected ? 'ring-4 ring-indigo-500/40 rounded-xl' : ''}`}>
+      
+      {selected && (
+        <div className="absolute bottom-full mb-3 right-0 flex space-x-1.5 p-1.5 bg-gray-900/90 backdrop-blur-sm rounded-lg shadow-xl z-30" contentEditable={false}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setShowLinkMenu(!showLinkMenu);
+            }}
+            className={`p-1.5 rounded-md transition-colors focus:outline-none ${showLinkMenu ? 'bg-indigo-500 text-white' : 'text-white hover:bg-indigo-500 hover:text-white'}`}
+            title={node.attrs.href ? "Edit Image Link" : "Add Image Link"}
+          >
+            <LinkIcon className="w-4 h-4" />
+          </button>
+          
+          <div className="w-px h-6 bg-gray-700 mx-1" />
+          
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setShowLinkMenu(false);
+              if (editor.storage.imageOptions?.onRequestMedia) {
+                editor.storage.imageOptions.onRequestMedia({
+                  src: node.attrs.src,
+                  pos: getPos(),
+                  alt: node.attrs.alt
+                });
+              }
+            }}
+            className="p-1.5 text-white hover:bg-indigo-500 hover:text-white rounded-md transition-colors focus:outline-none"
+            title="Edit Image Details"
+          >
+            <Edit className="w-4 h-4" />
+          </button>
+          <div className="w-px h-6 bg-gray-700 mx-1" />
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              deleteNode();
+            }}
+            className="p-1.5 text-white hover:bg-red-500 hover:text-white rounded-md transition-colors focus:outline-none"
+            title="Remove Image"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      <img
+        src={node.attrs.src}
+        alt={node.attrs.alt}
+        title={node.attrs.title}
+        width={node.attrs.width}
+        height={node.attrs.height}
+        className={`max-w-full h-auto rounded-xl shadow-md border border-gray-200 dark:border-gray-700 cursor-pointer ${node.attrs.href ? 'ring-2 ring-indigo-400 ring-offset-2 dark:ring-offset-gray-900' : ''}`}
+      />
+
+      {selected && showLinkMenu && (
+        <div 
+          contentEditable={false} 
+          className="absolute top-2 right-0 w-[280px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-2xl rounded-xl p-3 z-40 animate-in fade-in zoom-in-95 cursor-default" 
+          onMouseDown={stopPropagation}
+          onMouseUp={stopPropagation}
+          onPointerDown={stopPropagation}
+          onClick={stopPropagation}
+          onKeyDown={stopPropagation}
+        >
+           <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Image Link URL</label>
+           <input 
+              type="url" 
+              placeholder="https://" 
+              value={node.attrs.href} 
+              onChange={e => updateAttributes({ href: e.target.value })}
+              onBlur={e => updateAttributes({ href: formatSmartUrl(e.target.value) })}
+              onPointerDown={stopPropagation}
+              onKeyDown={stopPropagation}
+              className="w-full text-xs px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-indigo-500 outline-none mb-3 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white" 
+           />
+           <div className="space-y-2 pt-2 border-t border-gray-100 dark:border-gray-700">
+             <label className="flex items-center gap-2.5 text-[11px] font-semibold text-gray-700 dark:text-gray-300 cursor-pointer hover:text-indigo-600 transition-colors">
+                <input type="checkbox" checked={node.attrs.openInNewTab} onChange={e => updateAttributes({ openInNewTab: e.target.checked })} className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer" /> 
+                Open in new tab
+             </label>
+             <label className="flex items-center gap-2.5 text-[11px] font-semibold text-gray-700 dark:text-gray-300 cursor-pointer hover:text-indigo-600 transition-colors">
+                <input type="checkbox" checked={node.attrs.nofollow} onChange={e => updateAttributes({ nofollow: e.target.checked })} className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer" /> 
+                Nofollow
+             </label>
+             <label className="flex items-center gap-2.5 text-[11px] font-semibold text-gray-700 dark:text-gray-300 cursor-pointer hover:text-indigo-600 transition-colors">
+                <input type="checkbox" checked={node.attrs.sponsored} onChange={e => updateAttributes({ sponsored: e.target.checked })} className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer" /> 
+                Sponsored
+             </label>
+           </div>
+        </div>
+      )}
+    </NodeViewWrapper>
+  );
+};
+
+const CustomImage = Image.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      'data-media-id': { default: null },
+      width: { default: null },
+      height: { default: null },
+      href: { default: '' },
+      openInNewTab: { default: true },
+      nofollow: { default: false },
+      sponsored: { default: false }
+    }
+  },
+  addStorage() {
+    return {
+      imageOptions: null
+    };
+  },
+  parseHTML() {
+    return [
+      {
+        tag: 'a[href] img',
+        getAttrs: dom => {
+          const a = dom.closest('a');
+          const rel = a.getAttribute('rel') || '';
+          return {
+            href: a.getAttribute('href'),
+            openInNewTab: a.getAttribute('target') === '_blank',
+            nofollow: rel.includes('nofollow'),
+            sponsored: rel.includes('sponsored')
+          };
+        }
+      },
+      {
+        tag: 'img[src]'
+      }
+    ];
+  },
+  renderHTML({ HTMLAttributes }) {
+    const { href, openInNewTab, nofollow, sponsored, ...imgAttrs } = HTMLAttributes;
+    const img = ['img', mergeAttributes(this.options.HTMLAttributes, imgAttrs)];
+    
+    if (href && href.trim() !== '') {
+      let rels = ['noopener', 'noreferrer'];
+      if (nofollow) rels.push('nofollow');
+      if (sponsored) rels.push('sponsored');
+      return ['a', { href, target: openInNewTab ? '_blank' : '_self', rel: rels.join(' ') }, img];
+    }
+    return img;
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(ImageNodeComponent);
+  }
+});
+
+const CustomTableCell = BaseTableCell.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      colwidth: {
+        default: null,
+        parseHTML: element => {
+          const colwidth = element.getAttribute('colwidth') || element.getAttribute('data-colwidth');
+          return colwidth ? colwidth.split(',').map(item => parseInt(item, 10)) : null;
+        },
+        renderHTML: attributes => {
+          if (!attributes.colwidth) return {};
+          const width = Array.isArray(attributes.colwidth) ? attributes.colwidth[0] : attributes.colwidth;
+          return {
+            'data-colwidth': attributes.colwidth.join(','),
+            style: `width: ${width}px !important; min-width: ${width}px !important; max-width: ${width}px !important;`, 
+          };
+        },
+       },
+    };
+  },
+});
+
+const CustomTableHeader = BaseTableHeader.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      colwidth: {
+        default: null,
+        parseHTML: element => {
+          const colwidth = element.getAttribute('colwidth') || element.getAttribute('data-colwidth');
+          return colwidth ? colwidth.split(',').map(item => parseInt(item, 10)) : null;
+        },
+        renderHTML: attributes => {
+          if (!attributes.colwidth) return {};
+          const width = Array.isArray(attributes.colwidth) ? attributes.colwidth[0] : attributes.colwidth;
+          return {
+            'data-colwidth': attributes.colwidth.join(','),
+            style: `width: ${width}px !important; min-width: ${width}px !important; max-width: ${width}px !important;`,
+          };
+        },
+      },
+    };
+  },
+});
+
+const Dropdown = ({ label, icon: Icon, isOpen, onToggle, children, active, disabled }) => {
+  return (
+    <div className="relative toolbar-dropdown">
+      <button 
+        type="button"
+        onClick={disabled ? undefined : onToggle} 
+        disabled={disabled}
+        className={`flex items-center gap-1 px-2 py-1.5 rounded-md text-sm font-medium transition-colors ${
+          disabled ? 'opacity-40 cursor-not-allowed text-gray-500 dark:text-gray-500' :
+          active 
+            ? 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300' 
+            : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white'
+        }`}
+      >
+        {Icon && <Icon size={16} />}
+        {label && <span className="font-semibold">{label}</span>}
+        <ChevronDown size={14} className="opacity-60 ml-0.5" />
+      </button>
+
+      {isOpen && !disabled && (
+        <div className="absolute top-full mt-1 left-0 min-w-[180px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-xl rounded-xl py-2 z-[60] animate-in fade-in zoom-in-95 duration-100">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ToolbarPopover = ({ isOpen, onClose, title, children }) => {
+  if (!isOpen) return null;
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div className="absolute top-full mt-2 left-0 w-[380px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-2xl rounded-xl p-4 z-50 animate-in fade-in zoom-in-95 cursor-default" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-3 pb-2 border-b border-gray-100 dark:border-gray-700">
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">{title}</span>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors">
+             <X size={16} />
+          </button>
+        </div>
+        <div className="space-y-3">
+          {children}
+        </div>
+      </div>
+    </>
+  );
+};
+
+const EditableColorInput = ({ currentColor, onColorChange }) => {
+  const [localHex, setLocalHex] = useState(currentColor);
+
+  useEffect(() => { setLocalHex(currentColor); }, [currentColor]);
+
+  const handleBlur = () => {
+    if (/^#([0-9A-F]{3}){1,2}$/i.test(localHex)) onColorChange(localHex);
+    else setLocalHex(currentColor);
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); handleBlur(); }
+  };
+
+  return (
+    <div className="flex items-center gap-2 p-1.5 border border-gray-200 dark:border-gray-600 rounded-lg bg-gray-50/50 dark:bg-gray-900/50 focus-within:border-indigo-400 dark:focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-400 transition-all">
+      <div className="relative w-7 h-7 rounded overflow-hidden shrink-0 shadow-sm border border-gray-300/50 dark:border-gray-600 transition-transform hover:scale-105">
+        <div style={{ backgroundColor: currentColor }} className="w-full h-full pointer-events-none" />
+        <input type="color" value={currentColor} onInput={(e) => { setLocalHex(e.target.value); onColorChange(e.target.value); }} className="absolute -top-2 -left-2 w-12 h-12 cursor-pointer opacity-0" />
+      </div>
+      <input type="text" value={localHex} onChange={(e) => setLocalHex(e.target.value)} onBlur={handleBlur} onKeyDown={handleKeyDown} className="flex-1 w-full text-xs font-mono text-gray-700 dark:text-gray-300 uppercase tracking-wide bg-transparent outline-none border-none p-0 focus:ring-0" maxLength={7} />
+    </div>
+  );
+};
+
+const MenuBar = ({ editor, onRequestMedia, wrapperRef }) => {
+  const [activeDropdown, setActiveDropdown] = useState(null);
+  const [activePopover, setActivePopover] = useState(null);
+  
+  const [isSticky, setIsSticky] = useState(false);
+  const [stickyWidth, setStickyWidth] = useState('auto');
+  const toolbarRef = useRef(null);
+
+  const [linkInput, setLinkInput] = useState('');
+  const [linkTarget, setLinkTarget] = useState(true);
+  const [linkNofollow, setLinkNofollow] = useState(false);
+  const [linkSponsored, setLinkSponsored] = useState(false);
+
+  useEffect(() => {
+    const scrollParent = wrapperRef.current?.closest('.overflow-y-auto') || wrapperRef.current?.closest('.custom-scrollbar') || window;
+    
+    const handleScroll = () => {
+        if (!wrapperRef.current) return;
+        
+        const rect = wrapperRef.current.getBoundingClientRect();
+        const headerOffset = 64; 
+
+        if (rect.top <= headerOffset && rect.bottom > 250) {
+            setIsSticky(true);
+            setStickyWidth(wrapperRef.current.offsetWidth);
+        } else {
+            setIsSticky(false);
+            setStickyWidth('auto');
+        }
+    };
+
+    const target = scrollParent === document.documentElement ? window : scrollParent;
+    target.addEventListener('scroll', handleScroll, { passive: true });
+    window.addEventListener('resize', handleScroll);
+    
+    handleScroll(); 
+
+    return () => {
+        target.removeEventListener('scroll', handleScroll);
+        window.removeEventListener('resize', handleScroll);
+    };
+  }, [wrapperRef]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (toolbarRef.current && !toolbarRef.current.contains(event.target)) {
+        setActiveDropdown(null);
+        setActivePopover(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!editor) return;
+    const updateRender = () => setTick(t => t + 1);
+    editor.on('transaction', updateRender);
+    editor.on('selectionUpdate', updateRender);
+    return () => {
+      editor.off('transaction', updateRender);
+      editor.off('selectionUpdate', updateRender);
+    };
+  }, [editor]);
+
+  const toggleDropdown = (name) => {
+    setActivePopover(null);
+    setActiveDropdown(prev => prev === name ? null : name);
+  };
+
+  const closeDropdowns = () => {
+    setActiveDropdown(null);
+    setActivePopover(null);
+  };
+
+  if (!editor) return null;
+
+  const handleOpenLinkPopover = () => {
+    const attrs = editor.getAttributes('link');
+    setLinkInput(attrs.href || '');
+    setLinkTarget(attrs.target !== '_self');
+    setLinkNofollow(attrs.rel?.includes('nofollow') || false);
+    setLinkSponsored(attrs.rel?.includes('sponsored') || false);
+    setActiveDropdown(null);
+    setActivePopover('link');
+  };
+
+  const handleApplyLink = () => {
+    if (linkInput === '') {
+      editor.chain().focus().extendMarkRange('link').unsetLink().run();
+    } else {
+      let rels = ['noopener', 'noreferrer'];
+      if (linkNofollow) rels.push('nofollow');
+      if (linkSponsored) rels.push('sponsored');
+
+      const finalUrl = formatSmartUrl(linkInput);
+
+      editor.chain().focus().extendMarkRange('link').setLink({ 
+        href: finalUrl,
+        target: linkTarget ? '_blank' : '_self',
+        rel: rels.join(' ')
+      }).run();
+    }
+    setActivePopover(null);
+  };
+
+  const insertTable = () => {
+    editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+    closeDropdowns();
+  };
+
+  const getHeadingLabel = () => {
+    if (editor.isActive('heading', { level: 1 })) return 'H1';
+    if (editor.isActive('heading', { level: 2 })) return 'H2';
+    if (editor.isActive('heading', { level: 3 })) return 'H3';
+    if (editor.isActive('heading', { level: 4 })) return 'H4';
+    if (editor.isActive('heading', { level: 5 })) return 'H5';
+    if (editor.isActive('heading', { level: 6 })) return 'H6';
+    return 'Text';
+  };
+
+  const getAlignmentIcon = () => {
+    if (editor.isActive({ textAlign: 'center' })) return AlignCenter;
+    if (editor.isActive({ textAlign: 'right' })) return AlignRight;
+    if (editor.isActive({ textAlign: 'justify' })) return AlignJustify;
+    return AlignLeft; 
+  };
+
+  const ActiveAlignIcon = getAlignmentIcon();
+
+  const btnClass = "p-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white transition-colors shrink-0 flex items-center justify-center relative";
+  const activeBtnClass = "p-1.5 rounded-md bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 transition-colors shrink-0 flex items-center justify-center relative shadow-inner";
+  const divider = <div className="w-px h-5 bg-gray-300 dark:bg-gray-600 mx-1 shrink-0" />;
+  const dropdownItemClass = "w-full text-left px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white flex items-center gap-2 transition-colors";
+  const inputClass = "w-full text-sm px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-indigo-500 outline-none transition-all";
+
+  const currentColor = editor.getAttributes('textStyle').color || '#000000';
+  const currentHighlight = editor.getAttributes('highlight').color || '#ffff00';
+
+  const stickyStyle = isSticky ? {
+      position: 'fixed',
+      top: '64px',
+      width: `${stickyWidth}px`,
+      zIndex: 45,
+      borderTopLeftRadius: 0,
+      borderTopRightRadius: 0,
+      borderBottomLeftRadius: '0.5rem',
+      borderBottomRightRadius: '0.5rem',
+      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)'
+  } : {};
+
+  return (
+    <>
+      {isSticky && <div style={{ height: toolbarRef.current?.offsetHeight || 50 }} className="w-full" />}
+      
+      <div 
+        ref={toolbarRef} 
+        style={stickyStyle}
+        className={`flex flex-wrap items-center gap-0.5 p-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50/95 dark:bg-gray-800/95 backdrop-blur-md transition-all duration-75 ${!isSticky ? 'rounded-t-xl z-[40]' : ''}`}
+      >
+        <button onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} className={`${btnClass} disabled:opacity-30`} title="Undo"><Undo size={16} /></button>
+        <button onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()} className={`${btnClass} disabled:opacity-30`} title="Redo"><Redo size={16} /></button>
+
+        {divider}
+
+        <Dropdown 
+          label={getHeadingLabel()} 
+          isOpen={activeDropdown === 'heading'} 
+          onToggle={() => toggleDropdown('heading')} 
+          active={editor.isActive('heading')}
+          disabled={editor.isActive('table')}
+        >
+          <button onClick={() => { editor.chain().focus().setParagraph().run(); closeDropdowns(); }} className={dropdownItemClass}>
+            <Type size={16} className="opacity-50" /> Normal Text
+          </button>
+          {[1, 2, 3, 4, 5, 6].map(level => (
+            <button 
+               key={level}
+              onClick={() => { editor.chain().focus().toggleHeading({ level }).run(); closeDropdowns(); }} 
+              className={`${dropdownItemClass} ${editor.isActive('heading', { level }) ? 'bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 font-medium' : ''}`}
+            >
+              <span className="font-semibold opacity-50 w-5">H{level}</span> Heading {level}
+            </button>
+          ))}
+        </Dropdown>
+
+        <Dropdown icon={List} isOpen={activeDropdown === 'list'} onToggle={() => toggleDropdown('list')} active={editor.isActive('bulletList') || editor.isActive('orderedList')}>
+          <button onClick={() => { editor.chain().focus().toggleBulletList().run(); closeDropdowns(); }} className={dropdownItemClass}>
+            <List size={16} className="opacity-60" /> Bullet List
+          </button>
+          <button onClick={() => { editor.chain().focus().toggleOrderedList().run(); closeDropdowns(); }} className={dropdownItemClass}>
+            <ListOrdered size={16} className="opacity-60" /> Ordered List
+          </button>
+        </Dropdown>
+
+        <Dropdown icon={ActiveAlignIcon} isOpen={activeDropdown === 'align'} onToggle={() => toggleDropdown('align')} active={editor.isActive({ textAlign: 'center' }) || editor.isActive({ textAlign: 'right' }) || editor.isActive({ textAlign: 'justify' })}>
+          <button onClick={() => { editor.chain().focus().setTextAlign('left').run(); closeDropdowns(); }} className={`${dropdownItemClass} ${editor.isActive({ textAlign: 'left' }) ? 'bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' : ''}`}>
+            <AlignLeft size={16} className="opacity-60" /> Align Left
+          </button>
+          <button onClick={() => { editor.chain().focus().setTextAlign('center').run(); closeDropdowns(); }} className={`${dropdownItemClass} ${editor.isActive({ textAlign: 'center' }) ? 'bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' : ''}`}>
+            <AlignCenter size={16} className="opacity-60" /> Align Center
+          </button>
+          <button onClick={() => { editor.chain().focus().setTextAlign('right').run(); closeDropdowns(); }} className={`${dropdownItemClass} ${editor.isActive({ textAlign: 'right' }) ? 'bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' : ''}`}>
+            <AlignRight size={16} className="opacity-60" /> Align Right
+          </button>
+          <button onClick={() => { editor.chain().focus().setTextAlign('justify').run(); closeDropdowns(); }} className={`${dropdownItemClass} ${editor.isActive({ textAlign: 'justify' }) ? 'bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' : ''}`}>
+            <AlignJustify size={16} className="opacity-60" /> Justify
+          </button>
+        </Dropdown>
+
+        {divider}
+
+        <button onClick={() => editor.chain().focus().toggleBold().run()} className={editor.isActive('bold') ? activeBtnClass : btnClass} title="Bold"><Bold size={16} /></button>
+        <button onClick={() => editor.chain().focus().toggleItalic().run()} className={editor.isActive('italic') ? activeBtnClass : btnClass} title="Italic"><Italic size={16} /></button>
+        <button onClick={() => editor.chain().focus().toggleUnderline().run()} className={editor.isActive('underline') ? activeBtnClass : btnClass} title="Underline"><UnderlineIcon size={16} /></button>
+        <button onClick={() => editor.chain().focus().toggleStrike().run()} className={editor.isActive('strike') ? activeBtnClass : btnClass} title="Strikethrough"><Strikethrough size={16} /></button>
+        <button onClick={() => editor.chain().focus().toggleBlockquote().run()} className={editor.isActive('blockquote') ? activeBtnClass : btnClass} title="Quote"><Quote size={16} /></button>
+        <button onClick={() => editor.chain().focus().toggleCode().run()} className={editor.isActive('code') ? activeBtnClass : btnClass} title="Code"><Code size={16} /></button>
+        
+        <div className="relative">
+          <button onClick={handleOpenLinkPopover} className={editor.isActive('link') ? activeBtnClass : btnClass} title="Insert / Edit Link">
+            <LinkIcon size={16} />
+          </button>
+          <ToolbarPopover isOpen={activePopover === 'link'} onClose={() => setActivePopover(null)} title="Set Link Properties">
+             <input autoFocus type="url" placeholder="https://example.com" value={linkInput} onChange={e => setLinkInput(e.target.value)} className={inputClass} onKeyDown={(e) => { if (e.key === 'Enter') handleApplyLink(); }}/>
+             
+             <div className="flex flex-wrap items-center gap-x-5 gap-y-3 py-3">
+               <label className="flex items-center gap-2 text-xs font-semibold text-gray-600 dark:text-gray-300 cursor-pointer hover:text-indigo-600 transition-colors">
+                 <input type="checkbox" checked={linkTarget} onChange={e => setLinkTarget(e.target.checked)} className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer" />
+                 <ExternalLink size={14} className="opacity-70" /> Open in new tab
+               </label>
+               <label className="flex items-center gap-2 text-xs font-semibold text-gray-600 dark:text-gray-300 cursor-pointer hover:text-indigo-600 transition-colors">
+                 <input type="checkbox" checked={linkNofollow} onChange={e => setLinkNofollow(e.target.checked)} className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer" />
+                 Nofollow
+               </label>
+               <label className="flex items-center gap-2 text-xs font-semibold text-gray-600 dark:text-gray-300 cursor-pointer hover:text-indigo-600 transition-colors">
+                 <input type="checkbox" checked={linkSponsored} onChange={e => setLinkSponsored(e.target.checked)} className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer" />
+                 Sponsored
+               </label>
+             </div>
+
+             <div className="flex gap-2 pt-1 border-t border-gray-100 dark:border-gray-700 mt-1">
+               <button onClick={() => { setLinkInput(''); handleApplyLink(); }} className="flex-[0.8] py-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 font-medium rounded-lg transition-colors text-sm">Remove</button>
+               <button onClick={handleApplyLink} className="flex-[1.2] py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors text-sm flex items-center justify-center gap-1"><Check size={16}/> Apply Link</button>
+             </div>
+          </ToolbarPopover>
+        </div>
+
+        {divider}
+
+        <button 
+          onClick={() => editor.chain().focus().insertContent({ type: 'ctaButton' }).run()} 
+          className={btnClass} 
+          title="Insert Interactive CTA Button"
+        >
+          <MousePointerClick size={16} className="text-indigo-600 dark:text-indigo-400" />
+        </button>
+
+        <button 
+          onClick={() => editor.chain().focus().insertContent({ type: 'rawHtmlBlock' }).run()} 
+          className={btnClass} 
+          title="Embed Raw HTML / Banner"
+        >
+          <FileCode size={16} className="text-amber-600 dark:text-amber-500" />
+        </button>
+
+        <button onClick={() => onRequestMedia ? onRequestMedia() : window.prompt('Image URL') } className={btnClass} title="Insert Image">
+          <ImageIcon size={16} className="text-blue-500 dark:text-blue-400" />
+        </button>
+
+        <button onClick={insertTable} disabled={editor.isActive('table')} className={`${btnClass} disabled:opacity-30`} title="Insert Table">
+          <TableIcon size={16} className="text-emerald-600 dark:text-emerald-400" />
+        </button>
+
+        {divider}
+
+        <Dropdown icon={Palette} isOpen={activeDropdown === 'textColor'} onToggle={() => toggleDropdown('textColor')} active={editor.isActive('textStyle')}>
+          <div className="w-[220px] px-3 py-2">
+            <div className="flex items-center justify-between mb-3">
+               <span className="text-[11px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Text Color</span>
+               <button
+                 onClick={() => { editor.chain().focus().unsetColor().run(); closeDropdowns(); }}
+                 className="text-[11px] font-medium text-gray-400 hover:text-red-500 transition-colors flex items-center gap-1"
+                 title="Clear Color"
+               >
+                 <Eraser size={12} /> Clear
+               </button>
+             </div>
+            <EditableColorInput currentColor={currentColor} onColorChange={(val) => editor.chain().focus().setColor(val).run()} />
+          </div>
+        </Dropdown>
+
+        <Dropdown icon={Highlighter} isOpen={activeDropdown === 'highlight'} onToggle={() => toggleDropdown('highlight')} active={editor.isActive('highlight')}>
+          <div className="w-[220px] px-3 py-2">
+            <div className="flex items-center justify-between mb-3">
+               <span className="text-[11px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Highlight</span>
+               <button
+                 onClick={() => { editor.chain().focus().unsetHighlight().run(); closeDropdowns(); }}
+                 className="text-[11px] font-medium text-gray-400 hover:text-red-500 transition-colors flex items-center gap-1"
+                 title="Clear Background"
+               >
+                 <Eraser size={12} /> Clear
+               </button>
+             </div>
+            <EditableColorInput currentColor={currentHighlight} onColorChange={(val) => editor.chain().focus().setHighlight({ color: val }).run()} />
+          </div>
+        </Dropdown>
+
+        {divider}
+
+        <button onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()} className={btnClass} title="Clear Formatting">
+          <RemoveFormatting size={16} />
+        </button>
+      </div>
+    </>
+  );
+};
+
+const TableToolbar = ({ editor }) => {
+  const [activeDropdown, setActiveDropdown] = useState(null);
+  const toolbarRef = useRef(null);
+
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!editor) return;
+    const updateRender = () => setTick(t => t + 1);
+    editor.on('transaction', updateRender);
+    editor.on('selectionUpdate', updateRender);
+    return () => {
+        editor.off('transaction', updateRender);
+        editor.off('selectionUpdate', updateRender);
+    };
+  }, [editor]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (toolbarRef.current && !toolbarRef.current.contains(event.target)) {
+        setActiveDropdown(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  if (!editor) return null;
+  
+  const btnClass = "p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white transition-colors flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent";
+  const activeBtnClass = "p-1.5 rounded-md bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 transition-colors flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent";
+  const divider = <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1 shrink-0" />;
+  const dropdownItemClass = "w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white flex items-center gap-2 transition-colors";
+
+  const getAlignmentIcon = () => {
+    if (editor.isActive({ textAlign: 'center' })) return AlignCenter;
+    if (editor.isActive({ textAlign: 'right' })) return AlignRight;
+    if (editor.isActive({ textAlign: 'justify' })) return AlignJustify;
+    return AlignLeft; 
+  };
+
+  const ActiveAlignIcon = getAlignmentIcon();
+  const isHeaderCell = editor.isActive('tableHeader');
+
+  // ACCURATE HEADER STATE DETECTION: Toggle Header Row, Toggle Header Column, and
+  // Toggle Header Cell are three distinct actions and must reflect three distinct
+  // active-states. A row/column is only "active" if EVERY cell within it is a
+  // tableHeader node — checking just the current cell (as before) falsely marked
+  // all three buttons active whenever any one of them had been toggled.
+  const getTableHeaderRowColumnState = () => {
+    try {
+      const { $anchor } = editor.state.selection;
+      let rowDepth = null;
+      let tableDepth = null;
+
+      for (let d = $anchor.depth; d > 0; d--) {
+        const node = $anchor.node(d);
+        if (node.type.name === 'tableRow' && rowDepth === null) {
+          rowDepth = d;
+        }
+        if (node.type.name === 'table' && tableDepth === null) {
+          tableDepth = d;
+          break;
+        }
+      }
+
+      if (rowDepth === null || tableDepth === null) {
+        return { isHeaderRow: false, isHeaderColumn: false };
+      }
+
+      const rowNode = $anchor.node(rowDepth);
+      const tableNode = $anchor.node(tableDepth);
+      const cellOffsetInRow = $anchor.pos - $anchor.start(rowDepth);
+
+      let cellIndex = -1;
+      rowNode.forEach((cellNode, offset, index) => {
+        if (cellIndex === -1 && offset <= cellOffsetInRow && cellOffsetInRow < offset + cellNode.nodeSize) {
+          cellIndex = index;
+        }
+      });
+
+      if (cellIndex === -1) {
+        return { isHeaderRow: false, isHeaderColumn: false };
+      }
+
+      let isHeaderRow = rowNode.childCount > 0;
+      rowNode.forEach((cellNode) => {
+        if (cellNode.type.name !== 'tableHeader') isHeaderRow = false;
+      });
+
+      let isHeaderColumn = tableNode.childCount > 0;
+      tableNode.forEach((currentRowNode) => {
+        const columnCellIndex = cellIndex < currentRowNode.childCount ? cellIndex : currentRowNode.childCount - 1;
+        const columnCellNode = currentRowNode.child(columnCellIndex);
+        if (!columnCellNode || columnCellNode.type.name !== 'tableHeader') isHeaderColumn = false;
+      });
+
+      return { isHeaderRow, isHeaderColumn };
+    } catch (e) {
+      return { isHeaderRow: false, isHeaderColumn: false };
+    }
+  };
+
+  const { isHeaderRow, isHeaderColumn } = getTableHeaderRowColumnState();
+
+  return (
+    <div ref={toolbarRef} className="flex items-center gap-0.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-xl rounded-lg p-1 animate-in fade-in zoom-in-95 duration-100">
+      <Dropdown icon={LayoutGrid} isOpen={activeDropdown === 'layout'} onToggle={() => setActiveDropdown(prev => prev === 'layout' ? null : 'layout')}>
+        <div className="py-1">
+            <span className="block px-3 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Columns</span>
+            <button onClick={() => { editor.chain().focus().addColumnBefore().run(); setActiveDropdown(null); }} className={dropdownItemClass}><Columns size={14} className="opacity-60" /> Add Column Before</button>
+            <button onClick={() => { editor.chain().focus().addColumnAfter().run(); setActiveDropdown(null); }} className={dropdownItemClass}><Columns size={14} className="opacity-60" /> Add Column After</button>
+            <button onClick={() => { editor.chain().focus().deleteColumn().run(); setActiveDropdown(null); }} className={`${dropdownItemClass} text-red-600 dark:text-red-400 hover:text-red-700`}><Trash2 size={14} className="opacity-60" /> Delete Column</button>
+
+            <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
+            
+            <span className="block px-3 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Rows</span>
+            <button onClick={() => { editor.chain().focus().addRowBefore().run(); setActiveDropdown(null); }} className={dropdownItemClass}><Rows size={14} className="opacity-60" /> Add Row Before</button>
+            <button onClick={() => { editor.chain().focus().addRowAfter().run(); setActiveDropdown(null); }} className={dropdownItemClass}><Rows size={14} className="opacity-60" /> Add Row After</button>
+            <button onClick={() => { editor.chain().focus().deleteRow().run(); setActiveDropdown(null); }} className={`${dropdownItemClass} text-red-600 dark:text-red-400 hover:text-red-700`}><Trash2 size={14} className="opacity-60" /> Delete Row</button>
+        </div>
+      </Dropdown>
+
+      {divider}
+
+      <Dropdown icon={ActiveAlignIcon} isOpen={activeDropdown === 'align'} onToggle={() => setActiveDropdown(prev => prev === 'align' ? null : 'align')} active={editor.isActive({ textAlign: 'center' }) || editor.isActive({ textAlign: 'right' }) || editor.isActive({ textAlign: 'justify' })}>
+        <button onClick={() => { editor.chain().focus().setTextAlign('left').run(); setActiveDropdown(null); }} className={`${dropdownItemClass} ${editor.isActive({ textAlign: 'left' }) ? 'bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' : ''}`}><AlignLeft size={16} className="opacity-60" /> Align Left</button>
+        <button onClick={() => { editor.chain().focus().setTextAlign('center').run(); setActiveDropdown(null); }} className={`${dropdownItemClass} ${editor.isActive({ textAlign: 'center' }) ? 'bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' : ''}`}><AlignCenter size={16} className="opacity-60" /> Align Center</button>
+        <button onClick={() => { editor.chain().focus().setTextAlign('right').run(); setActiveDropdown(null); }} className={`${dropdownItemClass} ${editor.isActive({ textAlign: 'right' }) ? 'bg-indigo-50/50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' : ''}`}><AlignRight size={16} className="opacity-60" /> Align Right</button>
+      </Dropdown>
+
+      {divider}
+      
+      <button onClick={() => editor.chain().focus().mergeCells().run()} disabled={!editor.can().mergeCells()} className={btnClass} title="Merge Cells">
+        <Combine size={14} className={editor.can().mergeCells() ? "text-blue-500 dark:text-blue-400" : ""} />
+      </button>
+      <button onClick={() => editor.chain().focus().splitCell().run()} disabled={!editor.can().splitCell()} className={btnClass} title="Split Cell">
+        <Split size={14} className={editor.can().splitCell() ? "text-blue-500 dark:text-blue-400" : ""} />
+      </button>
+
+      {divider}
+
+      <button onClick={() => editor.chain().focus().toggleHeaderRow().run()} className={isHeaderRow ? activeBtnClass : btnClass} title="Toggle Header Row">
+        <PanelTop size={14} className={isHeaderRow ? "text-indigo-600 dark:text-indigo-400" : "opacity-60"} />
+      </button>
+      <button onClick={() => editor.chain().focus().toggleHeaderColumn().run()} className={isHeaderColumn ? activeBtnClass : btnClass} title="Toggle Header Column">
+        <PanelLeft size={14} className={isHeaderColumn ? "text-indigo-600 dark:text-indigo-400" : "opacity-60"} />
+      </button>
+      <button onClick={() => editor.chain().focus().toggleHeaderCell().run()} className={isHeaderCell ? activeBtnClass : btnClass} title="Toggle Header Cell">
+        <Type size={14} className={isHeaderCell ? "text-indigo-600 dark:text-indigo-400" : "opacity-60"} />
+      </button>
+
+      {divider}
+
+      <button onClick={() => { editor.chain().focus().deleteTable().run(); setActiveDropdown(null); }} className={btnClass} title="Delete Table">
+        <Trash2 size={14} className="text-red-600 dark:text-red-500" />
+      </button>
+    </div>
+  );
+};
+
+const TiptapEditor = ({ value, onChange, onRequestMedia }) => {
+  const wrapperRef = useRef(null);
+  const [isEditorActive, setIsEditorActive] = useState(false);
+  const [tableToolbarProps, setTableToolbarProps] = useState(null);
+
+  const initialContent = (value || '').replace(/(&nbsp;|&#160;|\u00A0|\xC2\xA0)+/gi, ' ');
+
+  // --- ENTERPRISE FIX ---
+  // Memoize the extensions array to prevent Tiptap from detecting duplicate names across renders
+  const extensions = useMemo(() => [
+    StarterKit,
+    CtaButton,
+    RawHtmlBlock,
+    Underline,
+    TextStyle,
+    Color,
+    Highlight.configure({ multicolor: true }),
+    TextAlign.configure({ types: ['heading', 'paragraph'] }),
+    Subscript,
+    Superscript,
+    CustomLink,
+    CustomImage,
+    Table.configure({
+      resizable: true,
+      cellMinWidth: 48, 
+      HTMLAttributes: {
+        class: 'w-full border-collapse my-4 text-sm',
+      },
+    }),
+    TableRow,
+    CustomTableHeader.configure({
+      HTMLAttributes: { class: 'px-4 py-2 text-left font-bold' },
+    }),
+    CustomTableCell.configure({
+      HTMLAttributes: { class: 'px-4 py-2 text-slate-700 dark:text-slate-200' },
+    }),
+  ], []);
+
+  const editor = useEditor({
+    extensions: extensions,
+    content: initialContent,
+    editorProps: {
+      attributes: { 
+        class: 'tiptap-content focus:outline-none text-gray-800 dark:text-gray-200 w-full h-full block min-w-0 max-w-full',
+      },
+      transformPastedHTML(html) {
+        return html.replace(/(&nbsp;|&#160;|\u00A0|\xC2\xA0)+/gi, ' ');
+      },
+      transformPastedText(text) {
+        return text.replace(/[\u00A0\xC2\xA0]+/g, ' ');
+      }
+    },
+    onUpdate: ({ editor }) => {
+      onChange(editor.getHTML());
+    },
+  });
+
+  const handleMediaRequest = useCallback((existingImageInfo = null) => {
+    if (onRequestMedia) {
+      onRequestMedia({
+         ...existingImageInfo,
+         insertImage: (url, altText = '', width = null, height = null) => {
+            if (existingImageInfo && typeof existingImageInfo.pos === 'number') {
+                editor.chain().focus().setNodeSelection(existingImageInfo.pos).updateAttributes('image', { src: url, alt: altText, width, height }).run();
+            } else {
+                editor.chain().focus().setImage({ src: url, alt: altText, width, height }).run();
+            }
+         }
+      });
+    } else {
+       const url = window.prompt('Image URL', existingImageInfo?.src || '');
+       if (url) {
+          if (existingImageInfo && typeof existingImageInfo.pos === 'number') {
+              editor.chain().focus().setNodeSelection(existingImageInfo.pos).updateAttributes('image', { src: url }).run();
+          } else {
+              editor.chain().focus().setImage({ src: url }).run();
+          }
+       }
+    }
+  }, [editor, onRequestMedia]);
+
+  useEffect(() => {
+    if (editor) {
+      editor.storage.imageOptions = { onRequestMedia: handleMediaRequest };
+    }
+  }, [editor, handleMediaRequest]);
+
+  useEffect(() => {
+      const handleFocusIn = (e) => {
+          if (wrapperRef.current && wrapperRef.current.contains(e.target)) {
+              setIsEditorActive(true);
+          }
+      };
+      const handleClick = (e) => {
+          if (wrapperRef.current && wrapperRef.current.contains(e.target)) {
+              setIsEditorActive(true);
+          } else {
+              setIsEditorActive(false); 
+          }
+      };
+
+      document.addEventListener('mousedown', handleClick);
+      document.addEventListener('focusin', handleFocusIn);
+      return () => {
+          document.removeEventListener('mousedown', handleClick);
+          document.removeEventListener('focusin', handleFocusIn);
+      };
+  }, []);
+
+  const updateTableToolbar = useCallback(() => {
+    if (!editor || !editor.isActive('table') || !isEditorActive) {
+        setTableToolbarProps(null);
+        return;
+    }
+
+    const { view, state } = editor;
+    const { from } = state.selection;
+
+    try {
+        let domNode = view.nodeDOM(from) || view.domAtPos(from).node;
+        if (!domNode) return setTableToolbarProps(null);
+        
+        const element = domNode.nodeType === 3 ? domNode.parentNode : domNode;
+        const tableElement = element.closest('table');
+        const wrapperElement = tableElement?.closest('.tableWrapper') || tableElement;
+
+        if (tableElement && wrapperElement && wrapperRef.current) {
+            const wrapperRect = wrapperElement.getBoundingClientRect();
+            // Calculate relative to the outermost wrapper
+            const editorRect = wrapperRef.current.getBoundingClientRect();
+            
+            // Apply a 46px top offset to comfortably sit directly above the table's empty margin space
+            const top = wrapperRect.top - editorRect.top - 46;
+            const left = wrapperRect.right - editorRect.left;
+
+            setTableToolbarProps({ top, left });
+        } else {
+            setTableToolbarProps(null);
+        }
+    } catch (e) {
+        setTableToolbarProps(null);
+    }
+  }, [editor, isEditorActive]);
+
+  useEffect(() => {
+    if (!editor) return;
+    
+    const updateToolbars = () => {
+        updateTableToolbar();
+    };
+
+    updateToolbars();
+
+    editor.on('selectionUpdate', updateToolbars);
+    editor.on('update', updateToolbars);
+    window.addEventListener('resize', updateToolbars);
+
+    return () => {
+      editor.off('selectionUpdate', updateToolbars);
+      editor.off('update', updateToolbars);
+      window.removeEventListener('resize', updateToolbars);
+    };
+  }, [editor, updateTableToolbar, isEditorActive]);
+
+  return (
+    <div ref={wrapperRef} className="relative flex flex-col w-full max-w-full border border-gray-300 dark:border-gray-700 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-transparent transition-all bg-white dark:bg-gray-800">
+      
+      <style>{`
+        .tiptap-content h1 { font-size: 1.875rem; font-weight: 800; line-height: 1.2; margin: 2rem 0 1rem; letter-spacing: -0.025em; color: inherit; }
+        .tiptap-content h2 { font-size: 1.5rem; font-weight: 700; line-height: 1.3; margin: 2rem 0 0.875rem; letter-spacing: -0.025em; color: inherit; }
+        .tiptap-content h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.75rem; color: inherit; }
+        .tiptap-content h4 { font-size: 1.125rem; font-weight: 600; line-height: 1.5; margin: 1.5rem 0 0.75rem; color: inherit; }
+        .tiptap-content h5 { font-size: 1rem; font-weight: 600; line-height: 1.5; margin: 1.5rem 0 0.75rem; color: inherit; }
+        .tiptap-content h6 { font-size: 0.875rem; font-weight: 600; line-height: 1.5; margin: 1.5rem 0 0.75rem; color: inherit; text-transform: uppercase; }
+        
+        @media (min-width: 768px) {
+           .tiptap-content h1 { font-size: 2.5rem; margin: 3rem 0 1.25rem; }
+           .tiptap-content h2 { font-size: 2rem; margin: 2.5rem 0 1rem; }
+           .tiptap-content h3 { font-size: 1.5rem; margin: 2rem 0 0.875rem; }
+        }
+
+        .tiptap-content p { font-size: 1rem; line-height: 1.75; margin-bottom: 1.25rem; color: #334155; word-wrap: break-word; overflow-wrap: break-word; }
+        .dark .tiptap-content p { color: #cbd5e1; }
+        
+        .tiptap-content ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1.25rem; }
+        .tiptap-content ol { list-style-type: decimal; padding-left: 1.5rem; margin-bottom: 1.25rem; }
+        .tiptap-content li p { margin-bottom: 0.5rem; }
+        .tiptap-content blockquote { border-left: 4px solid #6366f1; padding-left: 1rem; font-style: italic; opacity: 0.9; margin: 1.5rem 0; }
+
+        .tiptap-content table th:last-child .column-resize-handle,
+        .tiptap-content table td:last-child .column-resize-handle {
+           display: none !important;
+        }
+
+        .tiptap-content table th,
+        .tiptap-content table td {
+          border: 1px solid #cbd5e1 !important;
+          color: #334155 !important;
+          transition: background-color 0.15s ease-in-out;
+          overflow-wrap: break-word;
+          word-break: break-word;
+          white-space: normal;
+          min-width: 48px !important;
+        }
+        .dark .tiptap-content table th,
+        .dark .tiptap-content table td {
+          border: 1px solid #64748b !important;
+          color: #f1f5f9 !important;
+        }
+
+        .tiptap-content table th {
+          background-color: #e2e8f0 !important;
+          color: #0f172a !important;
+        }
+        .dark .tiptap-content table th {
+          background-color: #0f172a !important;
+          color: #f8fafc !important;
+        }
+
+        .tiptap-content table tbody tr:hover td {
+          background-color: #f1f5f9 !important;
+        }
+        .dark .tiptap-content table tbody tr:hover td {
+          background-color: #1e293b !important;
+        }
+        
+        .tiptap-content table td.selectedCell,
+        .tiptap-content table th.selectedCell {
+          background-color: rgba(99, 102, 241, 0.15) !important;
+          border: 1px double rgba(99, 102, 241, 0.4) !important;
+        }
+        .tiptap-content .column-resize-handle {
+          background-color: #6366f1;
+          bottom: -2px;
+          pointer-events: none;
+          position: absolute;
+          right: -2px;
+          top: 0;
+          width: 4px;
+        }
+
+        .tiptap-content div[data-type="cta-wrapper"],
+        .tiptap-content div[data-type="raw-html"] {
+          position: relative;
+        }
+        
+        .tiptap-content .tableWrapper {
+          display: block !important;
+          width: 100% !important;
+          max-width: 100% !important;
+          overflow-x: auto !important;
+          border: 1px solid #cbd5e1;
+          border-radius: 0.5rem;
+          margin: 2.5rem 0; 
+          scrollbar-width: thin;
+        }
+        .dark .tiptap-content .tableWrapper {
+          border-color: #64748b;
+        }
+
+        .tiptap-content .tableWrapper::-webkit-scrollbar {
+          height: 8px;
+        }
+        .tiptap-content .tableWrapper::-webkit-scrollbar-track {
+          background: #f8fafc;
+          border-radius: 0 0 0.5rem 0.5rem;
+        }
+        .dark .tiptap-content .tableWrapper::-webkit-scrollbar-track {
+          background: #0f172a;
+        }
+        .tiptap-content .tableWrapper::-webkit-scrollbar-thumb {
+          background-color: #cbd5e1;
+          border-radius: 4px;
+        }
+        .dark .tiptap-content .tableWrapper::-webkit-scrollbar-thumb {
+          background-color: #475569;
+        }
+        .tiptap-content .tableWrapper::-webkit-scrollbar-thumb:hover {
+          background-color: #94a3b8;
+        }
+
+        .tiptap-content table {
+          width: max-content !important;
+          min-width: 100% !important;    
+          table-layout: fixed !important;
+          margin: 0 !important;
+          border-style: hidden !important; 
+          border-collapse: collapse !important;
+        }
+        
+        .tiptap-content a:not([data-type="cta-button"]) {
+           color: #2563eb;
+           text-decoration: underline;
+           cursor: pointer;
+        }
+        .dark .tiptap-content a:not([data-type="cta-button"]) {
+           color: #60a5fa;
+        }
+
+        .tiptap-content a[data-type="cta-button"] {
+           text-decoration: none !important;
+           transition: all 0.25s cubic-bezier(0.25, 1, 0.5, 1) !important;
+           border: 1px solid rgba(255, 255, 255, 0.1) !important;
+           margin: 0 !important;
+        }
+        .tiptap-content a[data-type="cta-button"][data-bold="true"] { font-weight: 700 !important; }
+        .tiptap-content a[data-type="cta-button"][data-bold="false"] { font-weight: 400 !important; }
+        .tiptap-content a[data-type="cta-button"][data-italic="true"] { font-style: italic !important; }
+        .tiptap-content a[data-type="cta-button"][data-underline="true"] { text-decoration: underline !important; }
+
+        .tiptap-content a[data-type="cta-button"]:hover {
+           background-color: var(--btn-hover-bg) !important;
+           color: var(--btn-hover-color) !important;
+           opacity: 1 !important;
+        }
+        .tiptap-content a[data-type="cta-button"][data-hover-effect="lift"]:hover {
+           transform: translateY(-2px) !important;
+           box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.15) !important;
+        }
+        .tiptap-content a[data-type="cta-button"][data-hover-effect="scale"]:hover {
+           transform: scale(1.02) !important;
+        }
+        .tiptap-content a[data-type="cta-button"][data-hover-effect="glow"]:hover {
+           box-shadow: 0 0 12px 0px var(--btn-hover-bg) !important;
+        }
+        .tiptap-content a[data-type="cta-button"][data-hover-effect="slide"]:hover {
+           transform: translateX(3px) !important;
+        }
+      `}</style>
+
+      {/* FIXED: Moving TableToolbar to the outer relative layer with adjusted z-index ensures clean geometric calculations */}
+      {tableToolbarProps && (
+         <div 
+           className="absolute z-[60] transition-all duration-100"
+           style={{ 
+             top: `${tableToolbarProps.top}px`,
+             left: `${tableToolbarProps.left}px`,
+             transform: 'translateX(-100%)' 
+           }}
+         >
+            <TableToolbar editor={editor} />
+         </div>
+      )}
+
+      <MenuBar editor={editor} onRequestMedia={handleMediaRequest} wrapperRef={wrapperRef} />
+      
+      <div 
+         className="p-4 md:p-6 lg:p-8 bg-white dark:bg-gray-800 min-h-[400px] w-full min-w-full rounded-b-xl cursor-text block relative pb-10"
+         onClick={(e) => {
+             const anchor = e.target.closest('a');
+             if (anchor) {
+                 e.preventDefault();
+             }
+
+             if (!e.target.closest('button') && !e.target.closest('.toolbar-dropdown') && !e.target.closest('div[data-type="cta-wrapper"]') && !e.target.closest('div[data-type="raw-html"]')) {
+                 editor?.chain().focus().run();
+             }
+         }}
+      >
+        <EditorContent editor={editor} className="w-full h-full block" />
+      </div>
+
+    </div>
+  );
+};
+
+export default TiptapEditor;

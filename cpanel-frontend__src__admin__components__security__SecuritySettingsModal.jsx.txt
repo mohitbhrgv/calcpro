@@ -1,0 +1,585 @@
+// cPanel_Frontend/src/admin/components/security/SecuritySettingsModal.jsx
+import React, { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
+import { createPortal } from "react-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import Modal from "../common/Modal";
+import LoadingSpinner from "../common/LoadingSpinner";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import { authenticatedFetch } from "../../../utils/apiService";
+import toast from "react-hot-toast";
+
+// Context & Modals
+import { useAuth } from "../../context/AuthContext";
+import { useAdminCache } from "../../context/AdminCacheContext";
+import PasswordRotationEnforcerModal from "./PasswordRotationEnforcerModal";
+
+const { FiSave, FiClock, FiList, FiAlertCircle, FiShield, FiInfo, FiActivity, FiKey, FiChevronDown, FiRefreshCw } = FiIcons;
+const BASE_URL = '/api';
+
+// --- Premium Viewport-Aware Headless Portal Dropdown ---
+// Eliminates clipping lag, rendering reflows, and intelligently opens upwards if space is constrained
+const CustomSelect = ({ value, onChange, options, className }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+  const portalRef = useRef(null);
+  const [dropdownStyles, setDropdownStyles] = useState({});
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      const clickedOutsideButton = dropdownRef.current && !dropdownRef.current.contains(event.target);
+      const clickedOutsidePortal = portalRef.current && !portalRef.current.contains(event.target);
+      
+      if (clickedOutsideButton && clickedOutsidePortal) {
+          setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    
+    const updatePosition = () => {
+        if (isOpen && dropdownRef.current) {
+            const rect = dropdownRef.current.getBoundingClientRect();
+            // Default placement below, with space check
+            const spaceBelow = window.innerHeight - rect.bottom;
+            const placeAbove = spaceBelow < 250 && rect.top > spaceBelow;
+
+            setDropdownStyles({
+                top: placeAbove ? 'auto' : rect.bottom + window.scrollY + 4,
+                bottom: placeAbove ? (window.innerHeight - rect.top - window.scrollY + 4) : 'auto',
+                left: rect.left + window.scrollX,
+                width: rect.width
+            });
+        }
+    };
+    
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+
+    return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+        window.removeEventListener('scroll', updatePosition, true);
+        window.removeEventListener('resize', updatePosition);
+    };
+  }, [isOpen]);
+
+  const handleToggle = () => {
+     if (!isOpen && dropdownRef.current) {
+         const rect = dropdownRef.current.getBoundingClientRect();
+         const spaceBelow = window.innerHeight - rect.bottom;
+         const placeAbove = spaceBelow < 250 && rect.top > spaceBelow;
+
+         setDropdownStyles({
+            top: placeAbove ? 'auto' : rect.bottom + window.scrollY + 4,
+            bottom: placeAbove ? (window.innerHeight - rect.top - window.scrollY + 4) : 'auto',
+            left: rect.left + window.scrollX,
+            width: rect.width
+         });
+     }
+     setIsOpen(!isOpen);
+  };
+
+  const selectedLabel = options.find(opt => String(opt.value) === String(value))?.label || '';
+
+  const dropdownContent = (
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            ref={portalRef}
+            initial={{ opacity: 0, y: dropdownStyles.bottom !== 'auto' ? 5 : -5 }} 
+            animate={{ opacity: 1, y: 0 }} 
+            exit={{ opacity: 0, y: dropdownStyles.bottom !== 'auto' ? 5 : -5 }} 
+            transition={{ duration: 0.15 }}
+            style={dropdownStyles}
+            className="absolute z-[99999] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl overflow-hidden py-1"
+          >
+            <div className="max-h-60 overflow-y-auto custom-scrollbar">
+                {options.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onChange(opt.value); setIsOpen(false); }}
+                    className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
+                      String(value) === String(opt.value) 
+                        ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 font-bold' 
+                        : 'text-gray-900 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+  );
+
+  return (
+    <div className={`relative ${className || ''}`} ref={dropdownRef}>
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="flex items-center justify-between w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow font-medium cursor-pointer shadow-sm"
+      >
+        <span className="truncate pr-2">{selectedLabel}</span>
+        <SafeIcon 
+            icon={FiChevronDown} 
+            className={`w-4 h-4 text-gray-500 shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} 
+        />
+      </button>
+      {createPortal(dropdownContent, document.body)}
+    </div>
+  );
+};
+
+const Tooltip = ({ children }) => (
+  <div className="absolute bottom-full left-0 mb-2 hidden w-64 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-xl group-hover:block z-50">
+    {children}
+    <div className="absolute top-full left-3 -mt-1 border-4 border-transparent border-t-gray-900"></div>
+  </div>
+);
+
+const paginationOptions = [
+    { value: 25, label: "25 Rows" },
+    { value: 50, label: "50 Rows (Recommended)" },
+    { value: 100, label: "100 Rows" },
+    { value: 200, label: "200 Rows" },
+    { value: 500, label: "500 Rows (Max)" }
+];
+
+const rotationOptions = [
+    { value: 30, label: "30 Days (High Security)" },
+    { value: 60, label: "60 Days" },
+    { value: 90, label: "90 Days (Standard Enterprise)" },
+    { value: 180, label: "180 Days" }
+];
+
+const SecuritySettingsModal = ({ isOpen, onClose, onSuccess, disableAnimation = false }) => {
+  const { user, logout } = useAuth();
+  const { getCache, setCacheData } = useAdminCache();
+  
+  // UX State Architecture
+  const [isFetching, setIsFetching] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isPasswordExpiryEnabled, setIsPasswordExpiryEnabled] = useState(false);
+
+  // Enterprise Dirty State Tracking
+  const [initialConfig, setInitialConfig] = useState(null);
+
+  // Modal Intercept States
+  const [showEnforcerModal, setShowEnforcerModal] = useState(false);
+  const [calculatedPasswordAge, setCalculatedPasswordAge] = useState(0);
+  const [pendingPolicyDays, setPendingPolicyDays] = useState(0);
+
+  const [formData, setFormData] = useState({
+    security_log_pagination_limit: 50, 
+    security_temp_block_duration_minutes: 1440,
+    security_escalation_timeframe_hours: 24,
+    security_escalation_threshold: 3,
+    password_expiry_days: 90
+  });
+
+  const parseAndSetData = (data) => {
+    if (!data) return;
+    
+    const fetchedExpiryDays = parseInt(data.password_expiry_days) || 0;
+    const isExpiryEnabled = fetchedExpiryDays > 0;
+
+    const parsedData = {
+      security_log_pagination_limit: parseInt(data.security_log_pagination_limit) || 50,
+      security_temp_block_duration_minutes: parseInt(data.security_temp_block_duration_minutes) || 1440,
+      security_escalation_timeframe_hours: parseInt(data.security_escalation_timeframe_hours) || 24,
+      security_escalation_threshold: parseInt(data.security_escalation_threshold) || 3,
+      password_expiry_days: isExpiryEnabled ? fetchedExpiryDays : 90 
+    };
+
+    setIsPasswordExpiryEnabled(isExpiryEnabled);
+    setFormData(parsedData);
+
+    // Save pure stringified representation for dirty-state comparison
+    setInitialConfig(JSON.stringify({
+        ...parsedData,
+        isPasswordExpiryEnabled: isExpiryEnabled
+    }));
+  };
+
+  // Strict Fetch Handling to prevent form glitching
+  useEffect(() => {
+    if (isOpen) {
+      const fetchSettings = async () => {
+        // Enterprise UX Fix: Cache-First Approach
+        const cachedSettings = getCache("settings_general");
+        if (cachedSettings) {
+            parseAndSetData(cachedSettings);
+            setIsFetching(false);
+            return;
+        }
+
+        setIsFetching(true);
+        try {
+          const result = await authenticatedFetch(`${BASE_URL}/admin/get_settings.php`);
+          if (result.success) {
+            if (setCacheData) setCacheData("settings_general", result.data);
+            parseAndSetData(result.data);
+          }
+        } catch (error) {
+          toast.error("Failed to securely load current parameters.");
+        } finally {
+          setIsFetching(false);
+        }
+      };
+      fetchSettings();
+    } else {
+      setIsFetching(true); // Reset state so spinner shows immediately next time it opens
+    }
+  }, [isOpen, getCache, setCacheData]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    const val = value === "" ? "" : parseInt(value);
+
+    setFormData((prev) => ({
+      ...prev,
+      [name]: val,
+    }));
+  };
+
+  const handleReset = () => {
+    if (window.confirm("Reset all Security settings to their default values?")) {
+        const defaultData = {
+          security_log_pagination_limit: 50, 
+          security_temp_block_duration_minutes: 30,
+          security_escalation_timeframe_hours: 168,
+          security_escalation_threshold: 3,
+          password_expiry_days: 90
+        };
+        
+        setFormData(defaultData);
+        setIsPasswordExpiryEnabled(false);
+        toast.success("Settings reset to defaults (unsaved).");
+    }
+  };
+
+  // Determine if the form has been modified
+  const currentConfigStr = JSON.stringify({ ...formData, isPasswordExpiryEnabled });
+  const isDirty = initialConfig !== currentConfigStr;
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    // Prevent empty network calls
+    if (!isDirty) return;
+
+    if (formData.security_log_pagination_limit < 10 || formData.security_log_pagination_limit > 500) {
+      toast.error("Pagination limit must be between 10 and 500.");
+      return;
+    }
+    if (formData.security_temp_block_duration_minutes < 5 || formData.security_temp_block_duration_minutes > 43200) {
+      toast.error("Temp block duration must be between 5 mins and 30 days.");
+      return;
+    }
+    if (formData.security_escalation_timeframe_hours < 1 || formData.security_escalation_timeframe_hours > 720) {
+        toast.error("Escalation timeframe must be between 1 hour and 30 days.");
+        return;
+    }
+    if (formData.security_escalation_threshold < 2 || formData.security_escalation_threshold > 20) {
+        toast.error("Threshold must be at least 2 attempts.");
+        return;
+    }
+
+    setIsSubmitting(true);
+    const newPolicy = isPasswordExpiryEnabled ? formData.password_expiry_days : 0;
+
+    // --- STRICT FAIL-CLOSED PRE-FLIGHT CHECK ---
+    if (newPolicy > 0) {
+        try {
+            let diffDays = user?.passwordSecurity?.daysOld;
+
+            // 1. Absolute Fallback: Force a direct DB query if contextual age is missing
+            if (diffDays === undefined || diffDays === null) {
+                const meRes = await authenticatedFetch(`${BASE_URL}/admin/get_me.php`);
+                diffDays = meRes?.data?.user?.passwordSecurity?.daysOld;
+
+                if (diffDays === undefined || diffDays === null) {
+                    const dbDate = meRes?.data?.user?.password_last_updated;
+                    if (dbDate) {
+                        const dateObj = new Date(dbDate.replace(' ', 'T') + 'Z');
+                        diffDays = Math.floor(Math.max(0, new Date() - dateObj) / (1000 * 60 * 60 * 24));
+                    }
+                }
+            }
+
+            // 2. The Strict Enforcer Gate
+            if (diffDays === undefined || diffDays === null || isNaN(diffDays)) {
+                // FAIL CLOSED: If data is completely unreadable, abort the save entirely.
+                toast.error("Security verification failed. Unable to determine current password age.");
+                setIsSubmitting(false);
+                return;
+            } 
+            
+            if (diffDays >= newPolicy) {
+                // Conflict Intercept
+                setCalculatedPasswordAge(diffDays);
+                setPendingPolicyDays(newPolicy);
+                setShowEnforcerModal(true);
+                setIsSubmitting(false);
+                return;
+            }
+        } catch (err) {
+            // FAIL CLOSED: Network Error
+            toast.error("Failed to verify security credentials with the server.");
+            setIsSubmitting(false);
+            return;
+        }
+    }
+    // --- END PRE-FLIGHT CHECK ---
+
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    const payload = {
+        ...formData,
+        password_expiry_days: newPolicy
+    };
+
+    try {
+      const result = await authenticatedFetch(
+        `${BASE_URL}/admin/update_settings.php`,
+        { method: "POST", body: JSON.stringify(payload) }
+      );
+
+      if (result.success) {
+        toast.success("Security configuration updated.");
+        onSuccess();
+        onClose();
+      } else {
+        toast.error(result.message || "Update failed.");
+      }
+    } catch (error) {
+      toast.error("Connection failed.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <Modal 
+        isOpen={isOpen} 
+        onClose={onClose} 
+        title="Security Configuration" 
+        size="lg"
+        disableAnimation={disableAnimation} 
+      >
+        <form onSubmit={handleSubmit} className="flex flex-col">
+          
+          {isFetching ? (
+            <div className="flex justify-center items-center h-64">
+              <LoadingSpinner size="lg" />
+            </div>
+          ) : (
+            <div className="space-y-5 max-h-[65vh] overflow-y-auto pr-2 pb-4 pt-1 custom-scrollbar">
+              
+              <div className="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-xl border border-gray-200 dark:border-gray-700 flex gap-3 items-start">
+                <SafeIcon
+                  icon={FiAlertCircle}
+                  className="w-5 h-5 text-gray-500 shrink-0 mt-0.5"
+                />
+                <p className="text-sm text-gray-700 dark:text-gray-300">
+                  Configure automated threat mitigation, session security, and dashboard display preferences.
+                </p>
+              </div>
+
+              {/* ZONE 1: EMERALD (Password Rotation Policy) - Moved to Top */}
+              <div className="bg-emerald-50/50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-800/30 p-5 rounded-2xl space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                          <h4 className="text-sm font-extrabold text-emerald-900 dark:text-emerald-300 uppercase tracking-wider flex items-center gap-2">
+                              <SafeIcon icon={FiKey} className="w-4 h-4 text-emerald-500" /> Password Rotation Policy
+                          </h4>
+                          <p className="text-xs text-emerald-800 dark:text-emerald-400 mt-1">
+                              Require administrators to regularly update their passwords.
+                          </p>
+                      </div>
+                      
+                      <button
+                          type="button"
+                          onClick={() => setIsPasswordExpiryEnabled(!isPasswordExpiryEnabled)}
+                          className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
+                              isPasswordExpiryEnabled ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-gray-600'
+                          }`}
+                          role="switch"
+                          aria-checked={isPasswordExpiryEnabled}
+                      >
+                          <span
+                              className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                                  isPasswordExpiryEnabled ? 'translate-x-5' : 'translate-x-0'
+                              }`}
+                          />
+                      </button>
+                  </div>
+
+                  <div className={`transition-all duration-300 overflow-visible ${isPasswordExpiryEnabled ? "max-h-32 opacity-100 mt-4" : "max-h-0 opacity-0 m-0"}`}>
+                      <div className="pt-2">
+                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                              Enforce Rotation Every:
+                          </label>
+                          <CustomSelect
+                            value={formData.password_expiry_days}
+                            onChange={(val) => handleChange({ target: { name: 'password_expiry_days', value: val } })}
+                            options={rotationOptions}
+                          />
+                      </div>
+                  </div>
+              </div>
+
+              {/* ZONE 2: ORANGE (Temporary Blocks) */}
+              <div className="bg-orange-50/50 dark:bg-orange-900/10 border border-orange-100 dark:border-orange-800/30 p-5 rounded-2xl space-y-4">
+                  <h4 className="text-sm font-extrabold text-orange-900 dark:text-orange-300 uppercase tracking-wider flex items-center gap-2">
+                      <SafeIcon icon={FiShield} className="w-4 h-4 text-orange-500" /> Temporary Block Settings
+                  </h4>
+                  <div>
+                      <div className="flex items-center gap-2 mb-2">
+                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                              Duration (Minutes)
+                          </label>
+                          <div className="group relative">
+                              <SafeIcon icon={FiInfo} className="w-3.5 h-3.5 text-gray-400 cursor-help" />
+                              <Tooltip>
+                                  <p className="font-bold mb-1 border-b border-gray-700 pb-1">Common Conversions:</p>
+                                  <ul className="space-y-1">
+                                      <li>• 15 mins (Soft Lock)</li>
+                                      <li>• 60 mins (1 Hour)</li>
+                                      <li>• 1440 mins (24 Hours)</li>
+                                  </ul>
+                              </Tooltip>
+                          </div>
+                      </div>
+                      
+                      <input
+                          type="number"
+                          name="security_temp_block_duration_minutes"
+                          value={formData.security_temp_block_duration_minutes}
+                          onChange={handleChange}
+                          min="5"
+                          max="43200"
+                          className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-orange-500 outline-none shadow-sm"
+                      />
+                      <p className="text-xs text-gray-500 mt-2">
+                          How long an IP remains blocked after exceeding failure limits.
+                      </p>
+                  </div>
+              </div>
+
+              {/* ZONE 3: PURPLE (Permanent Escalation) */}
+              <div className="bg-purple-50/50 dark:bg-purple-900/10 border border-purple-100 dark:border-purple-800/30 p-5 rounded-2xl space-y-4">
+                  <h4 className="text-sm font-extrabold text-purple-900 dark:text-purple-300 uppercase tracking-wider flex items-center gap-2">
+                      <SafeIcon icon={FiActivity} className="w-4 h-4 text-purple-500" /> Permanent Block Logic
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div>
+                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                              Time Frame (Hours)
+                          </label>
+                          <input
+                              type="number"
+                              name="security_escalation_timeframe_hours"
+                              value={formData.security_escalation_timeframe_hours}
+                              onChange={handleChange}
+                              min="1"
+                              max="720"
+                              className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 outline-none shadow-sm"
+                          />
+                      </div>
+                      <div>
+                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                              Max Temporary Blocks
+                          </label>
+                          <input
+                              type="number"
+                              name="security_escalation_threshold"
+                              value={formData.security_escalation_threshold}
+                              onChange={handleChange}
+                              min="2"
+                              max="20"
+                              className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 outline-none shadow-sm"
+                          />
+                      </div>
+                  </div>
+              </div>
+
+              {/* ZONE 4: BLUE (Display Settings) */}
+              <div className="bg-blue-50/50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-800/30 p-5 rounded-2xl space-y-4">
+                  <h4 className="text-sm font-extrabold text-blue-900 dark:text-blue-300 uppercase tracking-wider flex items-center gap-2">
+                      <SafeIcon icon={FiList} className="w-4 h-4 text-blue-500" /> Display Settings
+                  </h4>
+                  <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                          Pagination Limit (Rows per page)
+                      </label>
+                      <CustomSelect
+                        value={formData.security_log_pagination_limit}
+                        onChange={(val) => handleChange({ target: { name: 'security_log_pagination_limit', value: val } })}
+                        options={paginationOptions}
+                      />
+                  </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* Fixed Footer Buttons - Matched to 404 Monitor Settings UI */}
+          <div className="flex justify-between items-center pt-5 mt-3 border-t border-gray-200 dark:border-gray-700 shrink-0 bg-white dark:bg-gray-800">
+            <button
+                type="button"
+                onClick={handleReset}
+                disabled={isSubmitting || isFetching}
+                className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 text-[13px] font-bold rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors flex items-center gap-2 disabled:opacity-50 focus:outline-none"
+            >
+                <SafeIcon icon={FiRefreshCw} className="w-3.5 h-3.5" />
+                Reset Defaults
+            </button>
+            <div className="flex items-center gap-3">
+                <button
+                    type="button"
+                    onClose={onClose}
+                    disabled={isSubmitting || isFetching}
+                    className="px-5 py-2.5 text-[14px] font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition-colors focus:outline-none disabled:opacity-50"
+                >
+                    Cancel
+                </button>
+                <button
+                    type="submit"
+                    disabled={isSubmitting || isFetching || !isDirty}
+                    className="flex items-center justify-center min-w-[180px] gap-2 px-6 py-3 bg-indigo-600 text-white text-[14px] font-bold rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg shadow-indigo-500/30 hover:-translate-y-0.5 focus:outline-none"
+                >
+                    {isSubmitting ? (
+                        <><SafeIcon icon={FiRefreshCw} className="w-4 h-4 animate-spin" /> Saving...</>
+                    ) : (
+                        <><SafeIcon icon={FiSave} className="w-4 h-4" /> Save Configuration</>
+                    )}
+                </button>
+            </div>
+          </div>
+
+        </form>
+      </Modal>
+
+      <PasswordRotationEnforcerModal 
+          isOpen={showEnforcerModal}
+          onClose={() => {
+              setShowEnforcerModal(false);
+              setIsSubmitting(false);
+          }}
+          newPolicyDays={pendingPolicyDays}
+          passwordAgeDays={calculatedPasswordAge}
+          onSuccess={() => {
+              setShowEnforcerModal(false);
+              onClose(); 
+              logout("Security policy activated. Please log in with your new password.");
+          }}
+      />
+    </>
+  );
+};
+
+export default SecuritySettingsModal;

@@ -1,0 +1,483 @@
+import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import { authenticatedFetch } from "../../utils/apiService";
+import toast from "react-hot-toast";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import Toggle from "./common/Toggle";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+const { FiSave, FiPlus, FiTrash2, FiRefreshCw, FiAlertCircle, FiChevronDown, FiActivity, FiShield, FiList } = FiIcons;
+
+const BASE_URL = '/api';
+
+// --- Premium Viewport-Aware Headless Portal Dropdown ---
+const CustomSelect = ({ value, onChange, options, className }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+  const portalRef = useRef(null);
+  const [dropdownStyles, setDropdownStyles] = useState({});
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      const clickedOutsideButton = dropdownRef.current && !dropdownRef.current.contains(event.target);
+      const clickedOutsidePortal = portalRef.current && !portalRef.current.contains(event.target);
+      
+      if (clickedOutsideButton && clickedOutsidePortal) {
+          setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    
+    const updatePosition = () => {
+        if (isOpen && dropdownRef.current) {
+            const rect = dropdownRef.current.getBoundingClientRect();
+            const spaceBelow = window.innerHeight - rect.bottom;
+            const placeAbove = spaceBelow < 250 && rect.top > spaceBelow;
+
+            setDropdownStyles({
+                top: placeAbove ? 'auto' : rect.bottom + window.scrollY + 4,
+                bottom: placeAbove ? (window.innerHeight - rect.top - window.scrollY + 4) : 'auto',
+                left: rect.left + window.scrollX,
+                width: rect.width
+            });
+        }
+    };
+    
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+
+    return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+        window.removeEventListener('scroll', updatePosition, true);
+        window.removeEventListener('resize', updatePosition);
+    };
+  }, [isOpen]);
+
+  const handleToggle = () => {
+     if (!isOpen && dropdownRef.current) {
+         const rect = dropdownRef.current.getBoundingClientRect();
+         const spaceBelow = window.innerHeight - rect.bottom;
+         const placeAbove = spaceBelow < 250 && rect.top > spaceBelow;
+
+         setDropdownStyles({
+            top: placeAbove ? 'auto' : rect.bottom + window.scrollY + 4,
+            bottom: placeAbove ? (window.innerHeight - rect.top - window.scrollY + 4) : 'auto',
+            left: rect.left + window.scrollX,
+            width: rect.width
+         });
+     }
+     setIsOpen(!isOpen);
+  };
+
+  const selectedLabel = options.find(opt => String(opt.value) === String(value))?.label || '';
+
+  const dropdownContent = (
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            ref={portalRef}
+            initial={{ opacity: 0, y: dropdownStyles.bottom !== 'auto' ? 5 : -5 }} 
+            animate={{ opacity: 1, y: 0 }} 
+            exit={{ opacity: 0, y: dropdownStyles.bottom !== 'auto' ? 5 : -5 }} 
+            transition={{ duration: 0.15 }}
+            style={dropdownStyles}
+            className="absolute z-[99999] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl overflow-hidden py-1"
+          >
+            <div className="max-h-60 overflow-y-auto custom-scrollbar">
+                {options.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onChange(opt.value); setIsOpen(false); }}
+                    className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
+                      String(value) === String(opt.value) 
+                        ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 font-bold' 
+                        : 'text-gray-900 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+  );
+
+  return (
+    <div className={`relative ${className || ''}`} ref={dropdownRef}>
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="flex items-center justify-between w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow font-medium cursor-pointer shadow-sm"
+      >
+        <span className="truncate pr-2">{selectedLabel}</span>
+        <SafeIcon 
+            icon={FiChevronDown} 
+            className={`w-4 h-4 text-gray-500 shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} 
+        />
+      </button>
+      {createPortal(dropdownContent, document.body)}
+    </div>
+  );
+};
+
+const Monitor404SettingsModal = ({ isOpen, onClose, disableAnimation = false }) => {
+  const { getCache, setCacheData } = useAdminCache();
+  
+  // UX Fix: Initialize isFetching based on whether cache already exists
+  const [isFetching, setIsFetching] = useState(() => !getCache("settings_general"));
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Form State
+  const [mode, setMode] = useState("simple");
+  const [logLimit, setLogLimit] = useState(100);
+  const [logsPerPage, setLogsPerPage] = useState(25); 
+  const [ignoreQuery, setIgnoreQuery] = useState(true);
+  const [excludePaths, setExcludePaths] = useState([]);
+
+  // Enterprise Dirty State Tracking
+  const [initialConfig, setInitialConfig] = useState(null);
+
+  const limitOptions = [
+    { value: 100, label: "100 Entries" },
+    { value: 500, label: "500 Entries" },
+    { value: 1000, label: "1,000 Entries" },
+    { value: 5000, label: "5,000 Entries" },
+    { value: 10000, label: "10,000 Entries" }
+  ];
+
+  const paginationOptions = [
+    { value: 25, label: "25 Entries / Page" },
+    { value: 50, label: "50 Entries / Page" },
+    { value: 100, label: "100 Entries / Page" },
+    { value: 200, label: "200 Entries / Page" },
+    { value: 500, label: "500 Entries / Page" }
+  ];
+
+  const matchTypeOptions = [
+    { value: "exact", label: "Exact Match" },
+    { value: "contains", label: "Contains" }
+  ];
+
+  const parseAndSetData = (data) => {
+    if (!data) return;
+    
+    const parsedMode = data.seo_404_monitor_mode || "simple";
+    const parsedLimit = parseInt(data.seo_404_monitor_limit) || 100;
+    const parsedPerPage = parseInt(data.seo_404_monitor_logs_per_page) || 25;
+    const rawIgnore = data.seo_404_monitor_ignore_query;
+    const parsedIgnore = rawIgnore === true || rawIgnore === "true";
+    
+    let parsedPaths = [];
+    try {
+        const paths = data.seo_404_monitor_exclude 
+          ? (typeof data.seo_404_monitor_exclude === 'string' ? JSON.parse(data.seo_404_monitor_exclude) : data.seo_404_monitor_exclude)
+          : [];
+        parsedPaths = Array.isArray(paths) ? paths : [];
+    } catch (e) {
+        console.warn("[Monitor404SettingsModal] Failed to parse exclude paths:", e.message);
+    }
+
+    setMode(parsedMode);
+    setLogLimit(parsedLimit);
+    setLogsPerPage(parsedPerPage);
+    setIgnoreQuery(parsedIgnore);
+    setExcludePaths(parsedPaths);
+
+    // Save pure stringified representation for dirty-state comparison
+    setInitialConfig(JSON.stringify({
+        mode: parsedMode,
+        logLimit: parsedLimit,
+        logsPerPage: parsedPerPage,
+        ignoreQuery: parsedIgnore,
+        excludePaths: parsedPaths
+    }));
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      const cached = getCache("settings_general");
+      if (cached) {
+        parseAndSetData(cached);
+        setIsFetching(false);
+      } else {
+        const fetchSettings = async () => {
+          setIsFetching(true);
+          try {
+            const result = await authenticatedFetch(`${BASE_URL}/admin/get_settings.php`);
+            if (result.success) {
+              parseAndSetData(result.data);
+              setCacheData("settings_general", result.data);
+            }
+          } catch (error) {
+            toast.error("Failed to securely load monitoring parameters.");
+          } finally {
+            setIsFetching(false);
+          }
+        };
+        fetchSettings();
+      }
+    } else {
+      // Only set to true if we genuinely lost the cache
+      if (!getCache("settings_general")) {
+          setIsFetching(true); 
+      }
+    }
+  }, [isOpen, getCache, setCacheData]);
+
+  const handleAddPath = () => setExcludePaths([...excludePaths, { value: "", type: "exact" }]);
+
+  const handleRemovePath = (index) => setExcludePaths(excludePaths.filter((_, i) => i !== index));
+
+  const handlePathChange = (index, field, value) => {
+    const newPaths = [...excludePaths];
+    newPaths[index][field] = value;
+    setExcludePaths(newPaths);
+  };
+
+  const handleReset = () => {
+    if (window.confirm("Reset all 404 Monitor settings to defaults?")) {
+        setMode("simple");
+        setLogLimit(100);
+        setLogsPerPage(25);
+        setIgnoreQuery(true);
+        setExcludePaths([]);
+        toast.success("Settings reset to defaults (unsaved).");
+    }
+  };
+
+  const currentConfigStr = JSON.stringify({ mode, logLimit, logsPerPage, ignoreQuery, excludePaths });
+  const isDirty = initialConfig !== currentConfigStr;
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!isDirty) return;
+
+    setIsSubmitting(true);
+    const toastId = "save-404-settings";
+    toast.loading("Saving configuration...", { id: toastId });
+
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    const payload = {
+        seo_404_monitor_mode: mode,
+        seo_404_monitor_limit: logLimit,
+        seo_404_monitor_logs_per_page: logsPerPage,
+        seo_404_monitor_ignore_query: ignoreQuery,
+        seo_404_monitor_exclude: excludePaths 
+    };
+
+    try {
+      const result = await authenticatedFetch(
+        `${BASE_URL}/admin/update_settings.php`,
+        { method: "POST", body: JSON.stringify(payload) }
+      );
+
+      if (result.success) {
+        toast.success("Configuration applied securely.", { id: toastId });
+        const currentCache = getCache("settings_general") || {};
+        setCacheData("settings_general", { ...currentCache, ...payload });
+        onClose();
+      } else {
+        toast.error(result.message || "Save failed.", { id: toastId });
+      }
+    } catch (error) {
+      toast.error("Connection failed.", { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="404 Monitor Configuration"
+      size="lg"
+      disableAnimation={disableAnimation}
+    >
+      <form onSubmit={handleSave} className="flex flex-col">
+        {isFetching ? (
+            <div className="flex justify-center items-center h-64">
+                <LoadingSpinner size="lg" />
+            </div>
+        ) : (
+            <div className="space-y-5 max-h-[65vh] overflow-y-auto pr-2 pb-4 pt-1 custom-scrollbar">
+                
+                {/* ZONE 1: RED (Critical Warning) */}
+                <div className="bg-red-50/50 dark:bg-red-900/10 border border-red-100 dark:border-red-800/30 p-5 rounded-2xl flex gap-3">
+                    <SafeIcon icon={FiAlertCircle} className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                    <p className="text-[12px] font-medium text-red-800 dark:text-red-200/90 leading-relaxed">
+                        High-traffic sites may generate thousands of 404 errors, impacting database performance.
+                        Only enable <strong>Advanced Mode</strong> if you actively intend to maintain and map missing references.
+                    </p>
+                </div>
+
+                {/* ZONE 2: BLUE (Mode Selection) */}
+                <div className="bg-blue-50/50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-800/30 p-5 rounded-2xl space-y-4">
+                    <h4 className="text-sm font-extrabold text-blue-900 dark:text-blue-300 uppercase tracking-wider flex items-center gap-2">
+                        <SafeIcon icon={FiActivity} className="w-4 h-4 text-blue-500" /> Logging Mode
+                    </h4>
+                    <div>
+                        <div className="inline-flex bg-white dark:bg-gray-800 p-1.5 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm mb-3">
+                            <button
+                                type="button"
+                                onClick={() => setMode("simple")}
+                                className={`px-5 py-2 text-sm font-bold rounded-lg transition-all focus:outline-none ${mode === "simple" ? "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 shadow-sm" : "text-gray-500 hover:text-gray-700 dark:text-gray-400"}`}
+                            >
+                                Standard Profile
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setMode("advanced")}
+                                className={`px-5 py-2 text-sm font-bold rounded-lg transition-all focus:outline-none ${mode === "advanced" ? "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 shadow-sm" : "text-gray-500 hover:text-gray-700 dark:text-gray-400"}`}
+                            >
+                                Advanced Profile
+                            </button>
+                        </div>
+                        <p className="text-[11px] text-blue-800/80 dark:text-blue-200/70 font-medium leading-relaxed">
+                            <strong>Standard Profile:</strong> Logs URI, access time, and hits.<br/>
+                            <strong>Advanced Profile:</strong> Injects Referer URL and originating User Agent data.
+                        </p>
+                    </div>
+                </div>
+
+                {/* ZONE 3: EMERALD (Database Limits & Display) */}
+                <div className="bg-emerald-50/50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-800/30 p-5 rounded-2xl space-y-4">
+                    <h4 className="text-sm font-extrabold text-emerald-900 dark:text-emerald-300 uppercase tracking-wider flex items-center gap-2">
+                        <SafeIcon icon={FiList} className="w-4 h-4 text-emerald-500" /> Database Limits & Display
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label className="block text-[11px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+                                Absolute Record Limit
+                            </label>
+                            <CustomSelect 
+                                value={logLimit} 
+                                onChange={(val) => setLogLimit(parseInt(val))} 
+                                options={limitOptions} 
+                            />
+                            <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-2 font-medium">
+                                Older logs are auto-purged beyond this ceiling.
+                            </p>
+                        </div>
+                        <div>
+                            <label className="block text-[11px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+                                Rows Per Page
+                            </label>
+                            <CustomSelect 
+                                value={logsPerPage} 
+                                onChange={(val) => setLogsPerPage(parseInt(val))} 
+                                options={paginationOptions} 
+                            />
+                            <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-2 font-medium">
+                                Controls local dashboard rendering limits.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* ZONE 4: ORANGE (Exclusion Rules) */}
+                <div className="bg-orange-50/50 dark:bg-orange-900/10 border border-orange-100 dark:border-orange-800/30 p-5 rounded-2xl space-y-4">
+                    <h4 className="text-sm font-extrabold text-orange-900 dark:text-orange-300 uppercase tracking-wider flex items-center gap-2">
+                        <SafeIcon icon={FiShield} className="w-4 h-4 text-orange-500" /> Exclusion Rules
+                    </h4>
+                    
+                    <div className="border-b border-orange-200 dark:border-orange-800/50 pb-5 mb-5">
+                        <div className="flex items-center justify-between gap-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-900 dark:text-white">Ignore Query Parameters</label>
+                                <p className="text-[11px] text-orange-800/80 dark:text-orange-200/70 mt-1 font-medium">
+                                    Strip variables before logging (e.g., <code>/page?ref=1</code> becomes <code>/page</code>).
+                                </p>
+                            </div>
+                            <Toggle checked={ignoreQuery} onChange={setIgnoreQuery} />
+                        </div>
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-bold text-gray-900 dark:text-white mb-3">Path Ignore List</label>
+                        <div className="space-y-3">
+                            {excludePaths.map((item, index) => (
+                                <div key={index} className="flex gap-2">
+                                    <input 
+                                        type="text"
+                                        placeholder="/wp-admin"
+                                        value={item.value}
+                                        onChange={(e) => handlePathChange(index, "value", e.target.value)}
+                                        className="flex-1 px-4 py-2.5 text-sm border border-gray-300 dark:border-gray-600 rounded-xl text-gray-900 bg-white dark:bg-gray-800 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm"
+                                    />
+                                    <div className="w-36 shrink-0">
+                                        <CustomSelect 
+                                            value={item.type} 
+                                            onChange={(val) => handlePathChange(index, "type", val)} 
+                                            options={matchTypeOptions} 
+                                        />
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleRemovePath(index)}
+                                        className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-colors focus:outline-none"
+                                    >
+                                        <SafeIcon icon={FiTrash2} className="w-5 h-5" />
+                                    </button>
+                                </div>
+                            ))}
+                            <button
+                                type="button"
+                                onClick={handleAddPath}
+                                className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 flex items-center gap-1 transition-colors px-1 pt-1 focus:outline-none"
+                            >
+                                <SafeIcon icon={FiPlus} className="w-3.5 h-3.5" /> Add Exclusion Rule
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        )}
+
+        {/* Fixed Footer Buttons */}
+        <div className="flex justify-between items-center pt-5 mt-3 border-t border-gray-200 dark:border-gray-700 shrink-0 bg-white dark:bg-gray-800">
+            <button
+                type="button"
+                onClick={handleReset}
+                disabled={isSubmitting || isFetching}
+                className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 text-[13px] font-bold rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors flex items-center gap-2 disabled:opacity-50 focus:outline-none"
+            >
+                <SafeIcon icon={FiRefreshCw} className="w-3.5 h-3.5" />
+                Reset Defaults
+            </button>
+            <div className="flex items-center gap-3">
+                <button
+                    type="button"
+                    onClick={onClose}
+                    disabled={isSubmitting || isFetching}
+                    className="px-5 py-2.5 text-[14px] font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition-colors focus:outline-none disabled:opacity-50"
+                >
+                    Cancel
+                </button>
+                <button
+                    type="submit"
+                    disabled={isSubmitting || isFetching || !isDirty}
+                    className="flex items-center justify-center min-w-[180px] gap-2 px-6 py-3 bg-indigo-600 text-white text-[14px] font-bold rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg shadow-indigo-500/30 hover:-translate-y-0.5 focus:outline-none"
+                >
+                    {isSubmitting ? (
+                        <><SafeIcon icon={FiRefreshCw} className="w-4 h-4 animate-spin" /> Saving...</>
+                    ) : (
+                        <><SafeIcon icon={FiSave} className="w-4 h-4" /> Save Configuration</>
+                    )}
+                </button>
+            </div>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+export default Monitor404SettingsModal;

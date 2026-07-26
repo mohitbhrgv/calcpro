@@ -1,0 +1,183 @@
+import React from "react";
+import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "react-hot-toast";
+import { ThemeProvider } from "./admin/context/ThemeContext";
+import { AuthProvider } from "./admin/context/AuthContext";
+import { LayoutProvider, useLayout } from "./admin/context/LayoutContext";
+import { AdminCacheProvider } from "./admin/context/AdminCacheContext";
+
+import AdminLayout from "./admin/components/layout/AdminLayout";
+import Dashboard from "./admin/pages/Dashboard";
+import ContentPages from "./admin/pages/content/Pages";
+import ContentPosts from "./admin/pages/content/Posts";
+import ContentCategories from "./admin/pages/content/Categories";
+import ContentTags from "./admin/pages/content/Tags";
+import PageEditor from "./admin/pages/content/PageEditor";
+import PostEditor from "./admin/pages/content/PostEditor";
+
+// --- NEW AUTHOR IMPORTS ---
+import Authors from "./admin/pages/content/Authors";
+import AuthorProfileEditor from "./admin/components/content/editors/AuthorProfileEditor";
+
+import ContentCalculators from "./admin/pages/content/Calculators";
+import CalculatorEditor from "./admin/pages/content/CalculatorEditor";
+import CalculatorCategories from "./admin/pages/content/calculators/Categories";
+import SeoGeneral from "./admin/pages/seo/SeoGeneral";
+import SeoTitlesMeta from "./admin/pages/seo/SeoTitlesMeta";
+import SeoCrawling from "./admin/pages/seo/SeoCrawling";
+import SeoRedirects from "./admin/pages/seo/SeoRedirects";
+import Seo404Monitor from "./admin/pages/seo/Seo404Monitor";
+import Security from "./admin/pages/Security";
+import TwoFactorAuth from "./admin/pages/security/TwoFactorAuth";
+import InactivityLogout from "./admin/pages/security/InactivityLogout";
+import Login from "./admin/pages/Login";
+import ResetPassword from "./admin/pages/ResetPassword";
+import UnlockAccount from "./admin/pages/UnlockAccount";
+import Media from "./admin/pages/Media";
+import ManualBackups from "./admin/pages/backups/ManualBackups";
+import AutomaticBackups from "./admin/pages/backups/AutomaticBackups";
+import SiteConfig from "./admin/pages/settings/SiteConfig";
+import Integrations from "./admin/pages/settings/Integrations";
+import SystemEnvironment from "./admin/pages/settings/SystemEnvironment";
+import DataRetention from "./admin/pages/settings/DataRetention";
+import SystemLogs from "./admin/pages/settings/SystemLogs";
+import ErrorBoundary from "./admin/components/layout/ErrorBoundary";
+import SystemOffline from "./admin/components/layout/SystemOffline";
+
+const AppWrapper = () => {
+  const { isSidebarOpen } = useLayout();
+
+  return (
+    <div className={`min-h-screen transition-colors duration-300 dark:bg-slate-900 bg-gray-50 text-slate-900 dark:text-slate-100 ${isSidebarOpen ? "sidebar-open" : "sidebar-closed"}`}>
+      <Toaster 
+        position="top-right" 
+        toastOptions={{
+          className: 'dark:bg-slate-800 dark:text-white border dark:border-slate-700',
+          success: { iconTheme: { primary: '#10b981', secondary: 'white' } },
+          error: { iconTheme: { primary: '#ef4444', secondary: 'white' } },
+        }}
+      />
+      <Router>
+        <Routes>
+          <Route path="/" element={<Navigate to="/login" replace />} />
+          <Route path="/login" element={<Login />} />
+          
+          <Route path="/reset-password" element={<ResetPassword />} />
+          <Route path="/reset-password/:token" element={<ResetPassword />} />
+          
+          <Route path="/unlock" element={<UnlockAccount />} />
+          <Route path="/unlock-account/:token" element={<UnlockAccount />} />
+          
+          <Route element={<AdminLayout />}>
+            <Route path="/dashboard" element={<Dashboard />} />
+            
+            <Route path="/media" element={<Media />} />
+
+            {/* Split Content Domain Routes */}
+            <Route path="/content" element={<Navigate to="/content/posts" replace />} />
+            <Route path="/content/pages" element={<ContentPages />} />
+            <Route path="/content/pages/new" element={<PageEditor />} />
+            <Route path="/content/pages/edit/:id" element={<PageEditor />} />
+            
+            <Route path="/content/posts" element={<ContentPosts />} />
+            <Route path="/content/posts/new" element={<PostEditor />} />
+            <Route path="/content/posts/edit/:id" element={<PostEditor />} />
+
+            {/* --- NEW AUTHOR ROUTES --- */}
+            <Route path="/content/authors" element={<Authors />} />
+            <Route path="/content/authors/new" element={<AuthorProfileEditor />} />
+            <Route path="/content/authors/edit/:id" element={<AuthorProfileEditor />} />
+
+            <Route path="/content/categories" element={<ContentCategories />} />
+            <Route path="/content/tags" element={<ContentTags />} />
+
+            <Route path="/content/calculators" element={<ContentCalculators />} />
+            <Route path="/content/calculators/new" element={<CalculatorEditor />} />
+            <Route path="/content/calculators/edit/:id" element={<CalculatorEditor />} />
+            <Route path="/content/calculators/categories" element={<CalculatorCategories />} />
+
+            {/* Split SEO Domain Routes */}
+            <Route path="/seo" element={<Navigate to="/seo/general" replace />} />
+            <Route path="/seo/general" element={<SeoGeneral />} />
+            <Route path="/seo/titles-meta" element={<SeoTitlesMeta />} />
+            <Route path="/seo/crawling" element={<SeoCrawling />} />
+            <Route path="/seo/redirects" element={<SeoRedirects />} />
+            <Route path="/seo/404-monitor" element={<Seo404Monitor />} />
+
+            {/* Split Security Domain Routes */}
+            <Route path="/security" element={<Navigate to="/security/brute-force" replace />} />
+            <Route path="/security/brute-force" element={<Security />} />
+            <Route path="/security/2fa" element={<TwoFactorAuth />} />
+            <Route path="/security/inactivity" element={<InactivityLogout />} />
+
+            {/* Split Backup Domain Routes */}
+            <Route path="/backups" element={<Navigate to="/backups/manual" replace />} />
+            <Route path="/backups/manual" element={<ManualBackups />} />
+            <Route path="/backups/automatic" element={<AutomaticBackups />} />
+
+            {/* Settings Routes */}
+            <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
+            <Route path="/settings/general" element={<SiteConfig />} />
+            <Route path="/settings/integrations" element={<Integrations />} />
+            <Route path="/settings/environment" element={<SystemEnvironment />} />
+            <Route path="/settings/data-retention" element={<DataRetention />} />
+            <Route path="/settings/system-logs" element={<SystemLogs />} />
+          </Route>
+        </Routes>
+      </Router>
+    </div>
+  );
+};
+
+function App() {
+  const [isOffline, setIsOffline] = React.useState(() => !!localStorage.getItem('calcpro_sys_offline_start'));
+  const [incidentCode, setIncidentCode] = React.useState(() => localStorage.getItem('calcpro_sys_incident_code') || null);
+
+  React.useEffect(() => {
+    const handleOffline = (e) => {
+      if (e.detail) {
+          localStorage.setItem('calcpro_sys_incident_code', e.detail);
+          setIncidentCode(e.detail);
+      }
+      setIsOffline(true);
+    };
+    const handleOnline = () => {
+      // [ENTERPRISE UX FIX] Fresh Session Start to prevent immediate inactivity logout
+      localStorage.setItem('calcpro_last_active', Date.now().toString());
+      localStorage.removeItem('calcpro_sys_incident_code');
+      setIncidentCode(null);
+      setIsOffline(false);
+    };
+
+    window.addEventListener("SYSTEM_OFFLINE", handleOffline);
+    window.addEventListener("SYSTEM_ONLINE", handleOnline);
+
+    return () => {
+      window.removeEventListener("SYSTEM_OFFLINE", handleOffline);
+      window.removeEventListener("SYSTEM_ONLINE", handleOnline);
+    };
+  }, []);
+
+  // [ENTERPRISE FIX] Absolute Shield
+  // By returning here, we strictly forbid AuthProvider and ThemeProvider from mounting.
+  // This guarantees zero background API calls (like get_me.php) are made while offline.
+  if (isOffline) {
+      return <SystemOffline incidentCode={incidentCode} />;
+  }
+
+  return (
+    <ThemeProvider>
+      <AuthProvider>
+        <LayoutProvider>
+          <AdminCacheProvider>
+             <ErrorBoundary>
+               <AppWrapper />
+             </ErrorBoundary>
+          </AdminCacheProvider>
+        </LayoutProvider>
+      </AuthProvider>
+    </ThemeProvider>
+  );
+}
+
+export default App;

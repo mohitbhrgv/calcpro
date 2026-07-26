@@ -1,0 +1,110 @@
+import React, { useState, useEffect } from "react";
+import { Outlet, Navigate, useLocation } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+import Sidebar from "./Sidebar";
+import Header from "./Header";
+import LoadingSpinner from "../common/LoadingSpinner";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+// --- NEW IMPORT ---
+import SessionHeartbeat from "../security/SessionHeartbeat";
+
+const AdminLayout = () => {
+  const { user, loading, passwordSecurity } = useAuth();
+// [NEW] Extracted passwordSecurity
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+// --- Dynamic Identity Logic ---
+  const { getCache } = useAdminCache();
+  const settings = getCache("settings_general");
+  const location = useLocation();
+
+  // Helper function to safely extract setting values regardless of API structure (Array vs Object)
+  const getSettingValue = (key, fallback) => {
+    if (!settings) return fallback;
+// If settings is returned as an array of objects [{ setting_key: '...', setting_value: '...' }]
+    if (Array.isArray(settings)) {
+      const found = settings.find((s) => s.setting_key === key);
+      return found ? found.setting_value : fallback;
+    }
+    
+    // If settings is a flattened key-value object { key: 'value' }
+    return settings[key] !== undefined && settings[key] !== null ?
+      settings[key] : fallback;
+  };
+
+  useEffect(() => {
+    // 1. Scroll to top on route change
+    window.scrollTo(0, 0);
+
+    // 2. Strict Title Format: "Admin Panel {Separator} {SiteName}"
+    const siteName = getSettingValue("siteName", "CalcPro");
+    const separator = getSettingValue("seo_separator", "-");
+    
+    document.title = `Admin Panel ${separator} ${siteName}`;
+    
+  }, [location.pathname, settings]);
+
+  if (loading) {
+    return <LoadingSpinner />;
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  // Enterprise Orbs: Clean slate, subtle blue, rich midnight tones to match the Login Gateway
+  const renderBackgroundOrbs = () => (
+    <div className="fixed inset-0 w-full h-full overflow-hidden z-0 pointer-events-none">
+      <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-slate-300/30 dark:bg-indigo-500/10 rounded-full blur-[120px] mix-blend-multiply dark:mix-blend-screen animate-pulse-slow"></div>
+      <div className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] bg-blue-200/20 dark:bg-slate-600/10 rounded-full blur-[150px] mix-blend-multiply dark:mix-blend-screen"></div>
+      <div className="absolute top-[40%] right-[20%] w-[300px] h-[300px] bg-gray-300/20 dark:bg-blue-900/10 rounded-full blur-[100px] mix-blend-multiply dark:mix-blend-screen"></div>
+    </div>
+  );
+
+  // [ENTERPRISE FIX] THE FRONTEND LIFECYCLE GATE
+  // If the password has expired, we freeze the layout rendering.
+  // This prevents the Header and Dashboard from mounting, which entirely stops the 403 API request flood.
+  if (passwordSecurity?.isExpired) {
+      return (
+          <div className="flex min-h-screen bg-slate-50 dark:bg-[#020617] transition-colors duration-300 font-inter relative overflow-hidden">
+              {renderBackgroundOrbs()}
+              {/* The AuthProvider at the root level will automatically render the 
+                ForcePasswordUpdateModal over this clean background. 
+            
+                Zero network calls are made.
+              */}
+          </div>
+      );
+  }
+
+  return (
+    <div className="flex min-h-screen bg-slate-50 dark:bg-[#020617] transition-colors duration-300 font-inter relative overflow-hidden">
+      
+      {/* Universal Ambient Lighting */}
+      {renderBackgroundOrbs()}
+      
+      {/* --- NEW ENTERPRISE COMPONENT --- */}
+      <SessionHeartbeat />
+      
+      <div className="relative z-10 flex w-full h-screen">
+        <Sidebar
+          isOpen={sidebarOpen}
+          onToggle={() => setSidebarOpen(!sidebarOpen)}
+        />
+       
+        <div className="flex-1 flex flex-col min-w-0 transition-all duration-300 ease-in-out h-full overflow-y-auto custom-scrollbar">
+          <Header onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
+          
+          {/* Main Content Area */}
+          <main className="flex-1 p-6 relative">
+            <div className="max-w-7xl mx-auto">
+               <Outlet />
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default AdminLayout;

@@ -1,0 +1,199 @@
+import React from "react";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiTrash2, FiPlus, FiFileText } = FiIcons;
+
+const FaqEditor = ({ content, onContentChange }) => {
+  const handleTextChange = (e) => {
+    const { name, value } = e.target;
+    onContentChange({ ...content, [name]: value });
+  };
+
+  const handleCategoryChange = (index, value) => {
+    const newCategories = [...(content.categories || [])];
+    newCategories[index].name = value;
+    onContentChange({ ...content, categories: newCategories });
+  };
+
+  const handleFaqChange = (catIndex, faqIndex, field, value) => {
+    const newCategories = [...content.categories];
+    newCategories[catIndex].faqs[faqIndex][field] = value;
+    onContentChange({ ...content, categories: newCategories });
+  };
+
+  const addCategory = () => {
+    const newCategories = [
+      ...(content.categories || []),
+      {
+        id: `new_${Date.now()}`,
+        name: "New Category",
+        faqs: [{ question: "", answer: "" }],
+      },
+    ];
+    onContentChange({ ...content, categories: newCategories });
+  };
+
+  const addFaq = (catIndex) => {
+    const newCategories = [...content.categories];
+    newCategories[catIndex].faqs.push({ question: "", answer: "" });
+    onContentChange({ ...content, categories: newCategories });
+  };
+
+  const removeCategory = (catIndex) => {
+    if (window.confirm("Are you sure you want to delete this entire category and all its questions?")) {
+      const newCategories = content.categories.filter((_, index) => index !== catIndex);
+      onContentChange({ ...content, categories: newCategories });
+    }
+  };
+
+  const removeFaq = (catIndex, faqIndex) => {
+    const newCategories = [...content.categories];
+    newCategories[catIndex].faqs = newCategories[catIndex].faqs.filter((_, index) => index !== faqIndex);
+    onContentChange({ ...content, categories: newCategories });
+  };
+
+  const inputClass = "w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 transition-colors";
+  const labelClass = "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1";
+  const cardClass = "p-5 border border-gray-200 dark:border-gray-700 rounded-xl bg-gray-50 dark:bg-gray-700/30";
+
+  return (
+    <div className="space-y-6">
+      {/* Header Info */}
+      <div className={cardClass}>
+        <div className="space-y-4">
+          <div>
+            <label className={labelClass}>Page Heading</label>
+            <input
+              type="text"
+              name="pageHeading"
+              value={content.pageHeading || ""}
+              onChange={handleTextChange}
+              className={inputClass}
+              placeholder="Frequently Asked Questions"
+            />
+          </div>
+          <div>
+            <label className={labelClass}>Page Subheading</label>
+            <textarea
+              name="pageSubheading"
+              value={content.pageSubheading || ""}
+              onChange={handleTextChange}
+              rows="2"
+              className={inputClass}
+              placeholder="Find answers to common questions about our calculators and account management."
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Dynamic Categories */}
+      {(content.categories || []).map((cat, catIndex) => (
+        <div key={cat.id || catIndex} className={cardClass}>
+          <div className="flex justify-between items-center mb-4">
+            <input
+              type="text"
+              value={cat.name}
+              onChange={(e) => handleCategoryChange(catIndex, e.target.value)}
+              placeholder="Category Name"
+              className="font-bold text-lg bg-transparent border-b-2 border-gray-300 dark:border-gray-600 focus:border-indigo-500 focus:outline-none text-gray-900 dark:text-white w-2/3 transition-colors px-1"
+            />
+            <button
+              type="button"
+              onClick={() => removeCategory(catIndex)}
+              className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+              title="Delete Category"
+            >
+              <SafeIcon icon={FiTrash2} className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="space-y-6">
+            {(cat.faqs || []).map((faq, faqIndex) => (
+              <div key={faqIndex} className="pl-4 border-l-2 border-indigo-200 dark:border-indigo-900 ml-1">
+                <div className="flex justify-between items-center mb-2">
+                  <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                    Question {faqIndex + 1}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => removeFaq(catIndex, faqIndex)}
+                    className="text-red-500 hover:text-red-600 text-xs font-medium hover:underline"
+                  >
+                    Remove
+                  </button>
+                </div>
+                <div className="space-y-3">
+                    <input
+                      type="text"
+                      value={faq.question}
+                      onChange={(e) => handleFaqChange(catIndex, faqIndex, "question", e.target.value)}
+                      placeholder="Enter question"
+                      className={inputClass}
+                    />
+                    <textarea
+                      value={faq.answer}
+                      onChange={(e) => handleFaqChange(catIndex, faqIndex, "answer", e.target.value)}
+                      placeholder="Enter answer"
+                      rows="3"
+                      className={inputClass}
+                    />
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => addFaq(catIndex)}
+              className="text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 flex items-center space-x-1"
+            >
+              <SafeIcon icon={FiPlus} className="w-4 h-4" />
+              <span>Add Question</span>
+            </button>
+          </div>
+        </div>
+      ))}
+      
+      <button
+        type="button"
+        onClick={addCategory}
+        className="w-full py-3 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl text-gray-500 dark:text-gray-400 font-medium hover:border-indigo-500 hover:text-indigo-500 dark:hover:border-indigo-400 dark:hover:text-indigo-400 transition-colors flex items-center justify-center gap-2"
+      >
+        <SafeIcon icon={FiPlus} className="w-5 h-5" />
+        <span>Add New FAQ Category</span>
+      </button>
+
+      {/* CTA Section */}
+      <div className={cardClass}>
+        <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+            <SafeIcon icon={FiFileText} className="w-4 h-4 text-indigo-500" />
+            "Still have questions?" Section
+        </h3>
+        <div className="space-y-4">
+            <div>
+            <label className={labelClass}>CTA Heading</label>
+            <input
+                type="text"
+                name="ctaHeading"
+                value={content.ctaHeading || ""}
+                onChange={handleTextChange}
+                className={inputClass}
+                placeholder="Still have questions?"
+            />
+            </div>
+            <div>
+            <label className={labelClass}>CTA Subheading</label>
+            <textarea
+                name="ctaSubheading"
+                value={content.ctaSubheading || ""}
+                onChange={handleTextChange}
+                rows="2"
+                className={inputClass}
+                placeholder="Cannot find the answer you are looking for? Please contact our support team."
+            />
+            </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default FaqEditor;

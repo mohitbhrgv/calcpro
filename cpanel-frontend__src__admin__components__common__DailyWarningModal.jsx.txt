@@ -1,0 +1,84 @@
+// cPanel_Frontend/src/admin/components/common/DailyWarningModal.jsx
+
+import React from "react";
+import Modal from "./Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const DailyWarningModal = ({ isOpen, onClose, count, stateType, navigate }) => {
+  if (!isOpen) return null;
+
+  const isCritical = stateType === 'critical';
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={
+        <span className="text-red-600 dark:text-red-500 font-extrabold flex items-center gap-2">
+          <SafeIcon icon={FiIcons.FiShield} className="w-5 h-5" /> 
+          Security & Stability Module
+        </span>
+      }
+      size="md"
+      disableAnimation={true}
+    >
+      <div className="flex flex-col items-center text-center pt-4 pb-2 space-y-6">
+        
+        {/* Premium Deep Red Pulsing Shield */}
+        <div className="relative flex items-center justify-center w-24 h-24">
+            {/* Outer Ping */}
+            <div className="absolute inset-0 rounded-full animate-ping opacity-20 bg-red-500"></div>
+            {/* Inner Ring */}
+            <div className="absolute inset-2 rounded-full bg-red-100 dark:bg-red-900/40 ring-8 ring-red-50 dark:ring-red-900/20"></div>
+            {/* Core Icon */}
+            <SafeIcon 
+              icon={isCritical ? FiIcons.FiAlertOctagon : FiIcons.FiActivity} 
+              className="w-10 h-10 text-red-600 dark:text-red-400 relative z-10" 
+            />
+        </div>
+
+        {/* Premium Typography & Hierarchical Messaging */}
+        <div className="space-y-3 px-2 w-full">
+          <h2 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight uppercase">
+            {isCritical ? 'Critical System Alert' : 'Review Required'}
+          </h2>
+          
+          {/* Aesthetic Separator */}
+          <div className="w-12 h-1 bg-red-500 mx-auto rounded-full mb-4"></div>
+          
+          <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed max-w-sm mx-auto">
+            The telemetry vault has intercepted 
+            <span className="font-extrabold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 px-2 py-0.5 rounded border border-red-100 dark:border-red-800/50 mx-1.5 shadow-sm">
+              {count}
+            </span> 
+            unresolved system event{count > 1 ? 's' : ''}. 
+          </p>
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 max-w-xs mx-auto mt-2">
+            Immediate administrative intervention is strongly recommended to maintain enterprise-grade stability and prevent service degradation.
+          </p>
+        </div>
+
+        {/* High-End Action Buttons (Unified Red Theme) */}
+        <div className="flex flex-col sm:flex-row w-full gap-3 pt-6 border-t border-gray-100 dark:border-gray-700/50">
+          <button 
+            onClick={onClose} 
+            className="flex-1 px-5 py-3.5 text-sm font-bold text-red-800 bg-red-50 hover:bg-red-100 dark:text-red-300 dark:bg-red-900/20 dark:hover:bg-red-900/40 border border-red-200 dark:border-red-800/50 rounded-xl transition-colors focus:outline-none"
+          >
+            Dismiss for Now
+          </button>
+          <button 
+            onClick={() => { onClose(); navigate("/settings/system-logs"); }} 
+            className="flex-1 px-5 py-3.5 text-sm font-bold text-white bg-red-600 hover:bg-red-700 rounded-xl shadow-lg shadow-red-500/30 dark:shadow-red-900/40 ring-1 ring-red-700 dark:ring-red-500 transition-all duration-200 hover:-translate-y-0.5 focus:outline-none flex items-center justify-center gap-2"
+          >
+            <SafeIcon icon={FiIcons.FiShield} className="w-4 h-4" />
+            Analyze Logs
+          </button>
+        </div>
+
+      </div>
+    </Modal>
+  );
+};
+
+export default DailyWarningModal;

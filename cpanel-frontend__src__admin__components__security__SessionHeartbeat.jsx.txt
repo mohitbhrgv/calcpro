@@ -1,0 +1,81 @@
+// cPanel_Frontend/src/admin/components/security/SessionHeartbeat.jsx
+
+import { useEffect } from 'react';
+import { authenticatedFetch } from '../../utils/apiService';
+
+// Enterprise Constants
+const LOCK_KEY = 'calcpro_auto_refresh_lock';
+const STORAGE_KEY_LAST_ACTIVE = 'calcpro_last_active'; // Shared with AuthContext
+const AUTO_REFRESH_INTERVAL_MS = 13 * 60 * 1000; // 13 minutes (Safely before 15-minute Access Token expiry)
+const MAX_INACTIVITY_MS = 60 * 60 * 1000; // 60 minutes absolute limit
+
+const SessionHeartbeat = () => {
+
+  useEffect(() => {
+    // The Core Auto-Refresh Logic (Mutex Protected)
+    const attemptAutoRefresh = async () => {
+      const now = Date.now();
+      
+      // 1. Check Global Activity
+      const lastActiveStr = localStorage.getItem(STORAGE_KEY_LAST_ACTIVE);
+      const lastActive = lastActiveStr ? parseInt(lastActiveStr, 10) : now;
+
+      // Ensure we DO NOT auto-refresh if the user has been completely idle for over 60 mins.
+      // Let the token naturally expire so the AuthContext can log them out safely.
+      if (now - lastActive > MAX_INACTIVITY_MS) {
+        return;
+      }
+
+      // 2. Check the Mutex Lock
+      const lastRefreshStr = localStorage.getItem(LOCK_KEY);
+      
+      // --- ENTERPRISE BUG FIX: RACE CONDITION PREVENTION ---
+      // If there is no refresh memory (e.g., fresh login or initialization),
+      // do NOT panic and refresh immediately. Anchor it to NOW and wait 13 minutes.
+      if (!lastRefreshStr) {
+          localStorage.setItem(LOCK_KEY, now.toString());
+          return;
+      }
+
+      const lastRefresh = parseInt(lastRefreshStr, 10);
+
+      // If 13 minutes have passed since the last refresh across ANY tab
+      if (now - lastRefresh > AUTO_REFRESH_INTERVAL_MS) {
+        
+        // --- CRITICAL SECURITY STEP: WRITE BEFORE PING ---
+        // Instantly lock it so no other tabs race to the server.
+        localStorage.setItem(LOCK_KEY, now.toString());
+
+        try {
+          await authenticatedFetch("/api/admin/get_me.php", { skipAuthHandler: true, skipConcurrencyHandler: true });
+          const apiUrl = "/api/admin/refresh_token.php";
+          await authenticatedFetch(apiUrl, {
+            method: 'POST',
+            skipAuthHandler: true, // Prevents massive UI disruptions if the ping fails
+            skipConcurrencyHandler: true
+          });
+        } catch (error) {
+          // If a network blip causes the ping to fail, remove the lock 
+          // so the next minute's tick will immediately retry before the 15-min mark.
+          localStorage.removeItem(LOCK_KEY);
+        }
+      }
+    };
+
+    // Evaluates the rules every 1 minute.
+    const pollInterval = setInterval(attemptAutoRefresh, 60000); 
+    
+    // Initial evaluation on load
+    attemptAutoRefresh();
+
+    // Cleanup
+    return () => {
+      clearInterval(pollInterval);
+    };
+  }, []);
+
+  // This component acts purely as a background daemon.
+  return null; 
+};
+
+export default SessionHeartbeat;

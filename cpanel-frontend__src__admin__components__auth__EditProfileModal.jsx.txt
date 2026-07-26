@@ -1,0 +1,620 @@
+// cPanel_Frontend/src/admin/components/auth/EditProfileModal.jsx
+import React, { useState, useRef, useEffect } from "react";
+import { useAuth } from "../../context/AuthContext";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+import { authenticatedFetch } from "../../utils/apiService";
+import { motion, AnimatePresence } from "framer-motion"; 
+
+const { FiUser, FiMail, FiLock, FiCamera, FiSave, FiEye, FiEyeOff, FiCheck, FiX, FiShield, FiLogOut, FiAlertCircle, FiInfo } = FiIcons;
+
+const EditProfileModal = ({ isOpen, onClose }) => {
+  const { user, updateUser, logout } = useAuth();
+
+  const [activeTab, setActiveTab] = useState("profile");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const [formData, setFormData] = useState({
+    name: "",
+    email: "",
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: "",
+  });
+
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  
+  const [currentPasswordError, setCurrentPasswordError] = useState("");
+  
+  // Synchronized State for Enterprise UX
+  const [passwordStrength, setPasswordStrength] = useState(0);
+  const [isSuccessState, setIsSuccessState] = useState(false);
+
+  useEffect(() => {
+    if (user && isOpen) {
+      setFormData({
+        name: user.name || "",
+        email: user.email || "",
+        currentPassword: "",
+        newPassword: "",
+        confirmPassword: "",
+      });
+      setActiveTab("profile");
+      setShowCurrent(false);
+      setShowNew(false);
+      setShowConfirm(false);
+      setCurrentPasswordError(""); 
+      setPasswordStrength(0);
+      setIsSuccessState(false);
+    }
+  }, [isOpen, user]);
+
+  const calculateStrength = (pass) => {
+      let strength = 0;
+      if (pass.length >= 16 && pass.length <= 64) strength += 1; 
+      if (pass.match(/[A-Z]/)) strength += 1;
+      if (pass.match(/[a-z]/)) strength += 1;
+      if (pass.match(/[0-9]/)) strength += 1;
+      if (pass.match(/[^A-Za-z0-9]/)) strength += 1;
+      return strength;
+  };
+
+  const getStrengthColor = (strength) => {
+      if (strength <= 2) return 'bg-red-500';
+      if (strength === 3) return 'bg-amber-500';
+      if (strength === 4) return 'bg-blue-500';
+      return 'bg-emerald-500';
+  };
+
+  const getStrengthLabel = (strength) => {
+      if (strength === 0) return '';
+      if (strength <= 2) return 'Weak - Add uppercase, numbers, or symbols';
+      if (strength === 3) return 'Fair - Could be stronger';
+      if (strength === 4) return 'Good - Almost there';
+      return 'Strong - Excellent password';
+  };
+
+  const getStrengthTextColor = (strength) => {
+      if (strength <= 2) return 'text-red-600 dark:text-red-400';
+      if (strength === 3) return 'text-amber-600 dark:text-amber-400';
+      if (strength === 4) return 'text-blue-600 dark:text-blue-400';
+      return 'text-emerald-600 dark:text-emerald-400';
+  };
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    let finalValue = value;
+
+    if (["currentPassword", "newPassword", "confirmPassword"].includes(name) && value.length > 64) {
+      finalValue = value.slice(0, 64);
+    }
+
+    setFormData((prev) => ({ ...prev, [name]: finalValue }));
+
+    if (name === "currentPassword") {
+      setCurrentPasswordError("");
+    }
+    
+    if (name === "newPassword") {
+      setPasswordStrength(calculateStrength(finalValue));
+    }
+  };
+
+  const isPasswordValid = formData.newPassword.length >= 16 && formData.newPassword.length <= 64;
+  const isMatch = formData.newPassword === formData.confirmPassword && formData.confirmPassword.length > 0;
+  const hasStartedTypingNewPwd = formData.newPassword.length > 0;
+  const hasStartedTypingConfirm = formData.confirmPassword.length > 0;
+
+  const handleProfileUpdate = async (e) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    const toastId = "profile-update-toast";
+    toast.loading("Updating profile...", { id: toastId });
+
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    try {
+      const result = await authenticatedFetch(
+        "/api/admin/update_admin_profile.php",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: formData.name,
+            email: formData.email,
+          }),
+        }
+      );
+
+      if (result.success) {
+        updateUser(result.data);
+        toast.success(result.message, { id: toastId });
+        onClose();
+      } else {
+        toast.error(result.message || "An unknown error occurred.", { id: toastId });
+      }
+    } catch (error) {
+      if (error?.message !== "Unauthorized Session" && error?.status !== 401) {
+        toast.error(error?.message || "Could not connect to the server.", { id: toastId });
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handlePasswordUpdate = async (e) => {
+    e.preventDefault();
+    setCurrentPasswordError("");
+
+    if (!isPasswordValid) {
+      toast.error("Password must be between 16 and 64 characters long.");
+      return;
+    }
+    if (passwordStrength < 3) {
+      toast.error("Please choose a stronger password to proceed.");
+      return;
+    }
+    if (!isMatch) {
+      toast.error("New passwords do not match.");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const result = await authenticatedFetch(
+        "/api/admin/update_admin_password.php",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            currentPassword: formData.currentPassword,
+            newPassword: formData.newPassword,
+          }),
+        }
+      );
+
+      if (result.success) {
+        // Detach the success state from the parent modal completely
+        setIsSuccessState(true);
+        setTimeout(() => {
+            onClose();
+            logout("Password updated securely! Please log in again with your new password.");
+        }, 2500);
+      } else {
+        toast.error(result.message || "An unknown error occurred.");
+        setIsSubmitting(false);
+      }
+    } catch (error) {
+      if (error?.message !== "Unauthorized Session" && error?.status !== 401) {
+        const isCredentialError = error?.errorCode === "INVALID_CREDENTIALS" ||
+          (error?.message && error.message.toLowerCase().includes("current password"));
+
+        if (isCredentialError) {
+          setCurrentPasswordError(error.message || "The current password you entered is incorrect.");
+        } else {
+          toast.error(error?.message || "An error occurred while updating your password.");
+        }
+      }
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <Modal 
+        // Hide the main modal entirely when success state is active
+        isOpen={isOpen && !isSuccessState} 
+        onClose={onClose} 
+        title="Edit Profile" 
+        size="lg"
+        disableAnimation={true}
+      >
+        <div className="flex flex-col md:flex-row gap-8">
+          <div className="md:w-1/3 text-center flex flex-col items-center">
+            <div className="relative w-32 h-32 mx-auto mb-4">
+              <img
+                src={
+                  user?.avatar ||
+                  `https://ui-avatars.com/api/?name=${user?.name?.replace(/\s/g, "+")}&background=1E3A8A&color=fff&size=128`
+                }
+                alt={user?.name}
+                className="w-full h-full rounded-full object-cover border-4 border-white dark:border-gray-700 shadow-md"
+              />
+            </div>
+            <h3 className="text-xl font-bold text-gray-900 dark:text-white">
+              {user?.name}
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              {user?.email}
+            </p>
+          </div>
+
+          <div className="md:w-2/3">
+            <div className="border-b border-gray-200 dark:border-gray-700">
+              <nav className="flex space-x-4">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("profile")}
+                  className={`px-3 py-2 text-sm font-medium transition-colors ${
+                    activeTab === "profile"
+                      ? "border-b-2 border-calcpro-primary text-calcpro-primary dark:text-blue-400 dark:border-blue-400"
+                      : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                  }`}
+                >
+                  Profile Details
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("password")}
+                  className={`px-3 py-2 text-sm font-medium transition-colors ${
+                    activeTab === "password"
+                      ? "border-b-2 border-calcpro-primary text-calcpro-primary dark:text-blue-400 dark:border-blue-400"
+                      : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                  }`}
+                >
+                  Change Password
+                </button>
+              </nav>
+            </div>
+
+            <div className="py-6 px-1.5 h-[480px] flex flex-col overflow-y-auto">
+              {activeTab === "profile" && (
+                <form onSubmit={handleProfileUpdate} className="flex flex-col h-full">
+                  <div className="space-y-6 flex-grow">
+                    <div>
+                      <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                        Full Name
+                      </label>
+                      <div className="relative">
+                        <SafeIcon icon={FiUser} className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 dark:text-gray-500" />
+                        <input
+                          type="text"
+                          name="name"
+                          value={formData.name}
+                          onChange={handleChange}
+                          required
+                          className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-calcpro-primary focus:border-transparent transition-colors"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                       <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                        Email Address
+                      </label>
+                      <div className="relative">
+                        <SafeIcon icon={FiMail} className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 dark:text-gray-500" />
+                        <input
+                          type="email"
+                          name="email"
+                          value={formData.email}
+                          onChange={handleChange}
+                          required
+                          className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-calcpro-primary focus:border-transparent transition-colors"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="pt-6 border-t border-gray-100 dark:border-gray-700/50">
+                      <h4 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-3">
+                        Account Metadata
+                      </h4>
+                      <div className="bg-gray-50 dark:bg-gray-800/40 rounded-lg p-4 border border-gray-100 dark:border-gray-700/50">
+                        <div className="flex items-center justify-between mb-3 pb-3 border-b border-gray-200 dark:border-gray-700/50">
+                          <span className="text-sm text-gray-600 dark:text-gray-400">Assigned Role</span>
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300 uppercase tracking-wider">
+                            {user?.role ? user.role.replace('_', ' ') : 'Administrator'}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <div className="mt-0.5 text-green-500">
+                            <SafeIcon icon={FiShield} className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-gray-900 dark:text-gray-200">
+                              Enterprise Security Active
+                            </p>
+                            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
+                              Your session is protected by AES-256 IP encryption and brute force mitigation.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end pt-4 mt-4 border-t border-transparent">
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="flex items-center space-x-2 bg-calcpro-primary text-white px-4 py-2 rounded-lg hover:bg-calcpro-primary/90 disabled:opacity-60 transition-colors"
+                    >
+                      {isSubmitting ? (
+                          <>
+                              <span className="w-4 h-4 border-2 border-white/80 border-t-transparent rounded-full animate-spin"></span>
+                              <span>Saving...</span>
+                          </>
+                      ) : (
+                          <>
+                              <SafeIcon icon={FiSave} />
+                              <span>Save Changes</span>
+                          </>
+                      )}
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {activeTab === "password" && (
+                <form onSubmit={handlePasswordUpdate} className="flex flex-col h-full">
+                  <div className="space-y-5 flex-grow">
+                    
+                    <div className="pb-2">
+                      <label className="block text-sm font-medium mb-1.5 text-gray-700 dark:text-gray-300">
+                        Current Password
+                      </label>
+                      <div className="relative">
+                        <SafeIcon 
+                          icon={FiLock} 
+                          className={`absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 transition-colors ${
+                            currentPasswordError ? "text-red-400" : "text-gray-400 dark:text-gray-500"
+                          }`} 
+                        />
+                        <input
+                          type={showCurrent ? "text" : "password"}
+                          name="currentPassword"
+                          value={formData.currentPassword}
+                          onChange={handleChange}
+                          required
+                          className={`w-full pl-10 pr-10 py-2 border rounded-lg bg-white dark:bg-gray-700 transition-colors focus:outline-none focus:ring-2 ${
+                            currentPasswordError
+                              ? "border-red-500 focus:ring-red-500/20 text-red-900 dark:text-red-100 placeholder-red-300"
+                              : "border-gray-300 dark:border-gray-600 focus:ring-calcpro-primary text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
+                          }`}
+                        />
+                        <button 
+                          type="button" 
+                          disabled={!formData.currentPassword}
+                          onMouseDown={() => setShowCurrent(true)}
+                          onMouseUp={() => setShowCurrent(false)}
+                          onMouseLeave={() => setShowCurrent(false)}
+                          onTouchStart={() => setShowCurrent(true)}
+                          onTouchEnd={() => setShowCurrent(false)}
+                          className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 transition-all focus:outline-none rounded-md ${
+                            !formData.currentPassword 
+                              ? "opacity-30 cursor-not-allowed text-gray-400" 
+                              : "text-gray-400 hover:text-gray-600 cursor-pointer"
+                          }`}
+                          tabIndex="-1"
+                        >
+                          <SafeIcon icon={showCurrent ? FiEyeOff : FiEye} className="h-5 w-5" />
+                        </button>
+                      </div>
+                      
+                      <div className="relative h-0">
+                        <AnimatePresence>
+                          {currentPasswordError && (
+                            <motion.p
+                              initial={{ opacity: 0, y: -5 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: -5 }}
+                              className="absolute top-1 left-0 text-red-500 text-xs font-medium"
+                            >
+                              {currentPasswordError}
+                            </motion.p>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                              New Password
+                          </label>
+                          <span className="text-xs text-gray-500 font-normal">16 - 64 characters</span>
+                      </div>
+                      <div className="relative">
+                        <SafeIcon icon={FiLock} className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 dark:text-gray-500" />
+                        <input
+                          type={showNew ? "text" : "password"}
+                          name="newPassword"
+                          value={formData.newPassword}
+                          onChange={handleChange}
+                          required
+                          minLength={16}
+                          maxLength={64}
+                          className={`w-full pl-10 pr-10 py-2 border rounded-lg bg-white dark:bg-gray-700 transition-colors focus:outline-none focus:ring-2 ${
+                            !hasStartedTypingNewPwd 
+                              ? "border-gray-300 dark:border-gray-600 focus:ring-calcpro-primary text-gray-900 dark:text-white"
+                              : isPasswordValid
+                                ? "border-green-500 focus:ring-green-500/50 text-green-900 dark:text-green-100"
+                                : "border-red-500 focus:ring-red-500/50 text-red-900 dark:text-red-100"
+                          }`}
+                        />
+                        <button 
+                          type="button" 
+                          disabled={!formData.newPassword}
+                          onMouseDown={() => setShowNew(true)}
+                          onMouseUp={() => setShowNew(false)}
+                          onMouseLeave={() => setShowNew(false)}
+                          onTouchStart={() => setShowNew(true)}
+                          onTouchEnd={() => setShowNew(false)}
+                          className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 transition-all focus:outline-none rounded-md ${
+                            !formData.newPassword 
+                              ? "opacity-30 cursor-not-allowed text-gray-400" 
+                              : "text-gray-400 hover:text-gray-600 cursor-pointer"
+                          }`}
+                          tabIndex="-1"
+                        >
+                          <SafeIcon icon={showNew ? FiEyeOff : FiEye} className="h-5 w-5" />
+                        </button>
+                      </div>
+
+                      {formData.newPassword && (
+                          <div className="mt-2 space-y-1.5">
+                              <div className="flex gap-1 h-1.5">
+                                  {[1, 2, 3, 4, 5].map((level) => (
+                                      <div 
+                                          key={level} 
+                                          className={`flex-1 rounded-full transition-colors duration-300 ${
+                                              passwordStrength >= level 
+                                                  ? getStrengthColor(passwordStrength) 
+                                                  : 'bg-gray-200 dark:bg-slate-700'
+                                          }`} 
+                                      />
+                                  ))}
+                              </div>
+                              <p className={`text-xs font-medium transition-colors ${getStrengthTextColor(passwordStrength)}`}>
+                                  {getStrengthLabel(passwordStrength)}
+                              </p>
+                          </div>
+                      )}
+
+                      <AnimatePresence>
+                        {formData.newPassword.length === 64 && (
+                          <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: "auto" }}
+                            exit={{ opacity: 0, height: 0 }}
+                          >
+                            <p className="text-amber-500 dark:text-amber-400 text-[11px] font-medium mt-1.5 ml-1 flex items-center gap-1">
+                              <SafeIcon icon={FiAlertCircle} className="w-3.5 h-3.5" />
+                              Maximum password length reached (64/64).
+                            </p>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+
+                    <div className="pb-2">
+                      <label className="block text-sm font-medium mb-1.5 text-gray-700 dark:text-gray-300">
+                        Confirm New Password
+                      </label>
+                      <div className="relative">
+                        <SafeIcon icon={FiLock} className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 dark:text-gray-500" />
+                        <input
+                          type={showConfirm ? "text" : "password"}
+                          name="confirmPassword"
+                          value={formData.confirmPassword}
+                          onChange={handleChange}
+                          required
+                          minLength={16}
+                          maxLength={64}
+                          className={`w-full pl-10 pr-10 py-2 border rounded-lg bg-white dark:bg-gray-700 transition-colors focus:outline-none focus:ring-2 ${
+                            !hasStartedTypingConfirm
+                              ? "border-gray-300 dark:border-gray-600 focus:ring-calcpro-primary text-gray-900 dark:text-white"
+                              : isMatch 
+                                ? "border-emerald-500 border-2 focus:ring-emerald-500/50 text-emerald-900 dark:text-emerald-100" 
+                                : "border-red-500 border-2 focus:ring-red-500/50 text-red-900 dark:text-red-100"
+                          }`}
+                        />
+                        <button 
+                          type="button" 
+                          disabled={!formData.confirmPassword}
+                          onMouseDown={() => setShowConfirm(true)}
+                          onMouseUp={() => setShowConfirm(false)}
+                          onMouseLeave={() => setShowConfirm(false)}
+                          onTouchStart={() => setShowConfirm(true)}
+                          onTouchEnd={() => setShowConfirm(false)}
+                          className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 transition-all focus:outline-none rounded-md ${
+                            !formData.confirmPassword 
+                              ? "opacity-30 cursor-not-allowed text-gray-400" 
+                              : "text-gray-400 hover:text-gray-600 cursor-pointer"
+                          }`}
+                          tabIndex="-1"
+                        >
+                          <SafeIcon icon={showConfirm ? FiEyeOff : FiEye} className="h-5 w-5" />
+                        </button>
+                      </div>
+
+                      <div className="relative h-0">
+                        {hasStartedTypingConfirm && !isMatch && (
+                          <p className="absolute top-1 left-0 text-red-500 text-xs mt-1">Passwords do not match.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end pt-4 mt-4 border-t border-transparent">
+                    <button
+                      type="submit"
+                      disabled={isSubmitting || !isPasswordValid || !isMatch || !formData.currentPassword || passwordStrength < 3}
+                      className={`flex items-center justify-center min-w-[160px] space-x-2 px-4 py-2 rounded-lg transition-colors ${
+                        (!isPasswordValid || !isMatch || !formData.currentPassword || passwordStrength < 3)
+                          ? "bg-gray-200 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed"
+                          : "bg-calcpro-primary text-white hover:bg-calcpro-primary/90"
+                      }`}
+                    >
+                      {isSubmitting ? (
+                          <>
+                              <span className="w-4 h-4 border-2 border-white/80 border-t-transparent rounded-full animate-spin"></span>
+                              <span>Securing...</span>
+                          </>
+                      ) : (
+                          <>
+                              <SafeIcon icon={FiSave} />
+                              <span>Update Password</span>
+                          </>
+                      )}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+      </Modal>
+
+      {/* The Separated, Dedicated Success Overlay (Matches Enforcer Modal exactly) */}
+      <AnimatePresence>
+        {isOpen && isSuccessState && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+             <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                className="bg-white dark:bg-[#0B1221] rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-gray-200/50 dark:border-slate-800/60 relative"
+              >
+                <div className="p-10 flex flex-col items-center justify-center text-center space-y-6">
+                    <div className="relative">
+                        <div className="w-20 h-20 bg-emerald-100 dark:bg-emerald-900/30 rounded-full flex items-center justify-center text-emerald-600 dark:text-emerald-400 mb-2">
+                            <SafeIcon icon={FiIcons.FiShield} className="w-10 h-10" />
+                        </div>
+                        <motion.div 
+                            initial={{ scale: 0 }}
+                            animate={{ scale: 1 }}
+                            transition={{ delay: 0.3, type: "spring" }}
+                            className="absolute -bottom-1 -right-1 w-8 h-8 bg-emerald-500 rounded-full border-4 border-white dark:border-[#0B1221] flex items-center justify-center text-white"
+                        >
+                            <SafeIcon icon={FiIcons.FiCheck} className="w-4 h-4" />
+                        </motion.div>
+                    </div>
+
+                    <div>
+                        <h3 className="text-xl font-bold text-gray-900 dark:text-white">Password Updated</h3>
+                        <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
+                            Validating credentials and securing session...
+                        </p>
+                    </div>
+
+                    <div className="w-full max-w-[200px] h-1.5 bg-gray-100 dark:bg-slate-800 rounded-full overflow-hidden mt-4">
+                        <motion.div 
+                            initial={{ width: "0%" }}
+                            animate={{ width: "100%" }}
+                            transition={{ duration: 2.2, ease: "easeInOut" }}
+                            className="h-full bg-emerald-500 rounded-full"
+                        />
+                    </div>
+                </div>
+             </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+};
+
+export default EditProfileModal;

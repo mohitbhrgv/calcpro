@@ -1,0 +1,303 @@
+// cPanel_Frontend/src/admin/components/layout/SystemOffline.jsx
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { authenticatedFetch } from '../../utils/apiService';
+
+const MAX_OFFLINE_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+const PING_INTERVAL_MS = 30000; // 30 seconds
+
+const SystemOffline = ({ incidentCode }) => {
+    // [ENTERPRISE FIX] Context-Aware Perimeter Check
+    // Determine if the user actually has a session to protect
+    const [hasActiveSession] = useState(() => {
+        return !!localStorage.getItem('calcpro-admin-user');
+    });
+
+    const [timeRemaining, setTimeRemaining] = useState(() => {
+        let startTime = localStorage.getItem('calcpro_sys_offline_start');
+        if (!startTime) {
+            startTime = Date.now();
+            localStorage.setItem('calcpro_sys_offline_start', startTime);
+        }
+        const elapsed = Date.now() - parseInt(startTime, 10);
+        return Math.max(0, MAX_OFFLINE_DURATION_MS - elapsed);
+    });
+
+    const [recoveryStatus, setRecoveryStatus] = useState('offline'); 
+    const [isExpired, setIsExpired] = useState(() => {
+        const startTime = localStorage.getItem('calcpro_sys_offline_start');
+        return startTime ? (Date.now() - parseInt(startTime, 10)) >= MAX_OFFLINE_DURATION_MS : false;
+    }); 
+
+    // Incident Tracking State (Diagnostic Pattern)
+    const [incidentType, setIncidentType] = useState(() => {
+        const code = incidentCode || localStorage.getItem('calcpro_sys_incident_code');
+        if (code === 'CRITICAL_DB_FAILURE') return 'db';
+        if (code === 'CRITICAL_ENV_FAILURE') return 'env';
+        return 'diagnosing'; 
+    }); // 'diagnosing' | 'core' | 'db' | 'env'
+
+    useEffect(() => {
+        if (incidentCode === 'CRITICAL_DB_FAILURE') setIncidentType('db');
+        else if (incidentCode === 'CRITICAL_ENV_FAILURE') setIncidentType('env');
+    }, [incidentCode]);
+
+    const verifySystemHealth = useCallback(async (isManual = false) => {
+        if (isManual) setRecoveryStatus('checking');
+        
+        try {
+            const envUrl = import.meta.env.VITE_API_BASE_URL || '';
+            const cleanBase = envUrl.replace(/\/+$/, '');
+            const res = await fetch(`${cleanBase}/api/admin/check_token.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            if ([200, 401, 403, 400].includes(res.status)) {
+                if (res.status === 401 || res.status === 403) {
+                    try {
+                        try { 
+                            await authenticatedFetch(`/api/admin/get_me.php`, { skipAuthHandler: true, skipConcurrencyHandler: true }); 
+                        } catch (preflightErr) {
+                            console.debug("[SystemOffline] Preflight token check expectedly failed:", preflightErr.message);
+                        }
+                        await authenticatedFetch(`/api/admin/refresh_token.php`, { method: 'POST', skipAuthHandler: true, skipConcurrencyHandler: true });
+                    } catch (err) {
+                        console.error("[SystemOffline] Critical failure during session recovery:", err.message);
+                    }
+                }
+
+                localStorage.removeItem('calcpro_sys_offline_start');
+                setRecoveryStatus('recovered');
+                
+                setTimeout(() => {
+                    window.dispatchEvent(new CustomEvent("SESSION_TIMER_RESUME"));
+                    window.dispatchEvent(new CustomEvent("SYSTEM_ONLINE"));
+                    setTimeout(() => {
+                        window.dispatchEvent(new CustomEvent("user-activity"));
+                    }, 150);
+                }, 1000);
+                return true;
+            } else if (res.status === 503 || res.status === 500) {
+                try {
+                    const errorData = await res.json();
+                    const code = errorData?.error_code || '';
+                    
+                    if (code === 'CRITICAL_DB_FAILURE') {
+                        setIncidentType('db');
+                    } else if (code === 'CRITICAL_ENV_FAILURE') {
+                        setIncidentType('env');
+                    } else {
+                        setIncidentType('core');
+                    }
+                } catch (parseError) {
+                    setIncidentType('core');
+                }
+            }
+        } catch (err) {
+            setIncidentType('core');
+        }
+        
+        if (isManual) {
+            setTimeout(() => setRecoveryStatus('offline'), 500); 
+        }
+        return false;
+    }, []);
+
+    useEffect(() => {
+        window.dispatchEvent(new CustomEvent("SESSION_TIMER_PAUSE"));
+
+        verifySystemHealth(false);
+        const pingInterval = setInterval(() => verifySystemHealth(false), PING_INTERVAL_MS);
+
+        let countdownInterval;
+
+        // [ENTERPRISE FIX] Memory Optimization: Only run the countdown loop if a session actually exists
+        if (hasActiveSession) {
+            const startTime = parseInt(localStorage.getItem('calcpro_sys_offline_start'), 10);
+            
+            countdownInterval = setInterval(() => {
+                const elapsed = Date.now() - startTime;
+                const remaining = Math.max(0, MAX_OFFLINE_DURATION_MS - elapsed);
+                setTimeRemaining(remaining);
+
+                if (remaining === 0) {
+                    clearInterval(countdownInterval);
+                    localStorage.removeItem('calcpro-admin-user');
+                    localStorage.removeItem('calcpro-admin-token');
+                    setIsExpired(true);
+                    window.location.hash = '#/admin/login';
+                }
+            }, 1000);
+        }
+
+        return () => {
+            if (countdownInterval) clearInterval(countdownInterval);
+            clearInterval(pingInterval);
+        };
+    }, [verifySystemHealth, hasActiveSession]);
+
+    const formatTime = (ms) => {
+        const totalSeconds = Math.floor(ms / 1000);
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+    };
+
+    const handleButtonClick = () => {
+        if (isExpired && hasActiveSession) {
+            window.location.reload();
+        } else {
+            verifySystemHealth(true);
+        }
+    };
+
+    const incidentConfig = {
+        diagnosing: {
+            title: 'Tracing Fault...',
+            subtitle: 'DIAGNOSING INFRASTRUCTURE',
+            code: 'SYS-503-AWAIT:0x0000'
+        },
+        core: {
+            title: 'System Halted',
+            subtitle: 'CRITICAL INFRASTRUCTURE FAULT',
+            code: 'SYS-503-EXEC:0x0D44'
+        },
+        db: {
+            title: 'System Paused',
+            subtitle: 'DATABASE CONNECTION LOST',
+            code: 'SYS-503-DB:0x0A11'
+        },
+        env: {
+            title: 'System Misconfigured',
+            subtitle: 'ENVIRONMENT CONFIGURATION FAULT',
+            code: 'SYS-503-ENV:0x0E22'
+        }
+    };
+
+    const currentIncident = incidentConfig[incidentType];
+
+    return (
+        <div className="fixed inset-0 z-[9999] bg-[#0a0f1c] flex flex-col items-center justify-center p-6 text-slate-100 font-sans">
+            <div className="max-w-md w-full bg-[#111827] rounded-3xl shadow-2xl p-8 border border-slate-800 text-center relative overflow-hidden transition-colors duration-500">
+                
+                {/* Top Status Bar */}
+                <div className={`absolute top-0 left-1/2 -translate-x-1/2 w-full h-1 transition-all duration-500 ${
+                    recoveryStatus === 'recovered' 
+                        ? 'bg-emerald-500/50 shadow-[0_0_20px_rgba(16,185,129,0.5)]' 
+                        : (incidentType === 'diagnosing' ? 'bg-indigo-500/50 shadow-[0_0_20px_rgba(99,102,241,0.5)] animate-pulse' : 'bg-red-500/50 shadow-[0_0_20px_rgba(239,68,68,0.5)]')
+                }`}></div>
+                
+                {/* Octagon Error Icon */}
+                <div className={`w-16 h-16 mx-auto rounded-full flex items-center justify-center mb-6 transition-all duration-500 ${
+                    recoveryStatus === 'recovered'
+                        ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-500'
+                        : (incidentType === 'diagnosing' 
+                            ? 'bg-indigo-500/10 border border-indigo-500/20 text-indigo-400' 
+                            : 'bg-red-500/10 border border-red-500/20 text-red-500 shadow-[0_0_30px_rgba(239,68,68,0.15)]')
+                }`}>
+                    {(recoveryStatus === 'offline' || recoveryStatus === 'checking') && (
+                        <svg className={`w-8 h-8 ${incidentType === 'diagnosing' ? 'animate-pulse' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                    )}
+                    {recoveryStatus === 'recovered' && (
+                        <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" />
+                        </svg>
+                    )}
+                </div>
+
+                <h2 className="text-2xl font-extrabold text-white mb-2 transition-opacity duration-300 tracking-wide">
+                    {recoveryStatus === 'recovered' ? 'Connection Restored' : currentIncident.title}
+                </h2>
+                
+                {recoveryStatus !== 'recovered' && (
+                    <p className={`text-[11px] font-bold uppercase tracking-[0.15em] mb-4 ${incidentType === 'diagnosing' ? 'text-indigo-400 animate-pulse' : 'text-red-500'}`}>
+                        {currentIncident.subtitle}
+                    </p>
+                )}
+
+                <p className="text-slate-400 mb-6 leading-relaxed text-sm h-10 flex items-center justify-center px-4">
+                    {recoveryStatus === 'recovered' 
+                            ? (hasActiveSession ? 'System integrity verified. Restoring your session...' : 'System integrity verified. Service restored.')
+                            : 'A critical system error occurred. (Ref: Core Exception)'}
+                </p>
+                
+                {/* Dynamic Section: Incident Box & Timer */}
+                {recoveryStatus !== 'recovered' && (
+                    <div className="bg-[#0b0f19] rounded-xl p-5 mb-6 border border-slate-800/50 shadow-inner">
+                        <p className="text-[10px] text-slate-500 mb-2 uppercase tracking-widest font-bold">Incident Tracking Code</p>
+                        <p className={`text-lg font-mono tracking-[0.1em] ${incidentType === 'diagnosing' ? 'text-indigo-300' : 'text-red-400'} ${!hasActiveSession ? '' : 'mb-5'}`}>
+                            {currentIncident.code}
+                        </p>
+
+                        {/* [ENTERPRISE FIX] Hide timer logic for unauthenticated perimeter hits */}
+                        {hasActiveSession && (
+                            <>
+                                <div className="w-full h-px bg-slate-800 mb-4"></div>
+
+                                {!isExpired ? (
+                                    <div>
+                                        <p className="text-xs text-slate-400 mb-1 uppercase tracking-wider font-semibold">Session Auto-Lock In</p>
+                                        <p className="text-3xl font-mono tracking-widest text-white transition-all duration-300">
+                                            {formatTime(timeRemaining)}
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <div className="animate-pulse">
+                                        <p className="text-sm text-red-500 font-semibold mb-1 uppercase tracking-wider">Session Expired</p>
+                                        <p className="text-xs text-slate-500">Security lockdown engaged.</p>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </div>
+                )}
+
+                <div className="space-y-5">
+                    <button 
+                        onClick={handleButtonClick}
+                        disabled={recoveryStatus === 'checking' || incidentType === 'diagnosing'}
+                        className={`w-full text-white font-bold py-3.5 px-4 rounded-xl transition-all duration-300 flex items-center justify-center gap-2 text-sm tracking-wide shadow-lg ${
+                            recoveryStatus === 'recovered'
+                                ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20'
+                                : (incidentType === 'diagnosing' 
+                                    ? 'bg-slate-800 text-slate-400 cursor-wait' 
+                                    : 'bg-[#ef4444] hover:bg-red-500 shadow-red-500/20 disabled:opacity-70 disabled:cursor-not-allowed')
+                        }`}
+                    >
+                        {(recoveryStatus === 'checking' || incidentType === 'diagnosing') && (
+                            <>
+                                <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></span>
+                                {incidentType === 'diagnosing' ? 'Diagnosing...' : 'Verifying Connection...'}
+                            </>
+                        )}
+                        {recoveryStatus === 'recovered' && 'Access Granted'}
+                        {(recoveryStatus === 'offline' || (isExpired && hasActiveSession)) && incidentType !== 'diagnosing' && (
+                            <>
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                </svg>
+                                Re-initialize Connection
+                            </>
+                        )}
+                    </button>
+
+                    <div className="pt-4 border-t border-slate-800/80">
+                        {/* [ENTERPRISE UX FIX] Dynamic perimeter warnings */}
+                        <p className="text-[10px] text-slate-500 leading-relaxed px-2">
+                            {!hasActiveSession 
+                                ? 'Secure gateway authentication is temporarily paused. Connection attempts are monitored.'
+                                : (isExpired 
+                                    ? 'Secure gateway for authorized personnel only. All access is protected by strict protocols and continuous monitoring.'
+                                    : 'If the system does not recover before the timer expires, you will be automatically logged out.')}
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default SystemOffline;

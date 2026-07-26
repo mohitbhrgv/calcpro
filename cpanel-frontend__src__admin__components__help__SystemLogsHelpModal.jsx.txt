@@ -1,0 +1,144 @@
+// cPanel_Frontend/src/admin/components/help/SystemLogsHelpModal.jsx
+
+import React from "react";
+import Modal from "../common/Modal";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiActivity, FiShield, FiSearch, FiCheckCircle, FiTerminal } = FiIcons;
+
+const SystemLogsHelpModal = ({ isOpen, onClose, disableAnimation = false }) => {
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title="How to Use: System Crash Logs"
+      size="lg"
+      disableAnimation={disableAnimation}
+    >
+      <div className="space-y-6 font-sans text-gray-300 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
+        {/* Intro text */}
+        <p className="text-sm leading-relaxed text-gray-400">
+          The System Crash Logs vault is your central hub for monitoring application health. 
+          Follow this guide to efficiently triage, debug, and resolve system errors.
+        </p>
+
+        {/* Operational Steps Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          
+          {/* Step 1: Identify Priority */}
+          <div className="p-5 rounded-xl border border-red-500/30 bg-red-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 1
+                </span>
+                <h4 className="font-bold text-white text-sm">Triage Criticals</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                Use the top filter tabs to isolate <strong className="text-gray-200">Critical</strong> and <strong className="text-gray-200">Error</strong> severities. 
+                These impact core functionalities and require immediate attention.
+                </p>
+            </div>
+            <div className="text-[10px] text-red-400/80 italic border-t border-red-500/20 pt-2">
+              Action: Check the Environment (Frontend/Backend) to locate the issue.
+            </div>
+          </div>
+
+          {/* Step 2: Investigate */}
+          <div className="p-5 rounded-xl border border-blue-500/30 bg-blue-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 2
+                </span>
+                <h4 className="font-bold text-white text-sm">Inspect the Trace</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                Click the <strong className="text-gray-200">View</strong> button on any log to open the Deep Dive Modal. 
+                Here you can view the exact URL endpoint and the full stack trace.
+                </p>
+            </div>
+            <div className="text-[10px] text-blue-400/80 italic border-t border-blue-500/20 pt-2">
+              Action: Copy the Stack Trace to assist in debugging the codebase.
+            </div>
+          </div>
+
+          {/* Step 3: Manage Status */}
+          <div className="p-5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 3
+                </span>
+                <h4 className="font-bold text-white text-sm">Update Status</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                Once a fix is pushed, mark the log as <strong className="text-gray-200">Resolved</strong>. 
+                If the log is just background noise, mark it as <strong className="text-gray-200">Ignored</strong>.
+                </p>
+            </div>
+            <div className="text-[10px] text-emerald-400/80 italic border-t border-emerald-500/20 pt-2">
+              Action: Keep your Open queue clean so real issues stand out.
+            </div>
+          </div>
+
+          {/* Step 4: Automate Cleanup */}
+          <div className="p-5 rounded-xl border border-indigo-500/30 bg-indigo-500/5 flex flex-col justify-between">
+            <div>
+                <div className="flex items-center gap-3 mb-3">
+                <span className="bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+                    STEP 4
+                </span>
+                <h4 className="font-bold text-white text-sm">Garbage Collection</h4>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                Use the <strong className="text-gray-200">Settings</strong> menu to configure auto-deletion policies for old Info and Resolved logs.
+                </p>
+            </div>
+            <div className="text-[10px] text-indigo-400/80 italic border-t border-indigo-500/20 pt-2">
+              Action: Prevent database bloat by enabling automated cleanup.
+            </div>
+          </div>
+        </div>
+
+        {/* Maintenance Guide Section */}
+        <div className="bg-white/5 rounded-xl p-5 border border-white/10">
+            <h4 className="text-xs font-bold text-gray-200 uppercase tracking-widest mb-4 flex items-center gap-2">
+                <SafeIcon icon={FiShield} className="text-indigo-400" /> System Protections
+            </h4>
+            <div className="grid grid-cols-1 gap-4 text-[11px] text-gray-400">
+                <div className="flex gap-3">
+                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1 shrink-0" />
+                    <p><strong className="text-gray-300">Security Lock:</strong> Logs currently marked as <span className="text-indigo-400 font-bold">Open</span> or <span className="text-amber-400 font-bold">Investigating</span> are permanently protected. The automated garbage collection script will strictly bypass these entries to ensure you never lose track of an active bug.</p>
+                </div>
+                <div className="flex gap-3">
+                    <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1 shrink-0" />
+                    <p><strong className="text-gray-300">Bulk Management:</strong> Use the checkboxes on the left to select multiple logs and apply bulk status changes or permanent deletions rapidly.</p>
+                </div>
+            </div>
+        </div>
+
+        {/* Development Strategy Banner */}
+        <div className="flex items-start gap-3 p-4 rounded-lg bg-blue-600/10 border border-blue-500/20 text-blue-400">
+          <SafeIcon icon={FiTerminal} className="w-5 h-5 shrink-0 mt-0.5" />
+          <p className="text-xs leading-relaxed">
+            <strong className="text-blue-300">DevOps Strategy:</strong> Monitor the 'Environment' column closely. A sudden spike in 'Frontend' errors usually implies a browser compatibility issue or broken API payload, whereas 'Backend' errors indicate database or core logical failures.
+          </p>
+        </div>
+
+        {/* Footer Action */}
+        <div className="flex justify-end pt-2">
+          <button
+            onClick={onClose}
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold rounded-lg transition-all shadow-lg active:scale-95"
+          >
+            I Understand
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+export default SystemLogsHelpModal;

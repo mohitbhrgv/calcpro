@@ -1,0 +1,111 @@
+<?php
+// File: calcpro-api/api/admin/logout.php
+
+require_once dirname(__DIR__, 2) . '/core/config.php';
+require_once dirname(__DIR__, 2) . '/core/response.php';
+use Firebase\JWT\JWT;
+use Firebase\JWT\Key;
+
+// --- Phase 2: ENTERPRISE SEC FIX - CSRF PROTECTION (HMAC DOUBLE SUBMIT) ---
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+// ENTERPRISE FIX: Enforce POST method only to prevent GET-based CSRF Session DoS
+if (strtoupper($method) !== 'POST') {
+    sendResponse(false, null, 'Method Not Allowed. Use POST for logout.', 405);
+    exit;
+}
+
+$headers = function_exists('getallheaders') ? getallheaders() : [];
+
+$csrfCookie = $_COOKIE['calcpro_csrf_token'] ?? null;
+$csrfHeader = $headers['X-CSRF-Token'] ?? $headers['x-csrf-token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+
+if (empty($csrfCookie) || empty($csrfHeader)) {
+    sendResponse(false, null, 'Security verification failed. Missing token.', 403, 'CSRF_VALIDATION_FAILED');
+    exit; // CRITICAL ENTERPRISE FIX: Halt execution immediately
+}
+
+// ENTERPRISE FIX: Synchronize cryptographic key resolution with core/auth.php
+$hmacSecret = base64_decode($_ENV['APP_ENCRYPTION_KEY'] ?? '');
+if (empty($hmacSecret)) {
+    $hmacSecret = $_ENV['JWT_SECRET'] ?? null;
+}
+
+if (empty($hmacSecret)) {
+    sendResponse(false, null, 'Critical internal configuration error.', 500, 'SYS_ERR_CONFIG');
+    exit;
+}
+
+$expectedHmac = hash_hmac('sha256', $csrfHeader, $hmacSecret);
+if (!hash_equals($csrfCookie, $expectedHmac)) {
+    sendResponse(false, null, 'Security verification failed. Signature mismatch.', 403, 'CSRF_VALIDATION_FAILED');
+    exit; // CRITICAL ENTERPRISE FIX: Halt execution immediately
+}
+
+$jwtSecretKey = $_ENV['JWT_SECRET'];
+$tokensToBlacklist = [];
+
+if (isset($_COOKIE['calcpro_access_token'])) {
+    $tokensToBlacklist[] = $_COOKIE['calcpro_access_token'];
+}
+if (isset($_COOKIE['calcpro_refresh_token'])) {
+    $tokensToBlacklist[] = $_COOKIE['calcpro_refresh_token'];
+}
+if (isset($_COOKIE['calcpro_admin_token'])) {
+    $tokensToBlacklist[] = $_COOKIE['calcpro_admin_token'];
+}
+
+global $conn;
+$adminIdToClear = null;
+$sessionJtiToClear = null;
+
+// --- ENTERPRISE FIX: Database State Desync via Expired JWT Exception Bypass ---
+foreach ($tokensToBlacklist as $token) {
+    $decoded = null;
+    try {
+        $decoded = JWT::decode($token, new Key($jwtSecretKey, 'HS256'));
+    } catch (\Firebase\JWT\ExpiredException $e) {
+        // Manually extract payload to clean up DB state even if the token has naturally expired
+        $parts = explode('.', $token);
+        if (count($parts) === 3) {
+            $payload = base64_decode(strtr($parts[1], '-_', '+/'), true);
+            $decoded = $payload ? json_decode($payload) : null;
+        }
+    } catch (Exception $e) {
+        // Tampered or completely invalid token, ignore.
+    }
+
+    // Guard against malformed JSON or base64 failures
+    if ($decoded === null || !is_object($decoded)) {
+        continue;
+    }
+
+    $jti = $decoded->jti ?? null;
+    $exp = $decoded->exp ?? null;
+    if (!$adminIdToClear) {
+         $adminIdToClear = $decoded->data->adminId ?? null;
+         $sessionJtiToClear = $decoded->session_jti ?? null;
+    }
+
+    if ($jti && $exp) {
+        $stmtBlacklist = $conn->prepare("INSERT IGNORE INTO jwt_blacklist (jti, expires_at) VALUES (:jti, FROM_UNIXTIME(:exp))");
+        $stmtBlacklist->execute([':jti' => $jti, ':exp' => $exp]);
+    }
+}
+
+if ($adminIdToClear && $sessionJtiToClear) {
+    $stmt = $conn->prepare("UPDATE admins SET current_session_jti = NULL WHERE id = :id AND current_session_jti = :jti");
+    $stmt->execute([':id' => $adminIdToClear, ':jti' => $sessionJtiToClear]);
+}
+
+$isSecure = isSecureConnection();
+$past = time() - 3600;
+
+setcookie('calcpro_access_token', '', ['expires' => $past, 'path' => '/', 'secure' => $isSecure, 'httponly' => true, 'samesite' => 'Strict']);
+setcookie('calcpro_refresh_token', '', ['expires' => $past, 'path' => '/', 'secure' => $isSecure, 'httponly' => true, 'samesite' => 'Strict']);
+setcookie('calcpro_admin_token', '', ['expires' => $past, 'path' => '/', 'secure' => $isSecure, 'httponly' => true, 'samesite' => 'Strict']);
+setcookie('calcpro_csrf_token', '', ['expires' => $past, 'path' => '/', 'secure' => $isSecure, 'httponly' => true, 'samesite' => 'Strict']);
+setcookie('calcpro_csrf_payload', '', ['expires' => $past, 'path' => '/', 'secure' => $isSecure, 'httponly' => false, 'samesite' => 'Strict']);
+
+sendResponse(true, null, 'Logged out securely.', 200);
+?>

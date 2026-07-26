@@ -1,0 +1,105 @@
+<?php
+// (Update) calcpro-api/api/admin/get_media.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Filters ---
+    $status = isset($_GET['status']) && $_GET['status'] === 'trash' ? 'trash' : 'active';
+    
+    // Capture the search term securely
+    $search = isset($_GET['search']) ? trim($_GET['search']) : '';
+
+    // --- 2. Pagination ---
+    $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+    $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 100;
+    $offset = ($page - 1) * $limit;
+
+    // --- 3. Base SQL Construction ---
+    $countSql = "SELECT COUNT(id) as total FROM media WHERE status = :status";
+    $fetchSql = "SELECT * FROM media WHERE status = :status";
+
+    // Append search logic with UNIQUE placeholders for strict PDO compliance
+    if (!empty($search)) {
+        $searchClause = " AND (file_name LIKE :search1 OR original_name LIKE :search2 OR alt_text LIKE :search3)";
+        $countSql .= $searchClause;
+        $fetchSql .= $searchClause;
+    }
+
+    $fetchSql .= " ORDER BY created_at DESC LIMIT :limit OFFSET :offset";
+
+    // --- 4. Count Total Records (For Accurate Pagination) ---
+    $stmtCount = $conn->prepare($countSql);
+    $stmtCount->bindValue(':status', $status, PDO::PARAM_STR);
+    
+    if (!empty($search)) {
+        $searchTerm = '%' . $search . '%';
+        $stmtCount->bindValue(':search1', $searchTerm, PDO::PARAM_STR);
+        $stmtCount->bindValue(':search2', $searchTerm, PDO::PARAM_STR);
+        $stmtCount->bindValue(':search3', $searchTerm, PDO::PARAM_STR);
+    }
+    $stmtCount->execute();
+    
+    $totalResult = $stmtCount->fetch(PDO::FETCH_ASSOC);
+    $totalRecords = (int)$totalResult['total'];
+    $totalPages = ceil($totalRecords / $limit);
+
+    // --- 5. Fetch Filtered Media Items ---
+    $stmt = $conn->prepare($fetchSql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare failed: ' . $errorInfo[2]);
+    }
+
+    // BINDING: Match the unique placeholders
+    $stmt->bindValue(':status', $status, PDO::PARAM_STR);
+    
+    if (!empty($search)) {
+        $searchTerm = '%' . $search . '%';
+        $stmt->bindValue(':search1', $searchTerm, PDO::PARAM_STR);
+        $stmt->bindValue(':search2', $searchTerm, PDO::PARAM_STR);
+        $stmt->bindValue(':search3', $searchTerm, PDO::PARAM_STR);
+    }
+    
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $stmt->execute();
+    
+    $media = [];
+    $api_base_url = $_ENV['API_PUBLIC_URL'];
+
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $row['id'] = (int)$row['id'];
+        $row['file_size'] = (int)$row['file_size'];
+        // Construct full URL
+        $row['full_url'] = rtrim($api_base_url, '/') . '/' . $row['upload_path'];
+        $media[] = $row;
+    }
+
+    // --- 6. Response ---
+    $responseData = [
+        'media' => $media,
+        'pagination' => [
+            'currentPage' => $page,
+            'totalPages' => $totalPages,
+            'totalRecords' => $totalRecords,
+            'limit' => $limit
+        ]
+    ];
+    
+    sendResponse(true, $responseData, 'Media library fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_media.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

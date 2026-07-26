@@ -1,0 +1,91 @@
+<?php
+// File: calcpro-api/api/admin/get_me.php
+
+require_once dirname(__DIR__, 2) . '/core/config.php';
+require_once dirname(__DIR__, 2) . '/core/response.php';
+require_once dirname(__DIR__, 2) . '/core/auth.php';
+
+// 1. Verify the secure HTTP-Only cookie.
+$tokenData = verifyAdminToken();
+
+if (!isset($tokenData->adminId)) {
+    sendResponse(false, null, 'Invalid session data.', 401, 'AUTH_INVALID_PAYLOAD');
+}
+
+$adminId = $tokenData->adminId;
+
+try {
+    global $conn;
+
+    // 2. Fetch fresh user metadata from the database.
+    // Explicitly selecting ONLY safe, necessary columns. NEVER select the password hash.
+    $stmt = $conn->prepare("SELECT id, name, email, role, password_last_updated FROM admins WHERE id = :id LIMIT 1");
+    $stmt->execute([':id' => $adminId]);
+    $admin = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$admin) {
+        sendResponse(false, null, 'User record not found.', 401, 'USER_DELETED');
+    }
+
+    // --- PHASE 3: GLOBAL PASSWORD AGE CALCULATION ---
+    $passwordLastUpdated = $admin['password_last_updated'];
+    $lastUpdatedDate = new DateTime($passwordLastUpdated);
+    $currentDate = new DateTime();
+    
+    // Calculate exact age in days globally (required for Pre-Flight checks)
+    $interval = $currentDate->diff($lastUpdatedDate);
+    $daysPassed = $interval->days;
+
+    // 3. Fetch Global Password Expiry Policy
+    $settingsStmt = $conn->prepare("SELECT setting_value FROM settings WHERE setting_key = 'password_expiry_days' LIMIT 1");
+    $settingsStmt->execute();
+    $expirySettingRow = $settingsStmt->fetch(PDO::FETCH_ASSOC);
+    $expirySetting = $expirySettingRow ? $expirySettingRow['setting_value'] : '0';
+
+    $daysRemaining = 0;
+    $isExpired = false;
+    $showWarning = false;
+
+    if (is_numeric($expirySetting) && (int)$expirySetting > 0) {
+        $expiryDays = (int)$expirySetting;
+        $daysRemaining = $expiryDays - $daysPassed;
+
+        if ($daysRemaining <= 0) {
+            $isExpired = true;
+            $daysRemaining = 0;
+        } elseif ($daysRemaining <= 7) { 
+            // 7 days grace period threshold
+            $showWarning = true;
+        }
+    }
+
+    // 4. Return the fresh hydration data to the frontend
+    $responseData = [
+        'user' => [
+            'id'    => (int)$admin['id'],
+            'name'  => $admin['name'],
+            'email' => $admin['email'],
+            'role'  => $admin['role'],
+            // Top-level fallback for robust frontend parsing
+            'password_last_updated' => $passwordLastUpdated, 
+            // Password Security Context attached securely
+            'passwordSecurity' => [
+                'daysRemaining' => $daysRemaining,
+                'isExpired'     => $isExpired,
+                'showWarning'   => $showWarning,
+                'expirySetting' => (int)$expirySetting,
+                // [NEW] Provide exact age metrics for the Graceful Intercept math
+                'daysOld'       => $daysPassed,
+                'lastUpdated'   => $passwordLastUpdated
+            ]
+        ]
+    ];
+
+    sendResponse(true, $responseData, 'User data hydrated successfully.', 200);
+
+} catch (Exception $e) {
+    // Log securely via core error handler implicitly, and return safe generic message
+    error_log("Error in get_me.php: " . $e->getMessage());
+    sendResponse(false, null, 'Failed to retrieve user data.', 500, 'SERVER_ERROR');
+}
+?>

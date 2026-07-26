@@ -1,0 +1,78 @@
+<?php
+// File: calcpro-api/api/admin/get_tags.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Determine Context ---
+    // 'post' is the default if nothing is specified
+    $context = isset($_GET['context']) && $_GET['context'] === 'calculator' ? 'calculator' : 'post';
+
+    // --- 2. Build SQL Query based on Context ---
+    if ($context === 'calculator') {
+        // Count usage in CALCULATORS
+        $sql = "
+            SELECT 
+                t.id, 
+                t.name, 
+                t.slug, 
+                COUNT(ct.calculator_id) as usage_count
+            FROM 
+                tags t
+            LEFT JOIN 
+                calculator_tags ct ON t.id = ct.tag_id
+            GROUP BY 
+                t.id, t.name, t.slug
+            ORDER BY 
+                t.name ASC
+        ";
+    } else {
+        // Count usage in POSTS (Default)
+        $sql = "
+            SELECT 
+                t.id, 
+                t.name, 
+                t.slug, 
+                COUNT(pt.post_id) as usage_count
+            FROM 
+                tags t
+            LEFT JOIN 
+                post_tags pt ON t.id = pt.tag_id
+            GROUP BY 
+                t.id, t.name, t.slug
+            ORDER BY 
+                t.name ASC
+        ";
+    }
+
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare statement failed: ' . $errorInfo[2]);
+    }
+    
+    $stmt->execute();
+    $tags = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Standardize the key name for frontend 
+    // The existing DataTable specifically looks for 'post_count'
+    foreach ($tags as &$tag) {
+        $tag['post_count'] = (int)$tag['usage_count'];
+    }
+    
+    sendResponse(true, $tags, ucfirst($context) . ' tags fetched successfully.', 200);
+
+} catch (Exception $e) {
+    error_log("Error in get_tags.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred while fetching tags.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

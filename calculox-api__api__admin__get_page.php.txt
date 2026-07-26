@@ -1,0 +1,104 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Validation ---
+    if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
+        sendResponse(false, null, 'A valid Page ID is required.', 400, 'INVALID_INPUT');
+    }
+
+    $pageId = (int)$_GET['id'];
+    
+    // --- 2. Fetch Page Data ---
+    $sql = "SELECT * FROM pages WHERE id = :id";
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare statement failed: ' . $errorInfo[2]);
+    }
+    
+    $stmt->execute([':id' => $pageId]);
+    $page = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if ($page) {
+        // --- 3. Active Redirect Check ---
+        $activeRedirect = null;
+        $redirectSql = "SELECT target_url, status_code FROM redirects WHERE source_path = :source_path AND status = 'active' LIMIT 1";
+        $redirectStmt = $conn->prepare($redirectSql);
+        
+        if ($redirectStmt) {
+            $redirectStmt->execute([':source_path' => $page['slug']]);
+            
+            if ($rResult = $redirectStmt->fetch(PDO::FETCH_ASSOC)) {
+                $activeRedirect = $rResult;
+            }
+        }
+        
+        // --- 4. STRICT TYPE CASTING & RESPONSE MAPPING ---
+        $page_frontend = [
+            'id' => (int)$page['id'],
+            'title' => $page['title'],
+            'slug' => $page['slug'],
+            'page_key' => $page['page_key'],
+            'content_json' => $page['content_json'], 
+            'status' => $page['status'],
+            
+            // Core Image
+            'featuredImageId' => $page['featured_image_id'] ? (int)$page['featured_image_id'] : null,
+
+            // SEO Fields
+            'meta_title' => $page['meta_title'],
+            'meta_description' => $page['meta_description'],
+            'focusKeywords' => $page['focus_keywords'],
+            'canonical_url' => $page['canonical_url'], 
+
+            // Social SEO (Facebook)
+            'ogTitle' => $page['og_title'],
+            'ogDescription' => $page['og_description'],
+            'og_image' => $page['og_image'],
+
+            // Social SEO (Twitter)
+            'twitterTitle' => $page['twitter_title'],
+            'twitterDescription' => $page['twitter_description'],
+            'twitterImage' => $page['twitter_image'],
+            'twitterSync' => isset($page['twitter_sync']) ? (bool)$page['twitter_sync'] : true,
+
+            // Robots Meta
+            'no_index' => $page['no_index'] === null ? null : (int)$page['no_index'],
+            'no_follow' => $page['no_follow'] === null ? null : (int)$page['no_follow'],
+            'no_archive' => $page['no_archive'] === null ? null : (int)$page['no_archive'],
+            'no_image_index' => $page['no_image_index'] === null ? null : (int)$page['no_image_index'],
+            'no_snippet' => $page['no_snippet'] === null ? null : (int)$page['no_snippet'],
+
+            // Advanced Robot Meta
+            'max_snippet' => isset($page['max_snippet']) ? (int)$page['max_snippet'] : null,
+            'max_video_preview' => isset($page['max_video_preview']) ? (int)$page['max_video_preview'] : null,
+            'max_image_preview' => $page['max_image_preview'],
+
+            // Schema Enabled (Replaces schema_json)
+            'schema_enabled' => isset($page['schema_enabled']) ? (bool)$page['schema_enabled'] : true,
+            
+            'created_at' => $page['created_at'],
+            'updated_at' => $page['updated_at'],
+            'active_redirect' => $activeRedirect
+        ];
+        
+        sendResponse(true, $page_frontend, 'Page data fetched successfully.');
+    } else {
+        sendResponse(false, null, 'Page not found.', 404, 'NOT_FOUND');
+    }
+
+} catch (Exception $e) {
+    error_log("Error in get_page.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching the page.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

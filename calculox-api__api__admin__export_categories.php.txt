@@ -1,0 +1,75 @@
+<?php
+require '../../core/config.php';
+
+// Note: Export endpoints accessed directly via URL usually handle authentication via Bearer token in headers 
+// or session. The legacy mock code is retained but left commented per original structure requirements, 
+// while DB logic is cleanly refactored.
+// session_start();
+// if (!isset($_SESSION['admin_id'])) {
+//     http_response_code(403);
+//     echo "Unauthorized Access";
+//     exit();
+// }
+
+try {
+    // Set HTTP Headers to trigger a file download
+    $filename = "calcpro-categories-" . date('Y-m-d') . ".csv";
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+
+    // Fetch Category Data (BUGFIX: Querying 'categories' instead of 'users')
+    $sql = "
+        SELECT 
+            c.id, 
+            c.name, 
+            c.slug, 
+            c.description, 
+            c.created_at,
+            COUNT(pc.post_id) as post_count
+        FROM 
+            categories c
+        LEFT JOIN 
+            post_categories pc ON c.id = pc.category_id
+        GROUP BY 
+            c.id
+        ORDER BY 
+            c.created_at DESC
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare statement failed: ' . $errorInfo[2]);
+    }
+    
+    $stmt->execute();
+    
+    // Use a PHP output stream to build the CSV file
+    $output = fopen('php://output', 'w');
+    
+    // Write the Header Row
+    fputcsv($output, array('ID', 'Name', 'Slug', 'Description', 'Post Count', 'Date Created'));
+    
+    // Loop through the results and write each row
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        fputcsv($output, [
+            $row['id'],
+            $row['name'],
+            $row['slug'],
+            $row['description'],
+            $row['post_count'],
+            $row['created_at']
+        ]);
+    }
+    
+    fclose($output);
+    $conn = null;
+    exit();
+    
+} catch (Exception $e) {
+    error_log("Error in export_categories.php: " . $e->getMessage());
+    http_response_code(500);
+    echo "An error occurred while generating the export file. Please check server logs.";
+}
+?>

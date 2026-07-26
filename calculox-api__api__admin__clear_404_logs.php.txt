@@ -1,0 +1,28 @@
+<?php
+// File: calcpro-api/api/admin/clear_404_logs.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // Truncate is faster and resets auto-increment ID
+    // exec() is used because it doesn't need to return a traversable result set
+    if ($conn->exec("TRUNCATE TABLE monitor_404_logs") !== false) {
+        sendResponse(true, null, '404 Log cleared successfully.');
+    } else {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception("Database error: " . $errorInfo[2]);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in clear_404_logs.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

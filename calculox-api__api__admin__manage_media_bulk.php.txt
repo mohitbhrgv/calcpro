@@ -1,0 +1,238 @@
+<?php
+// File: calcpro-api/api/admin/manage_media_bulk.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->ids) || !is_array($data->ids) || empty($data->ids)) {
+        sendResponse(false, null, 'No items selected.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->action)) {
+        sendResponse(false, null, 'No action specified.', 400, 'INVALID_INPUT');
+    }
+
+    $action = $data->action;
+    $ids = array_filter(array_map('intval', $data->ids));
+
+    if (empty($ids)) {
+        sendResponse(false, null, 'Invalid IDs provided.', 400, 'INVALID_INPUT');
+    }
+
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $paramsList = array_values($ids);
+
+    // --- 3. Execute Action ---
+    if ($action === 'trash') {
+        $sql = "UPDATE media SET status = 'trash' WHERE id IN ($placeholders) AND status = 'active'";
+        $stmt = $conn->prepare($sql);
+        
+        if ($stmt->execute($paramsList)) {
+            $count = $stmt->rowCount();
+            sendResponse(true, ['affected' => $count], "$count items moved to trash.", 200);
+        } else {
+            $errorInfo = $stmt->errorInfo();
+            throw new Exception("Database query failed: " . $errorInfo[2]);
+        }
+
+    } elseif ($action === 'restore') {
+        $sql = "UPDATE media SET status = 'active' WHERE id IN ($placeholders) AND status = 'trash'";
+        $stmt = $conn->prepare($sql);
+        
+        if ($stmt->execute($paramsList)) {
+            $count = $stmt->rowCount();
+            sendResponse(true, ['affected' => $count], "$count items restored.", 200);
+        } else {
+             $errorInfo = $stmt->errorInfo();
+             throw new Exception("Database query failed: " . $errorInfo[2]);
+        }
+
+    } elseif ($action === 'delete_permanent') {
+        
+        // STRICT RBAC: Only Super Admins can permanently delete bulk media
+        // FIX: Updated key from 'role' to 'adminRole' to match JWT payload structure.
+        $adminArray = (array)$admin_data;
+        if (!isset($adminArray['adminRole']) || $adminArray['adminRole'] !== 'super_admin') {
+            sendResponse(false, null, 'Insufficient permissions. Only Super Admins can permanently delete media.', 403, 'FORBIDDEN');
+        }
+        
+        // A. Fetch file details safely
+        $sql_files = "SELECT id, upload_path FROM media WHERE id IN ($placeholders) AND status = 'trash'";
+        $stmt_files = $conn->prepare($sql_files);
+        $stmt_files->execute($paramsList);
+        
+        $files_to_process = [];
+        while ($row = $stmt_files->fetch(PDO::FETCH_ASSOC)) {
+            $files_to_process[] = [
+                'id' => (int)$row['id'],
+                'path' => $row['upload_path']
+            ];
+        }
+
+        if (empty($files_to_process)) {
+            sendResponse(false, null, 'No items found in trash to delete.', 404, 'NOT_FOUND');
+        }
+
+        $conn->beginTransaction();
+        
+        try {
+            $api_base_url = $_ENV['API_PUBLIC_URL'];
+
+            // --- DOMDocument & JSON Helper Functions for Data Integrity ---
+            function removeHtmlImage($content, $url) {
+                if (empty($content) || strpos($content, '<img') === false) return $content;
+                
+                $dom = new DOMDocument();
+                libxml_use_internal_errors(true);
+                $dom->loadHTML('<?xml encoding="utf-8" ?>' . $content, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+                libxml_clear_errors();
+
+                $images = $dom->getElementsByTagName('img');
+                $nodesToRemove = [];
+                foreach ($images as $img) {
+                    if ($img->getAttribute('src') === $url) {
+                        $parent = $img->parentNode;
+                        if ($parent && strtolower($parent->nodeName) === 'p' && $parent->childNodes->length === 1) {
+                            $nodesToRemove[] = $parent;
+                        } else {
+                            $nodesToRemove[] = $img;
+                        }
+                    }
+                }
+                
+                $changed = count($nodesToRemove) > 0;
+                foreach ($nodesToRemove as $node) {
+                    if ($node->parentNode) {
+                        $node->parentNode->removeChild($node);
+                    }
+                }
+
+                if ($changed) {
+                    $newContent = '';
+                    foreach ($dom->childNodes as $node) {
+                        $newContent .= $dom->saveHTML($node);
+                    }
+                    return trim(str_replace('<?xml encoding="utf-8" ?>', '', $newContent));
+                }
+                return $content;
+            }
+
+            function removeJsonImage($jsonStr, $url) {
+                $decoded = json_decode($jsonStr, true);
+                if ($decoded === null) return $jsonStr; 
+                
+                array_walk_recursive($decoded, function(&$item) use ($url) {
+                    if (is_string($item)) {
+                        if (strpos($item, '<img') !== false) {
+                            $item = removeHtmlImage($item, $url);
+                        } elseif ($item === $url) {
+                            $item = '';
+                        }
+                    }
+                });
+                return json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            }
+
+            // Prepare statements for PHP-side manipulation
+            $stmtSelectPosts = $conn->prepare("SELECT id, content FROM posts WHERE content LIKE :like FOR UPDATE");
+            $stmtUpdatePosts = $conn->prepare("UPDATE posts SET content = :content WHERE id = :id");
+
+            $stmtSelectCalcs = $conn->prepare("SELECT id, content FROM calculators WHERE content LIKE :like FOR UPDATE");
+            $stmtUpdateCalcs = $conn->prepare("UPDATE calculators SET content = :content WHERE id = :id");
+
+            $stmtSelectPages = $conn->prepare("SELECT id, content_json FROM pages WHERE content_json LIKE :like FOR UPDATE");
+            $stmtUpdatePages = $conn->prepare("UPDATE pages SET content_json = :content WHERE id = :id");
+
+            $stmtFeatImage = $conn->prepare("UPDATE posts SET featured_image_id = NULL WHERE featured_image_id = :id");
+            $stmtOgPosts = $conn->prepare("UPDATE posts SET og_image = '' WHERE og_image = :url");
+            $stmtOgCalcs = $conn->prepare("UPDATE calculators SET og_image = '' WHERE og_image = :url");
+            $stmtOgPages = $conn->prepare("UPDATE pages SET og_image = '' WHERE og_image = :url");
+            $stmtSettings = $conn->prepare("UPDATE settings SET setting_value = '' WHERE setting_value = :url");
+
+            foreach ($files_to_process as $file) {
+                $mediaId = $file['id'];
+                $fullUrl = rtrim($api_base_url, '/') . '/' . $file['path'];
+                $likePattern = '%' . $fullUrl . '%';
+
+                // 1. Cleanup Body Content (PHP-side to protect HTML/JSON validity)
+                $stmtSelectPosts->execute([':like' => $likePattern]);
+                while ($row = $stmtSelectPosts->fetch(PDO::FETCH_ASSOC)) {
+                    $stmtUpdatePosts->execute([':content' => removeHtmlImage($row['content'], $fullUrl), ':id' => $row['id']]);
+                }
+
+                $stmtSelectCalcs->execute([':like' => $likePattern]);
+                while ($row = $stmtSelectCalcs->fetch(PDO::FETCH_ASSOC)) {
+                    $stmtUpdateCalcs->execute([':content' => removeHtmlImage($row['content'], $fullUrl), ':id' => $row['id']]);
+                }
+
+                $stmtSelectPages->execute([':like' => $likePattern]);
+                while ($row = $stmtSelectPages->fetch(PDO::FETCH_ASSOC)) {
+                    $stmtUpdatePages->execute([':content' => removeJsonImage($row['content_json'], $fullUrl), ':id' => $row['id']]);
+                }
+                
+                // 2. Cleanup Featured Image ID
+                $stmtFeatImage->execute([':id' => $mediaId]);
+
+                // 3. Cleanup OG Images & Settings
+                $stmtOgPosts->execute([':url' => $fullUrl]);
+                $stmtOgCalcs->execute([':url' => $fullUrl]);
+                $stmtOgPages->execute([':url' => $fullUrl]);
+                $stmtSettings->execute([':url' => $fullUrl]);
+            }
+
+            // 4. Delete Database Records Safely
+            $valid_ids = array_column($files_to_process, 'id');
+            $delete_placeholders = implode(',', array_fill(0, count($valid_ids), '?'));
+            
+            $sql_delete = "DELETE FROM media WHERE id IN ($delete_placeholders)";
+            $stmt_delete = $conn->prepare($sql_delete);
+            
+            if ($stmt_delete->execute($valid_ids)) {
+                $deleted_count = $stmt_delete->rowCount();
+                
+                // 5. Delete Physical Files (ENTERPRISE FIX: Dynamic path resolution & SOC2 Logging)
+                $base_dir = realpath(__DIR__ . '/../../');
+                foreach ($files_to_process as $file) {
+                    $clean_path = ltrim($file['path'], '/');
+                    $physical_path = $base_dir . '/' . $clean_path;
+                    if (file_exists($physical_path) && is_file($physical_path)) {
+                        if (!@unlink($physical_path)) {
+                            error_log("[SOC2 Warning] Failed to permanently delete physical file: " . $physical_path);
+                        }
+                    }
+                }
+                
+                $conn->commit();
+                sendResponse(true, ['affected' => $deleted_count], "$deleted_count items permanently deleted and references cleaned.", 200);
+
+            } else {
+                $errorInfo = $stmt_delete->errorInfo();
+                throw new Exception("Database delete failed: " . $errorInfo[2]);
+            }
+
+        } catch (Throwable $e) { // ENTERPRISE FIX: Catch fatal Errors in addition to Exceptions
+            $conn->rollBack();
+            throw $e;
+        }
+
+    } else {
+        sendResponse(false, null, 'Invalid action specified.', 400, 'INVALID_ACTION');
+    }
+
+} catch (Throwable $e) { // ENTERPRISE FIX: Catch fatal Errors globally to guarantee JSON response
+    error_log("Error in manage_media_bulk.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

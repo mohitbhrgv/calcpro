@@ -1,0 +1,88 @@
+# ------------------------------------------------------------------
+# SECURITY HARDENING & ERROR LEAKAGE PREVENTION (OWASP A05)
+# ------------------------------------------------------------------
+Options -Indexes
+ServerSignature Off
+
+<IfModule mod_php7.c>
+    php_flag display_errors Off
+    php_flag log_errors On
+</IfModule>
+<IfModule mod_php8.c>
+    php_flag display_errors Off
+    php_flag log_errors On
+</IfModule>
+
+# --- ENTERPRISE FIX: SECURE FILE ACCESS BLOCKING ---
+# Ensures 100% compatibility and fail-closed security for both 
+# modern (Apache 2.4+) and legacy (Apache 2.2) cPanel environments.
+# UPDATED: Expanded to block .htpasswd, composer configs, package.json, and all .log files.
+<FilesMatch "^(\.env|\.git|\.htpasswd|composer\.(json|lock)|package\.json|.*\.log)$">
+    <IfModule mod_authz_core.c>
+        # Modern Apache 2.4+ Syntax
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        # Legacy Apache 2.2 Fallback
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# ------------------------------------------------------------------
+# STRICT SECURITY HEADERS
+# ------------------------------------------------------------------
+<IfModule mod_headers.c>
+    
+    # ------------------------------------------------------------------
+    # OWASP A05: STRICT SECURITY HEADERS
+    
+# ------------------------------------------------------------------
+    # Prevent Clickjacking (blocks API from being embedded in iframes)
+    Header always set X-Frame-Options "DENY"
+    
+    # Prevent MIME-type sniffing (forces browser to respect Content-Type)
+    Header always set X-Content-Type-Options "nosniff"
+    
+    # Enforce HTTPS (HSTS) - 1 year (31536000 seconds)
+    # FIXED: includeSubDomains removed to prevent locking out non-TLS subdomains (Staging, Mail, etc.)
+    Header always set Strict-Transport-Security "max-age=31536000"
+    
+    # Protect referer data (only send 
+origin on cross-origin requests)
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    
+    # Content Security Policy (Tailored for REST API & XML Sitemaps)
+    # FIXED: Added style-src 'self' to permit main-sitemap.xsl styling while blocking JS/Objects.
+Header always set Content-Security-Policy "default-src 'self'; script-src 'none'; style-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none';"
+# Permissions Policy (API Hardening)
+    # Explicitly denies API access to sensitive browser features, neutralizing injected script goals.
+Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+
+    # NOTE: All CORS (Cross-Origin Resource Sharing) headers are now dynamically managed
+    # exclusively by the PHP SecurityGuard.php core to enforce strict .env vault compliance.
+</IfModule>
+
+# ------------------------------------------------------------------
+# URL REWRITING & ROUTING
+# ------------------------------------------------------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # --- ENTERPRISE FIX: ROUTING STABILITY ---
+    # Ensures relative API and SEO rewrites route precisely to this folder context.
+    # THE FIX: Changed from /calcpro-api/ to / for Hetzner production compliance
+    RewriteBase /
+    
+    # Handle Authorization Header (Crucial for JWT)
+    RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    # --- SEO DYNAMIC ROUTING ---
+    RewriteRule ^robots\.txt$ api/public/robots.php [L,NC]
+    RewriteRule ^sitemap\.xml$ api/public/sitemap.php?type=index [L,QSA,NC]
+    RewriteRule ^main-sitemap\.xsl$ api/public/main-sitemap.php [L,NC]
+    RewriteRule ^page-sitemap\.xml$ api/public/sitemap.php?type=page [L,QSA,NC]
+    RewriteRule ^post-sitemap\.xml$ api/public/sitemap.php?type=post [L,QSA,NC]
+    RewriteRule ^category-sitemap\.xml$ api/public/sitemap.php?type=category [L,QSA,NC]
+</IfModule>

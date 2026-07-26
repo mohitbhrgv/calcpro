@@ -1,0 +1,144 @@
+<?php
+// calcpro-api/api/admin/download_backup.php
+
+require_once __DIR__ . '/../../core/config.php';
+require_once __DIR__ . '/../../core/response.php';
+require_once __DIR__ . '/../../core/auth.php';
+
+$backupDir = __DIR__ . '/../../storage/backups/';
+$ticketDir = $backupDir . 'tickets/';
+if (!is_dir($ticketDir)) { @mkdir($ticketDir, 0755, true); }
+
+// =================================================================
+// GET REQUEST: Execute the Download Stream or Cloud Redirect
+// =================================================================
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $file = $_GET['file'] ?? '';
+    $ticket = $_GET['ticket'] ?? '';
+
+    if (empty($file) || empty($ticket)) {
+        die("Invalid download parameters.");
+    }
+
+    // OWASP: Prevent Path Traversal
+    $safeFile = basename($file);
+    $safeTicket = basename($ticket);
+    $ticketPath = $ticketDir . $safeTicket;
+
+    // ENTERPRISE FIX: Validate Cryptographic Ticket + Apply strict 15-min TTL
+    if (!file_exists($ticketPath)) {
+        die("SECURITY ALERT: Invalid or missing download ticket.");
+    }
+
+    if ((time() - filemtime($ticketPath)) > 900) { // 15 minutes TTL
+        @unlink($ticketPath);
+        die("SECURITY ALERT: Download ticket has expired. Please re-initiate download.");
+    }
+
+    if (file_get_contents($ticketPath) !== $safeFile) {
+        @unlink($ticketPath);
+        die("SECURITY ALERT: Invalid download ticket payload.");
+    }
+
+    // Ticket is valid. Delete it immediately for ONE-TIME USE security.
+    @unlink($ticketPath);
+
+    // -------------------------------------------------------------
+    // ROUTE A: CLOUD SNAPSHOTS (Automatic .sql files)
+    // -------------------------------------------------------------
+    if (strpos($safeFile, '_auto_') !== false && pathinfo($safeFile, PATHINFO_EXTENSION) === 'sql') {
+        $autoloader = __DIR__ . '/../../vendor/autoload.php';
+        if (!file_exists($autoloader)) die("Server Error: AWS SDK missing.");
+        require_once $autoloader;
+
+        $s3 = new \Aws\S3\S3Client([
+            'version' => 'latest',
+            'region'  => getenv('S3_REGION') ?: $_ENV['S3_REGION'] ?? 'auto',
+            'credentials' => [
+                'key'    => getenv('S3_ACCESS_KEY') ?: $_ENV['S3_ACCESS_KEY'],
+                'secret' => getenv('S3_SECRET_KEY') ?: $_ENV['S3_SECRET_KEY'],
+            ],
+            'endpoint' => getenv('S3_ENDPOINT') ?: $_ENV['S3_ENDPOINT'] ?? null,
+            'use_path_style_endpoint' => !empty(getenv('S3_ENDPOINT') ?: $_ENV['S3_ENDPOINT'] ?? '')
+        ]);
+
+        try {
+            // Generate a secure Pre-Signed URL expiring in 15 minutes
+            $cmd = $s3->getCommand('GetObject', [
+                'Bucket' => getenv('S3_BUCKET') ?: $_ENV['S3_BUCKET'],
+                'Key'    => "database/" . $safeFile
+            ]);
+
+            $request = $s3->createPresignedRequest($cmd, '+15 minutes');
+            $presignedUrl = (string)$request->getUri();
+            
+            // Seamlessly redirect the browser to download directly from the Cloud Vault
+            header("Location: " . $presignedUrl);
+            exit;
+        } catch (Exception $e) {
+            error_log("Pre-signed URL generation failed: " . $e->getMessage());
+            die("Failed to authorize secure cloud download.");
+        }
+    }
+
+    // -------------------------------------------------------------
+    // ROUTE B: LOCAL SNAPSHOTS (Manual .zip files)
+    // -------------------------------------------------------------
+    $filePath = $backupDir . $safeFile;
+    if (!file_exists($filePath)) {
+        die("Artifact not found in local vault.");
+    }
+
+    // ENTERPRISE FIX: Flush and end global output buffering to prevent memory crash
+    if (ob_get_level()) {
+        ob_end_clean();
+    }
+
+    // Securely Stream Local File
+    header('Content-Description: File Transfer');
+    header('Content-Type: application/zip');
+    header('Content-Disposition: attachment; filename="' . $safeFile . '"');
+    header('Expires: 0');
+    header('Cache-Control: must-revalidate');
+    header('Pragma: public');
+    header('Content-Length: ' . filesize($filePath));
+    
+    // Send file directly via OS stream bypassing PHP memory limits
+    readfile($filePath);
+    exit;
+}
+
+// =================================================================
+// POST REQUEST: Authorize Download & Generate Ticket
+// =================================================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $admin = verifyAdminToken();
+
+    if (!$admin) {
+        sendResponse(false, null, 'Unauthorized access.', 401);
+    }
+
+    // OWASP: Role-Based Access Control (RBAC) Enforcement
+    $adminData = (array)$admin;
+    if (!isset($adminData['adminRole']) || $adminData['adminRole'] !== 'super_admin') {
+        sendResponse(false, null, 'Forbidden: Insufficient privileges. Only Super Admins can perform this action.', 403);
+    }
+
+    $rawInput = file_get_contents('php://input');
+    $data = json_decode($rawInput, true);
+    $file = $data['file'] ?? '';
+
+    if (empty($file)) {
+        sendResponse(false, null, 'No artifact specified.', 400);
+    }
+
+    $safeFile = basename($file);
+    
+    // Generate a secure 64-character hex cryptographic ticket
+    $ticket = bin2hex(random_bytes(32));
+
+    file_put_contents($ticketDir . $ticket, $safeFile);
+
+    sendResponse(true, ['ticket' => $ticket], 'Secure authorization granted.');
+}
+?>

@@ -1,0 +1,55 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// CSRF Prevention: Strict HTTP Method Enforcement
+if ($_SERVER['REQUEST_METHOD'] !== 'DELETE') {
+    sendResponse(false, null, 'Method Not Allowed. Only DELETE requests are accepted.', 405, 'METHOD_NOT_ALLOWED');
+}
+
+try {
+    $id = isset($_GET['id']) ? (int)$_GET['id'] : null;
+
+    if (!$id) {
+        $json = file_get_contents('php://input');
+        $data = json_decode($json);
+        $id = isset($data->id) ? (int)$data->id : null;
+    }
+
+    if (!$id) {
+        sendResponse(false, null, 'Author ID is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- HARDENED SECURITY GUARD: Absolute prevention against Super Admin deletion ---
+    $checkQuery = "SELECT is_super_admin FROM author_profiles WHERE id = :id";
+    $checkStmt = $conn->prepare($checkQuery);
+    $checkStmt->execute([':id' => $id]);
+    $author = $checkStmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$author) {
+        sendResponse(false, null, 'Author profile not found.', 404, 'NOT_FOUND');
+    }
+
+    if (isset($author['is_super_admin']) && (int)$author['is_super_admin'] === 1) {
+        sendResponse(false, null, 'Access Denied: The default Super Admin profile cannot be deleted.', 403, 'FORBIDDEN');
+    }
+
+    $query = "DELETE FROM author_profiles WHERE id = :id";
+    $stmt = $conn->prepare($query);
+    
+    if ($stmt->execute([':id' => $id])) {
+        sendResponse(true, null, 'Author profile deleted successfully.', 200);
+    } else {
+        throw new Exception("Failed to delete author record.");
+    }
+} catch (Exception $e) {
+    error_log("DB Error in delete_author_profile: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred. Dependencies might exist.', 500, 'SERVER_ERROR');
+}
+$conn = null;
+?>

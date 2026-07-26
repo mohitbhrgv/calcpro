@@ -1,0 +1,109 @@
+<?php
+// File: calcpro-api/api/admin/add_author_profile.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// FIX: Renamed from getValidSlug to avoid global namespace collisions with other endpoints
+// Auto-Slug Engine: Processes frontend inputs and guarantees DB uniqueness
+function generateUniqueAuthorSlug($conn, $providedSlug, $name) {
+    $baseSlug = !empty($providedSlug) ? $providedSlug : $name;
+    $baseSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $baseSlug)));
+    $baseSlug = preg_replace('/-+/', '-', $baseSlug);
+    $baseSlug = trim($baseSlug, '-');
+    if (empty($baseSlug)) $baseSlug = 'author';
+
+    $slug = $baseSlug;
+    $counter = 1;
+    while(true) {
+        $stmt = $conn->prepare("SELECT id FROM author_profiles WHERE slug = :slug");
+        $stmt->execute([':slug' => $slug]);
+        if (!$stmt->fetch()) return $slug;
+        $slug = $baseSlug . '-' . $counter++;
+    }
+}
+
+try {
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // OWASP FIX: Prevent unhandled exceptions from malformed payloads
+    if (json_last_error() !== JSON_ERROR_NONE || !is_object($data)) {
+        sendResponse(false, null, 'Invalid request payload format.', 400, 'INVALID_PAYLOAD');
+    }
+
+    // Sanitize and Prepare Data
+    $name = isset($data->name) ? trim($data->name) : '';
+    $providedSlug = isset($data->slug) ? trim($data->slug) : '';
+    $role = isset($data->role) && !empty(trim($data->role)) ? trim($data->role) : 'Author';
+    $expertise = isset($data->expertise) && !empty(trim($data->expertise)) ? trim($data->expertise) : null;
+    $short_description = isset($data->short_description) && !empty(trim($data->short_description)) ? trim($data->short_description) : null;
+    $bio = isset($data->bio) ? trim($data->bio) : null;
+    $profile_image_id = (isset($data->profile_image_id) && is_numeric($data->profile_image_id)) ? (int)$data->profile_image_id : null;
+
+    if (empty($name)) {
+        sendResponse(false, null, 'Author display name is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- ENTERPRISE SECURITY FIX: Strict Length Boundaries (DoS & Buffer Overflow Mitigation) ---
+    if (mb_strlen($name, 'UTF-8') > 100) sendResponse(false, null, 'Display name cannot exceed 100 characters.', 400, 'INVALID_INPUT');
+    if (mb_strlen($providedSlug, 'UTF-8') > 100) sendResponse(false, null, 'Slug cannot exceed 100 characters.', 400, 'INVALID_INPUT');
+    if (mb_strlen($role, 'UTF-8') > 100) sendResponse(false, null, 'Role cannot exceed 100 characters.', 400, 'INVALID_INPUT');
+    if ($expertise && mb_strlen($expertise, 'UTF-8') > 100) sendResponse(false, null, 'Expertise cannot exceed 100 characters.', 400, 'INVALID_INPUT');
+    if ($short_description && mb_strlen($short_description, 'UTF-8') > 500) sendResponse(false, null, 'Short description cannot exceed 500 characters.', 400, 'INVALID_INPUT');
+    if ($bio && mb_strlen($bio, 'UTF-8') > 1000) sendResponse(false, null, 'Biography cannot exceed 1000 characters.', 400, 'INVALID_INPUT');
+    // --------------------------------------------------------------------------------------------
+
+    // FIX: Updated function call to match the uniquely renamed function
+    $slug = generateUniqueAuthorSlug($conn, $providedSlug, $name);
+
+    // --- ENTERPRISE SECURITY FIX: STRICT URL SCHEME VALIDATION (OWASP A03) ---
+    $valid_social_links = new stdClass();
+    if (isset($data->social_links) && is_object($data->social_links)) {
+        foreach ($data->social_links as $platform => $url) {
+            $url = trim((string)$url);
+            if (!empty($url)) {
+                if (mb_strlen($url, 'UTF-8') > 500) continue; // Skip excessively long URLs
+                
+                $parsed = parse_url($url);
+                if (isset($parsed['scheme']) && in_array(strtolower($parsed['scheme']), ['http', 'https'], true)) {
+                    $valid_social_links->$platform = $url;
+                }
+            }
+        }
+    }
+    $social_links = json_encode($valid_social_links);
+    // ---------------------------------------------------------------------------------------------------
+
+    $query = "INSERT INTO author_profiles (name, slug, role, expertise, short_description, bio, profile_image_id, social_links) 
+              VALUES (:name, :slug, :role, :expertise, :short_description, :bio, :profile_image_id, :social_links)";
+              
+    $stmt = $conn->prepare($query);
+    $result = $stmt->execute([
+        ':name' => $name,
+        ':slug' => $slug,
+        ':role' => $role,
+        ':expertise' => $expertise,
+        ':short_description' => $short_description,
+        ':bio' => $bio,
+        ':profile_image_id' => $profile_image_id,
+        ':social_links' => $social_links
+    ]);
+
+    if ($result) {
+        sendResponse(true, ['id' => $conn->lastInsertId(), 'slug' => $slug], 'Author profile created successfully.', 201);
+    } else {
+        throw new Exception("Failed to insert author record.");
+    }
+
+} catch (Exception $e) {
+    error_log("DB Error in add_author_profile: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+$conn = null;
+?>

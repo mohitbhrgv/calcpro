@@ -1,0 +1,33 @@
+# Local Environment File - DO NOT COMMIT TO GIT
+.env
+
+# Composer Dependencies Folder
+/vendor/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# --- Enterprise Security & Storage Policy ---
+# Ignore user-generated media and live server uploads to prevent repository bloat 
+# and "ghost file" synchronization issues during CI/CD deployments.
+/uploads/*
+
+# Exception: Preserve the security configuration file for the uploads directory
+!/uploads/.htaccess

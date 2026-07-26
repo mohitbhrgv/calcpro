@@ -1,0 +1,281 @@
+<?php
+// File: calcpro-api/api/admin/manage_blacklist.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+require_once '../../core/SecurityGuard.php'; // Required for Encryption
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+    
+    if (!isset($data->action)) {
+        sendResponse(false, null, 'An action is required.', 400, 'INVALID_ACTION');
+    }
+
+    $action = $data->action;
+
+    // -------------------------------------------------------------
+    // BLOCK 1: SINGLE ADD OR TEMPORARY ADD
+    // -------------------------------------------------------------
+    if ($action === 'add' || $action === 'add_temporary') {
+        if (!isset($data->ip_address) || !filter_var($data->ip_address, FILTER_VALIDATE_IP)) {
+            sendResponse(false, null, 'A valid IP address is required.', 400, 'INVALID_INPUT');
+        }
+        
+        $block_type = $data->block_type ?? 'other';
+        $ip_address = trim($data->ip_address);
+        
+        // --- CRYPTO PATCH: Re-Encrypt IP sent from frontend ---
+        $ipEnc = SecurityGuard::encryptIp($ip_address);
+        $bIndex = SecurityGuard::generateBlindIndex($ip_address);
+        
+        $reason = 'Manually added block.';
+        if (isset($data->block_type)) {
+             if ($data->block_type === 'failed_email') $reason = 'Suspected failed email/username attempts.';
+             elseif ($data->block_type === 'failed_password') $reason = 'Suspected failed password attempts.';
+             elseif ($data->block_type === 'failed_otp') $reason = 'Excessive OTP failures.';
+        }
+
+        // Check if already permanently banned using Blind Index
+        $check_perm = $conn->prepare("SELECT id FROM ip_blacklist WHERE ip_blind_index = :bIndex");
+        $check_perm->execute([':bIndex' => $bIndex]);
+        $is_perm_banned = $check_perm->fetch(PDO::FETCH_ASSOC) !== false;
+
+        if ($action === 'add') {
+            if ($is_perm_banned) {
+                sendResponse(false, null, 'This IP address is already in the blacklist.', 409, 'DUPLICATE_IP');
+            }
+            
+            $conn->beginTransaction();
+            try {
+                $origin = (isset($data->context) && $data->context === 'escalation') ? 'system' : 'manual';
+                
+                $stmt = $conn->prepare("INSERT INTO ip_blacklist (ip_address, ip_blind_index, reason, origin, block_type) VALUES (:ipEnc, :bIndex, :reason, :origin, :type)");
+                $stmt->execute([
+                    ':ipEnc' => $ipEnc,
+                    ':bIndex' => $bIndex,
+                    ':reason' => $reason,
+                    ':origin' => $origin,
+                    ':type' => $block_type
+                ]);
+                
+                // Cleanup other tables via Blind Index
+                $conn->prepare("DELETE FROM temporary_blocks WHERE ip_blind_index = :bIndex")->execute([':bIndex' => $bIndex]);
+                $conn->prepare("DELETE FROM login_attempts WHERE ip_blind_index = :bIndex")->execute([':bIndex' => $bIndex]);
+                $conn->prepare("DELETE FROM admin_login_failures WHERE ip_blind_index = :bIndex")->execute([':bIndex' => $bIndex]);
+                
+                $conn->commit();
+                sendResponse(true, null, 'IP address has been successfully blacklisted.');
+
+            } catch (PDOException $e) {
+                $conn->rollBack();
+                if ($e->getCode() == 23000 || (isset($e->errorInfo[1]) && $e->errorInfo[1] == 1062)) {
+                    sendResponse(false, null, 'This IP is already blacklisted (Duplicate Entry).', 409, 'DUPLICATE_IP');
+                }
+                throw $e;
+            }
+
+        } else { // add_temporary
+            if ($is_perm_banned) {
+                sendResponse(false, null, 'This IP is already permanently blacklisted and cannot be temporarily blocked.', 409, 'CONFLICT_PERMABANNED');
+            }
+
+            $check_temp = $conn->prepare("SELECT id FROM temporary_blocks WHERE ip_blind_index = :bIndex");
+            $check_temp->execute([':bIndex' => $bIndex]);
+            $existing_temp = $check_temp->fetch(PDO::FETCH_ASSOC);
+
+            $conn->beginTransaction();
+
+            if ($existing_temp) {
+                $conn->rollBack();
+                sendResponse(false, null, 'This IP address is already in the blacklist.', 409, 'DUPLICATE_IP');
+            } else {
+                $stmt = $conn->prepare("INSERT INTO temporary_blocks (ip_address, ip_blind_index, reason, origin, block_type, blocked_at) VALUES (:ipEnc, :bIndex, :reason, 'manual', :type, NOW())");
+                $stmt->execute([
+                    ':ipEnc' => $ipEnc,
+                    ':bIndex' => $bIndex,
+                    ':reason' => $reason,
+                    ':type' => $block_type
+                ]);
+                $msg = 'IP address has been temporarily blocked.';
+            }
+            
+            $conn->prepare("DELETE FROM login_attempts WHERE ip_blind_index = :bIndex")->execute([':bIndex' => $bIndex]);
+            $conn->prepare("DELETE FROM admin_login_failures WHERE ip_blind_index = :bIndex")->execute([':bIndex' => $bIndex]);
+
+            $conn->commit();
+            sendResponse(true, null, $msg);
+        }
+
+    // -------------------------------------------------------------
+    // BLOCK 2: BULK ESCALATION (TEMP TO PERMANENT)
+    // -------------------------------------------------------------
+    } elseif ($action === 'add_bulk') {
+        if (!isset($data->items) || !is_array($data->items) || empty($data->items)) {
+            sendResponse(false, null, 'Items array required.', 400, 'INVALID_INPUT');
+        }
+
+        $bIndexes = [];
+        foreach ($data->items as $item) {
+            if (isset($item->ip_address)) {
+                // Generate blind indexes from the decrypted IPs sent by frontend
+                $bIndexes[] = SecurityGuard::generateBlindIndex($item->ip_address);
+            }
+        }
+        
+        if (empty($bIndexes)) {
+             sendResponse(false, null, 'No valid IPs found.', 400, 'INVALID_INPUT');
+        }
+
+        $conn->beginTransaction();
+
+        $in_clause = implode(',', array_fill(0, count($bIndexes), '?'));
+        
+        // Fetch existing Encrypted IPs and Blind Indexes from temp blocks
+        $sql_fetch = "SELECT ip_address, ip_blind_index, reason, block_type FROM temporary_blocks WHERE ip_blind_index IN ($in_clause)";
+        $stmt_fetch = $conn->prepare($sql_fetch);
+        $stmt_fetch->execute($bIndexes);
+        $entries = $stmt_fetch->fetchAll(PDO::FETCH_ASSOC);
+
+        $stmt_insert = $conn->prepare("INSERT IGNORE INTO ip_blacklist (ip_address, ip_blind_index, reason, origin, block_type, blocked_at) VALUES (:ipEnc, :bIndex, :reason, 'manual', :type, NOW())");
+        $stmt_delete = $conn->prepare("DELETE FROM temporary_blocks WHERE ip_blind_index = :bIndex");
+        
+        $count = 0;
+        foreach ($entries as $entry) {
+            $bType = !empty($entry['block_type']) ? $entry['block_type'] : 'other';
+            $reason = !empty($entry['reason']) ? $entry['reason'] : 'Bulk escalation from temporary blocks.';
+            
+            $stmt_insert->execute([
+                ':ipEnc'  => $entry['ip_address'], // Already encrypted in DB
+                ':bIndex' => $entry['ip_blind_index'], // Already hashed in DB
+                ':reason' => $reason,
+                ':type'   => $bType
+            ]);
+            $stmt_delete->execute([':bIndex' => $entry['ip_blind_index']]);
+            $count++;
+        }
+        
+        $conn->prepare("DELETE FROM login_attempts WHERE ip_blind_index IN ($in_clause)")->execute($bIndexes);
+        $conn->prepare("DELETE FROM admin_login_failures WHERE ip_blind_index IN ($in_clause)")->execute($bIndexes);
+
+        $conn->commit();
+        sendResponse(true, null, "$count IP(s) successfully escalated to blacklist.");
+
+    // -------------------------------------------------------------
+    // BLOCK 3: SINGLE REMOVE
+    // -------------------------------------------------------------
+    } elseif ($action === 'remove') {
+        if (!isset($data->id)) sendResponse(false, null, 'ID required.', 400, 'INVALID_INPUT');
+        
+        $stmt = $conn->prepare("DELETE FROM ip_blacklist WHERE id = :id");
+        $stmt->execute([':id' => (int)$data->id]);
+        
+        if ($stmt->rowCount() > 0) {
+            sendResponse(true, null, 'IP removed from blacklist.');
+        } else {
+            sendResponse(false, null, 'IP not found.', 404, 'NOT_FOUND');
+        }
+
+    // -------------------------------------------------------------
+    // BLOCK 4: SINGLE DOWNGRADE (PERMANENT TO TEMP)
+    // -------------------------------------------------------------
+    } elseif ($action === 'downgrade_to_temp') {
+        if (!isset($data->id)) sendResponse(false, null, 'ID required.', 400, 'INVALID_INPUT');
+        $id = (int)$data->id;
+
+        $conn->beginTransaction();
+
+        $fetch_stmt = $conn->prepare("SELECT ip_address, ip_blind_index, reason, block_type FROM ip_blacklist WHERE id = :id");
+        $fetch_stmt->execute([':id' => $id]);
+        $record = $fetch_stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$record) {
+            $conn->rollBack();
+            sendResponse(false, null, 'Record not found.', 404, 'NOT_FOUND');
+        }
+        
+        $conn->prepare("DELETE FROM ip_blacklist WHERE id = :id")->execute([':id' => $id]);
+        $conn->prepare("DELETE FROM temporary_blocks WHERE ip_blind_index = :bIndex")->execute([':bIndex' => $record['ip_blind_index']]);
+        
+        $ins_stmt = $conn->prepare("INSERT INTO temporary_blocks (ip_address, ip_blind_index, reason, origin, block_type, blocked_at) VALUES (:ipEnc, :bIndex, :reason, 'manual', :type, NOW())");
+        $ins_stmt->execute([
+            ':ipEnc'  => $record['ip_address'],
+            ':bIndex' => $record['ip_blind_index'],
+            ':reason' => $record['reason'],
+            ':type'   => $record['block_type']
+        ]);
+        
+        $conn->commit();
+        sendResponse(true, null, 'IP moved back to Temporary Block.');
+
+    // -------------------------------------------------------------
+    // BLOCK 5: BULK DOWNGRADE (PERMANENT TO TEMP)
+    // -------------------------------------------------------------
+    } elseif ($action === 'downgrade_to_temp_bulk') {
+        if (!isset($data->ids) || !is_array($data->ids) || empty($data->ids)) {
+            sendResponse(false, null, 'IDs array required.', 400, 'INVALID_INPUT');
+        }
+
+        $ids = array_filter(array_map('intval', $data->ids));
+        if(empty($ids)) sendResponse(false, null, 'Invalid IDs.', 400, 'INVALID_INPUT');
+        
+        $conn->beginTransaction();
+        
+        $in_clause = implode(',', array_fill(0, count($ids), '?'));
+        $idsList = array_values($ids);
+        
+        $sql_fetch = "SELECT id, ip_address, ip_blind_index, reason, block_type FROM ip_blacklist WHERE id IN ($in_clause)";
+        $stmt_fetch = $conn->prepare($sql_fetch);
+        $stmt_fetch->execute($idsList);
+        $entries = $stmt_fetch->fetchAll(PDO::FETCH_ASSOC);
+        
+        if (empty($entries)) {
+            $conn->rollBack();
+            sendResponse(false, null, 'No valid entries found.', 404, 'NOT_FOUND');
+        }
+
+        $stmt_del_temp = $conn->prepare("DELETE FROM temporary_blocks WHERE ip_blind_index = :bIndex");
+        $stmt_ins_temp = $conn->prepare("INSERT INTO temporary_blocks (ip_address, ip_blind_index, reason, origin, block_type, blocked_at) VALUES (:ipEnc, :bIndex, :reason, 'manual', :type, NOW())");
+        $stmt_del_perm = $conn->prepare("DELETE FROM ip_blacklist WHERE id = :id");
+
+        $count = 0;
+        foreach ($entries as $entry) {
+            $stmt_del_temp->execute([':bIndex' => $entry['ip_blind_index']]);
+            
+            $bType = !empty($entry['block_type']) ? $entry['block_type'] : 'other';
+            $reason = !empty($entry['reason']) ? $entry['reason'] : 'Downgraded from blacklist.';
+            
+            $stmt_ins_temp->execute([
+                ':ipEnc'  => $entry['ip_address'],
+                ':bIndex' => $entry['ip_blind_index'],
+                ':reason' => $reason,
+                ':type'   => $bType
+            ]);
+            
+            $stmt_del_perm->execute([':id' => $entry['id']]);
+            $count++;
+        }
+
+        $conn->commit();
+        sendResponse(true, null, "$count IP(s) reverted to temporary blocks.");
+        
+    } else {
+        sendResponse(false, null, 'Invalid action specified.', 400, 'INVALID_ACTION');
+    }
+
+} catch (Exception $e) {
+    if ($conn->inTransaction()) {
+        $conn->rollBack();
+    }
+    error_log("Error in manage_blacklist.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred: ' . $e->getMessage(), 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

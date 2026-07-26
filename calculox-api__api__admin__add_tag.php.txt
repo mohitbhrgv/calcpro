@@ -1,0 +1,62 @@
+<?php
+// Include the core configuration and response helper files
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// Get the data sent from the frontend
+$json = file_get_contents('php://input');
+$data = json_decode($json);
+
+// Basic Validation
+if (!isset($data->name) || !isset($data->slug)) {
+    sendResponse(false, null, 'Tag name and slug are required.', 400, 'INVALID_INPUT');
+}
+
+// Sanitize and Validate Inputs
+$name = trim($data->name);
+$slug = trim($data->slug);
+
+if (empty($name) || empty($slug)) {
+    sendResponse(false, null, 'Tag name and slug cannot be empty.', 400, 'INVALID_INPUT');
+}
+
+try {
+    // Check for Duplicates
+    $sql_check = "SELECT id FROM tags WHERE name = :name OR slug = :slug";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->execute([':name' => $name, ':slug' => $slug]);
+    
+    if ($stmt_check->fetch(PDO::FETCH_ASSOC)) {
+        sendResponse(false, null, 'A tag with this name or slug already exists.', 409, 'DUPLICATE_ENTRY');
+    }
+
+    // Insert the New Tag
+    $sql_insert = "INSERT INTO tags (name, slug) VALUES (:name, :slug)";
+    $stmt_insert = $conn->prepare($sql_insert);
+    
+    if ($stmt_insert->execute([':name' => $name, ':slug' => $slug])) {
+        $new_tag_id = $conn->lastInsertId();
+
+        // Fetch the newly created tag to send it back
+        $sql_fetch = "SELECT t.id, t.name, t.slug, 0 as post_count FROM tags t WHERE id = :id";
+        $stmt_fetch = $conn->prepare($sql_fetch);
+        $stmt_fetch->execute([':id' => $new_tag_id]);
+        $new_tag = $stmt_fetch->fetch(PDO::FETCH_ASSOC);
+
+        sendResponse(true, $new_tag, 'Tag created successfully!', 201); // 201 Created
+    } else {
+        $errorInfo = $stmt_insert->errorInfo();
+        throw new Exception("Database insert failed: " . $errorInfo[2]);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in add_tag.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

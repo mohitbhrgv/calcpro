@@ -1,0 +1,103 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Status Filter Parameter ---
+    $statusFilter = isset($_GET['status']) ? $_GET['status'] : 'all';
+
+    // --- 2. Build SQL WHERE clause ---
+    $whereClause = "";
+    $executeParams = [];
+
+    if ($statusFilter === 'trash') {
+        $whereClause = "WHERE status = :status";
+        $executeParams[':status'] = 'trash';
+    } elseif ($statusFilter === 'published') {
+        $whereClause = "WHERE status = :status";
+        $executeParams[':status'] = 'published';
+    } elseif ($statusFilter === 'draft') {
+        $whereClause = "WHERE status = :status";
+        $executeParams[':status'] = 'draft';
+    } else { 
+        // 'all' shows everything except trash
+        $whereClause = "WHERE status != :status";
+        $executeParams[':status'] = 'trash';
+    }
+
+    // --- 3. Fetch All Matching Data ---
+    $sql = "
+        SELECT 
+            c.id, 
+            c.slug, 
+            c.name, 
+            c.updated_at, 
+            c.status, 
+            c.is_featured,
+            (
+                SELECT target_url 
+                FROM redirects 
+                WHERE source_path = CONCAT('calculator/', c.slug) 
+                AND status = 'active' 
+                LIMIT 1
+            ) as active_redirect
+        FROM calculators c 
+        {$whereClause} 
+        ORDER BY c.name ASC
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare statement failed: ' . $errorInfo[2]);
+    }
+
+    $stmt->execute($executeParams);
+    $calculators_db = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Format boolean for frontend
+    $calculators = array_map(function($calc) {
+        $calc['is_featured'] = (bool)$calc['is_featured'];
+        return $calc;
+    }, $calculators_db);
+
+    // --- 4. Get Status Counts for the UI Tabs ---
+    $counts = ['all' => 0, 'published' => 0, 'draft' => 0, 'trash' => 0];
+    $countSql = "SELECT status, COUNT(id) as count FROM calculators GROUP BY status";
+    $countStmt = $conn->query($countSql);
+    
+    $totalNonTrash = 0;
+    
+    if ($countStmt) {
+        while($row = $countStmt->fetch(PDO::FETCH_ASSOC)) {
+            if (isset($counts[$row['status']])) {
+                $counts[$row['status']] = (int)$row['count'];
+            }
+            if ($row['status'] !== 'trash') {
+                $totalNonTrash += (int)$row['count'];
+            }
+        }
+    }
+    $counts['all'] = $totalNonTrash;
+
+    // --- 5. Assemble Final Response ---
+    $responseData = [
+        'calculators' => $calculators,
+        'counts' => $counts
+    ];
+    
+    sendResponse(true, $responseData, 'Calculator content list fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_calculators.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching calculator content.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

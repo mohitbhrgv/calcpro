@@ -1,0 +1,153 @@
+<?php
+// calcpro-api/api/admin/get_backups.php
+
+require_once __DIR__ . '/../../core/config.php';
+require_once __DIR__ . '/../../core/response.php';
+require_once __DIR__ . '/../../core/auth.php';
+
+$admin = verifyAdminToken();
+if (!$admin) {
+    sendResponse(false, null, 'Unauthorized access.', 401);
+}
+
+if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+    sendResponse(false, null, 'Method not allowed', 405);
+}
+
+// ENTERPRISE FIX: Allow decoupled fetching to prevent S3 latency blocks
+$source = $_GET['source'] ?? 'all'; // Accepted values: 'local', 'cloud', 'all'
+
+$backups = [];
+$cloudError = null;
+
+// =================================================================
+// 1. FETCH LOCAL SNAPSHOTS (HETZNER MANUAL BACKUPS)
+// =================================================================
+if ($source === 'local' || $source === 'all') {
+    $backupDir = __DIR__ . '/../../storage/backups/';
+    if (!is_dir($backupDir)) {
+        @mkdir($backupDir, 0755, true);
+    }
+
+    if (is_dir($backupDir)) {
+        $files = scandir($backupDir);
+        if (is_array($files)) {
+            foreach ($files as $file) {
+                // Only process local .zip files
+                if ($file !== '.' && $file !== '..' && pathinfo($file, PATHINFO_EXTENSION) === 'zip') {
+                    
+                    $type = 'unknown';
+                    if (strpos($file, '_full_') !== false) $type = 'full';
+                    elseif (strpos($file, '_db_') !== false) $type = 'db';
+                    elseif (strpos($file, '_media_') !== false) $type = 'media';
+
+                    $trigger = 'manual';
+                    // Fallback for legacy local auto backups if they exist
+                    if (strpos($file, '_auto_') !== false) $trigger = 'automatic';
+
+                    $filePath = $backupDir . $file;
+                    $backups[] = [
+                        'file_name'  => $file,
+                        'size_bytes' => filesize($filePath),
+                        'created_at' => date('Y-m-d H:i:s', filectime($filePath)),
+                        'type'       => $type,
+                        'trigger'    => $trigger
+                    ];
+                }
+            }
+        }
+    }
+}
+
+// =================================================================
+// 2. FETCH SECURE CLOUD SNAPSHOTS (R2 / S3 AUTOMATIC BACKUPS)
+// =================================================================
+if ($source === 'cloud' || $source === 'all') {
+    $autoloader = __DIR__ . '/../../vendor/autoload.php';
+
+    if (file_exists($autoloader)) {
+        require_once $autoloader;
+
+        $s3Key = getenv('S3_ACCESS_KEY') ?: $_ENV['S3_ACCESS_KEY'] ?? '';
+        $s3Secret = getenv('S3_SECRET_KEY') ?: $_ENV['S3_SECRET_KEY'] ?? '';
+        $s3Region = getenv('S3_REGION') ?: $_ENV['S3_REGION'] ?? 'auto';
+        $s3Bucket = getenv('S3_BUCKET') ?: $_ENV['S3_BUCKET'] ?? '';
+        $s3Endpoint = getenv('S3_ENDPOINT') ?: $_ENV['S3_ENDPOINT'] ?? '';
+
+        // Only attempt cloud connection if credentials are fundamentally present
+        if (!empty($s3Key) && !empty($s3Secret) && !empty($s3Bucket)) {
+            try {
+                $clientConfig = [
+                    'version' => 'latest',
+                    'region'  => $s3Region,
+                    'credentials' => [
+                        'key'    => $s3Key,
+                        'secret' => $s3Secret,
+                    ]
+                ];
+
+                if (!empty($s3Endpoint)) {
+                    $clientConfig['endpoint'] = $s3Endpoint;
+                    $clientConfig['use_path_style_endpoint'] = true;
+                }
+
+                $s3 = new \Aws\S3\S3Client($clientConfig);
+
+                // Fetch objects stored inside the 'database/' prefix
+                $objects = $s3->listObjectsV2([
+                    'Bucket' => $s3Bucket,
+                    'Prefix' => 'database/'
+                ]);
+
+                if (isset($objects['Contents'])) {
+                    foreach ($objects['Contents'] as $object) {
+                        $fileName = basename($object['Key']);
+                        // Only process our automated .sql dump files
+                        if (pathinfo($fileName, PATHINFO_EXTENSION) === 'sql') {
+                            // Mark as 'full' because the automated system syncs DB + Media together
+                            $backups[] = [
+                                'file_name'  => $fileName,
+                                'size_bytes' => $object['Size'],
+                                'created_at' => date('Y-m-d H:i:s', strtotime($object['LastModified'])),
+                                'type'       => 'full',
+                                'trigger'    => 'automatic' // Triggers UI protection protocols
+                            ];
+                        }
+                    }
+                }
+            } catch (\Aws\Exception\AwsException $e) {
+                // Log real AWS errors securely to the server, do not expose to the frontend
+                error_log("CRITICAL CLOUD FETCH ERROR: " . $e->getMessage());
+                $cloudError = "Cloud vault synchronization failed.";
+            } catch (Exception $e) {
+                error_log("GENERAL CLOUD ERROR: " . $e->getMessage());
+                $cloudError = "Cloud connectivity interrupted.";
+            }
+        } else {
+            $cloudError = "Cloud disaster recovery credentials are not configured.";
+        }
+    } else {
+        $cloudError = "AWS SDK dependency missing. Run composer install.";
+    }
+}
+
+// =================================================================
+// 3. MERGE, SORT, AND RESPOND
+// =================================================================
+// Sort all backups (Local + Cloud) chronologically (Newest first)
+usort($backups, function($a, $b) {
+    return strtotime($b['created_at']) - strtotime($a['created_at']);
+});
+
+$message = 'Backup vault retrieved successfully.';
+// If cloud fails, return a partial success message
+if ($cloudError) {
+    $message = "Vault retrieved. Warning: $cloudError";
+}
+
+sendResponse(true, [
+    'backups' => $backups, 
+    'cloud_status' => $cloudError ? 'degraded' : 'connected',
+    'source_pulled' => $source
+], $message);
+?>

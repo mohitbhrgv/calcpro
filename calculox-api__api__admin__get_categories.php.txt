@@ -1,0 +1,70 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php'; 
+
+// --- Security Check ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- The SQL Query ---
+    $sql = "
+        SELECT 
+            c.id, 
+            c.name, 
+            c.slug, 
+            c.description, 
+            c.meta_title,
+            c.meta_description,
+            c.featured_image_id,
+            m.upload_path AS featured_image_url,
+            m.alt_text AS featured_image_alt,
+            COUNT(pc.post_id) as post_count,
+            c.created_at
+        FROM 
+            categories c
+        LEFT JOIN 
+            post_categories pc ON c.id = pc.category_id
+        LEFT JOIN 
+            media m ON c.featured_image_id = m.id
+        GROUP BY 
+            c.id
+        ORDER BY 
+            c.name ASC
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare statement failed: ' . $errorInfo[2]);
+    }
+    
+    $stmt->execute();
+    $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Get base URL for media paths (Strict Environment Extraction)
+    $api_base_url = $_ENV['API_PUBLIC_URL'] ?? '';
+
+    // Type casting and URL formatting
+    foreach ($categories as &$cat) {
+        $cat['id'] = (int)$cat['id'];
+        $cat['post_count'] = (int)$cat['post_count'];
+        $cat['featured_image_id'] = $cat['featured_image_id'] ? (int)$cat['featured_image_id'] : null;
+
+        // Append base URL to the image path if it exists
+        if ($cat['featured_image_url']) {
+            $cat['featured_image_url'] = rtrim($api_base_url, '/') . '/' . ltrim($cat['featured_image_url'], '/');
+        }
+    }
+    
+    sendResponse(true, $categories, 'Categories fetched successfully.', 200);
+    
+} catch (Exception $e) {
+    error_log("Error in get_categories.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

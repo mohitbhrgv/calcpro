@@ -1,0 +1,93 @@
+<?php
+// File: calcpro-api/api/admin/manage_calculators_bulk.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->ids) || !is_array($data->ids) || empty($data->ids)) {
+        sendResponse(false, null, 'No items selected.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->action)) {
+        sendResponse(false, null, 'No action specified.', 400, 'INVALID_INPUT');
+    }
+
+    $action = $data->action;
+    
+    // Sanitize and filter IDs to ensure strict integers
+    $ids = array_filter(array_map('intval', $data->ids));
+    
+    if (empty($ids)) {
+        sendResponse(false, null, 'Invalid IDs provided.', 400, 'INVALID_INPUT');
+    }
+
+    // Generate dynamic placeholders: "?, ?, ?" based on the number of IDs
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+    // --- 3. Execute Action ---
+    $sql = "";
+    $successMsg = "";
+
+    switch ($action) {
+        case 'trash':
+            // Soft delete: Preserve timestamp
+            $sql = "UPDATE calculators SET previous_status = status, status = 'trash', updated_at = updated_at WHERE id IN ($placeholders) AND status != 'trash'";
+            $successMsg = "Selected calculators moved to Trash.";
+            break;
+
+        case 'restore':
+            // Restore: Preserve timestamp
+            $sql = "UPDATE calculators SET status = COALESCE(previous_status, 'draft'), previous_status = NULL, updated_at = updated_at WHERE id IN ($placeholders) AND status = 'trash'";
+            $successMsg = "Selected calculators restored.";
+            break;
+
+        case 'delete_permanent':
+            // Hard delete
+            $sql = "DELETE FROM calculators WHERE id IN ($placeholders) AND status = 'trash'";
+            $successMsg = "Selected calculators permanently deleted.";
+            break;
+
+        default:
+            sendResponse(false, null, 'Invalid action specified.', 400, 'INVALID_ACTION');
+            break;
+    }
+
+    // --- 4. Run Query ---
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception("Database prepare statement failed: " . $errorInfo[2]);
+    }
+
+    // Execute passes the clean array of IDs, binding them securely to the placeholders
+    if ($stmt->execute(array_values($ids))) {
+         $affected = $stmt->rowCount();
+         
+         if ($affected > 0) {
+             sendResponse(true, ['affected' => $affected], $successMsg, 200);
+         } else {
+             sendResponse(false, null, 'No records were updated. They may already be in the requested state.', 404, 'NO_CHANGES');
+         }
+    } else {
+         $errorInfo = $stmt->errorInfo();
+         throw new Exception("Database query failed: " . $errorInfo[2]);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in manage_calculators_bulk.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

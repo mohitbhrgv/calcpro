@@ -1,0 +1,96 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Input Validation ---
+    if (!isset($data->source_path) || empty(trim($data->source_path))) {
+        sendResponse(false, null, 'Source path is required.', 400, 'INVALID_INPUT');
+    }
+    
+    $source_path = trim($data->source_path, '/'); 
+
+    $valid_codes = [301, 302, 307, 308, 410, 451];
+    $status_code = (isset($data->status_code) && in_array((int)$data->status_code, $valid_codes)) 
+        ? (int)$data->status_code 
+        : 301;
+
+    $target_url = isset($data->target_url) ? trim($data->target_url) : '';
+    
+    if (in_array($status_code, [301, 302, 307, 308]) && empty($target_url)) {
+        sendResponse(false, null, 'Target URL is required for redirection status codes.', 400, 'INVALID_INPUT');
+    }
+
+    // --- PHASE 1 ENTERPRISE SAFEGUARD: Soft-Block & Warn ---
+    // Prevent marking active URLs as 410 (Gone) or 451 (Legal) without explicit override
+    if (in_array($status_code, [410, 451])) {
+        $force_override = isset($data->force_override) ? (bool)$data->force_override : false;
+        if (!$force_override) {
+            $path_parts = explode('/', $source_path);
+            $slug_to_check = end($path_parts);
+            
+            $is_live = false;
+            // Strict Table Whitelist for SOC2/OWASP SQLi prevention
+            $content_tables = ['pages', 'posts', 'calculators', 'categories', 'tags'];
+            
+            foreach ($content_tables as $table) {
+                $check_stmt = $conn->prepare("SELECT id FROM `$table` WHERE slug = :slug LIMIT 1");
+                $check_stmt->execute([':slug' => $slug_to_check]);
+                if ($check_stmt->fetch(PDO::FETCH_ASSOC)) {
+                    $is_live = true;
+                    break;
+                }
+            }
+            
+            if ($is_live) {
+                sendResponse(false, null, 'Warning: This URL is currently mapped to live content.', 409, 'URL_CURRENTLY_LIVE');
+            }
+        }
+    }
+
+    // --- 3. Database Operation ---
+    // We use INSERT ... ON DUPLICATE KEY UPDATE to handle collisions.
+    // Upgraded: Avoiding deprecated VALUES() in ON DUPLICATE KEY for MariaDB 11.4 LTS compatibility
+    $sql = "INSERT INTO redirects (source_path, target_url, status_code, status) 
+            VALUES (:source_path, :target_url, :status_code, 'active')
+            ON DUPLICATE KEY UPDATE 
+            target_url = :update_target_url, 
+            status_code = :update_status_code,
+            status = 'active'";
+            
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare failed: ' . $errorInfo[2]);
+    }
+
+    if ($stmt->execute([
+        ':source_path' => $source_path,
+        ':target_url' => $target_url,
+        ':status_code' => $status_code,
+        ':update_target_url' => $target_url,
+        ':update_status_code' => $status_code
+    ])) {
+        sendResponse(true, null, 'Redirect rule saved successfully.', 200);
+    } else {
+        $errorInfo = $stmt->errorInfo();
+        throw new Exception("Database execution failed: " . $errorInfo[2]);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in add_redirect.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

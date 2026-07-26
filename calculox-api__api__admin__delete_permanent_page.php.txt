@@ -1,0 +1,50 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // 1. Get Incoming Data
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // 2. Validation
+    if (!isset($data->id) || !is_numeric($data->id)) {
+        sendResponse(false, null, 'A valid Page ID is required.', 400, 'INVALID_INPUT');
+    }
+    $pageId = (int)$data->id;
+
+    // 3. The Permanent Delete Logic
+    // The "WHERE status = 'trash'" clause is a crucial safety check
+    // to ensure we only delete items that are already in the trash.
+    $sql = "DELETE FROM pages WHERE id = :id AND status = 'trash'";
+    
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Failed to prepare the SQL statement: ' . $errorInfo[2]);
+    }
+
+    if ($stmt->execute([':id' => $pageId])) {
+        if ($stmt->rowCount() > 0) {
+            sendResponse(true, null, 'Page permanently deleted.', 200);
+        } else {
+            sendResponse(false, null, 'Page not found in trash.', 404, 'NOT_FOUND');
+        }
+    } else {
+        $errorInfo = $stmt->errorInfo();
+        throw new Exception("Database query failed: " . $errorInfo[2]);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in delete_permanent_page.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

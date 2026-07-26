@@ -1,0 +1,113 @@
+<?php
+// File: calcpro-api/api/admin/get_post.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Validation ---
+    if (!isset($_GET['id']) || !is_numeric($_GET['id'])) {
+        sendResponse(false, null, 'A valid Post ID is required.', 400, 'INVALID_INPUT');
+    }
+
+    $postId = (int)$_GET['id'];
+    
+    // --- 2. Fetch Post Data ---
+    $sql = "SELECT * FROM posts WHERE id = :id";
+    $stmt = $conn->prepare($sql);
+    $stmt->execute([':id' => $postId]);
+    $post = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if ($post) {
+        // --- Fetch Categories (Many-to-Many) ---
+        $catSql = "SELECT category_id FROM post_categories WHERE post_id = :id";
+        $cStmt = $conn->prepare($catSql);
+        $cStmt->execute([':id' => $postId]);
+        
+        $categoryIds = [];
+        while($row = $cStmt->fetch(PDO::FETCH_ASSOC)) {
+            $categoryIds[] = (int)$row['category_id'];
+        }
+        
+        // --- Fetch Tags ---
+        $tagSql = "SELECT tag_id FROM post_tags WHERE post_id = :id";
+        $tStmt = $conn->prepare($tagSql);
+        $tStmt->execute([':id' => $postId]);
+        
+        $tagIds = [];
+        while($row = $tStmt->fetch(PDO::FETCH_ASSOC)) {
+            $tagIds[] = (int)$row['tag_id'];
+        }
+
+        // --- Redirect Check ---
+        $activeRedirect = null;
+        $redirectSql = "SELECT target_url, status_code FROM redirects WHERE source_path = :source_path AND status = 'active' LIMIT 1";
+        $rStmt = $conn->prepare($redirectSql);
+        $sourcePath = 'blog/' . $post['slug'];
+        $rStmt->execute([':source_path' => $sourcePath]);
+        
+        if ($rRow = $rStmt->fetch(PDO::FETCH_ASSOC)) {
+            $activeRedirect = $rRow;
+        }
+
+        // --- 3. Prepare Response with Strict Types ---
+        
+        // Arrays
+        $post['categories'] = $categoryIds;
+        $post['tags'] = $tagIds;
+        $post['active_redirect'] = $activeRedirect;
+
+        // JSON Fields
+        $post['faq_json'] = json_decode($post['faq_json'] ?? '[]', true);
+        
+        // Schema Enabled (Replaces schema_json)
+        $post['schema_enabled'] = isset($post['schema_enabled']) ? (bool)$post['schema_enabled'] : true;
+        
+        // Explicit Field Mapping
+        $post['canonical_url'] = $post['canonical_url'];
+        
+        // SEO Keywords
+        $post['focusKeywords'] = $post['focus_keywords'];
+        
+        // Primary Category ID & Display Author Mapping
+        $post['primary_category_id'] = $post['primary_category_id'] ? (int)$post['primary_category_id'] : null;
+        $post['display_author_id'] = isset($post['display_author_id']) && $post['display_author_id'] ? (int)$post['display_author_id'] : null;
+
+        // Robots Meta
+        $post['no_index'] = $post['no_index'] === null ? null : (int)$post['no_index'];
+        $post['no_follow'] = $post['no_follow'] === null ? null : (int)$post['no_follow'];
+        $post['no_archive'] = $post['no_archive'] === null ? null : (int)$post['no_archive'];
+        $post['no_image_index'] = $post['no_image_index'] === null ? null : (int)$post['no_image_index'];
+        $post['no_snippet'] = $post['no_snippet'] === null ? null : (int)$post['no_snippet'];
+        
+        // Advanced Robot Meta
+        $post['max_snippet'] = isset($post['max_snippet']) ? (int)$post['max_snippet'] : null;
+        $post['max_video_preview'] = isset($post['max_video_preview']) ? (int)$post['max_video_preview'] : null;
+        $post['max_image_preview'] = $post['max_image_preview'];
+        
+        // Social Meta
+        $post['twitterTitle'] = $post['twitter_title'];
+        $post['twitterDescription'] = $post['twitter_description'];
+        $post['twitterImage'] = $post['twitter_image'];
+        $post['twitterSync'] = isset($post['twitter_sync']) ? (bool)$post['twitter_sync'] : true;
+        
+        // Image ID
+        $post['featuredImageId'] = $post['featured_image_id'] ? (int)$post['featured_image_id'] : null;
+
+        sendResponse(true, $post, 'Post data fetched successfully.');
+    } else {
+        sendResponse(false, null, 'Post not found.', 404, 'NOT_FOUND');
+    }
+
+} catch (Exception $e) {
+    error_log("Error in get_post.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching the post.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

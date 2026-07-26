@@ -1,0 +1,149 @@
+<?php
+// File: calcpro-api/api/admin/add_page.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->title) || empty(trim($data->title))) {
+        sendResponse(false, null, 'Page title is required.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->slug) || empty(trim($data->slug))) {
+        sendResponse(false, null, 'Page slug is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize and Prepare Data ---
+    $title = trim($data->title);
+    $slug = trim($data->slug);
+    $status = in_array($data->status, ['published', 'draft']) ? $data->status : 'draft';
+    
+    $content_json = json_encode($data->content_json ?? new stdClass());
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new Exception('Invalid content JSON provided.');
+    }
+
+    // --- 3.1 Advanced Data Sanitization (Layout Fix) ---
+    // Safely removes excessive non-breaking spaces before hitting the database
+    $content_json = preg_replace('/(&nbsp;|&#160;|\x{00A0}|\xC2\xA0)+/iu', ' ', $content_json);
+
+    $meta_title = isset($data->metaTitle) ? trim($data->metaTitle) : null;
+    $meta_description = isset($data->metaDescription) ? trim($data->metaDescription) : null;
+    $focus_keywords = isset($data->focusKeywords) ? trim($data->focusKeywords) : null;
+    
+    $og_image = isset($data->og_image) ? trim($data->og_image) : null;
+    $canonical_url = isset($data->canonical_url) ? trim($data->canonical_url) : null;
+
+    // Social SEO (Facebook) WITH RELATIONAL SYNC
+    $ogTitle = isset($data->ogTitle) ? trim($data->ogTitle) : null;
+    $ogDescription = isset($data->ogDescription) ? trim($data->ogDescription) : null;
+    $og_image_id = function_exists('getMediaIdFromUrl') ? getMediaIdFromUrl($conn, $og_image) : null;
+    
+    // Social SEO (Twitter) WITH RELATIONAL SYNC
+    $twitterTitle = isset($data->twitterTitle) ? trim($data->twitterTitle) : null;
+    $twitterDescription = isset($data->twitterDescription) ? trim($data->twitterDescription) : null;
+    $twitterImage = isset($data->twitterImage) ? trim($data->twitterImage) : null;
+    $twitter_image_id = function_exists('getMediaIdFromUrl') ? getMediaIdFromUrl($conn, $twitterImage) : null;
+    
+    // Robots Meta
+    $no_index = (isset($data->no_index) && $data->no_index !== null) ? (int)$data->no_index : null;
+    $no_follow = (isset($data->no_follow) && $data->no_follow !== null) ? (int)$data->no_follow : null;
+    $no_archive = (isset($data->no_archive) && $data->no_archive !== null) ? (int)$data->no_archive : null;
+    $no_image_index = (isset($data->no_image_index) && $data->no_image_index !== null) ? (int)$data->no_image_index : null;
+    $no_snippet = (isset($data->no_snippet) && $data->no_snippet !== null) ? (int)$data->no_snippet : null;
+    
+    // Advanced Robot Meta
+    $maxSnippet = isset($data->max_snippet) && $data->max_snippet !== null ? (int)$data->max_snippet : null;
+    $maxVideoPreview = isset($data->max_video_preview) && $data->max_video_preview !== null ? (int)$data->max_video_preview : null;
+    $maxImagePreview = isset($data->max_image_preview) ? trim($data->max_image_preview) : null;
+    
+    // Schema Enabled
+    $schema_enabled = (isset($data->schema_enabled) && $data->schema_enabled === false) ? 0 : 1;
+
+    // --- 4. Check for Duplicate Slug ---
+    $sql_check = "SELECT id FROM pages WHERE slug = :slug";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->execute([':slug' => $slug]);
+    
+    if ($stmt_check->fetch(PDO::FETCH_ASSOC)) {
+        sendResponse(false, null, 'A page with this slug already exists.', 409, 'DUPLICATE_SLUG');
+    }
+
+    // --- 5. The SQL INSERT Query ---
+    $sql = "
+        INSERT INTO pages (
+            title, slug, content_json, status, 
+            meta_title, meta_description, focus_keywords, canonical_url,
+            og_title, og_description, og_image, og_image_id,
+            twitter_title, twitter_description, twitter_image, twitter_image_id,
+            no_index, no_follow, no_archive, no_image_index, no_snippet,
+            max_snippet, max_video_preview, max_image_preview,
+            schema_enabled
+        ) VALUES (
+            :title, :slug, :content_json, :status, 
+            :meta_title, :meta_description, :focus_keywords, :canonical_url,
+            :og_title, :og_description, :og_image, :og_image_id,
+            :twitter_title, :twitter_description, :twitter_image, :twitter_image_id,
+            :no_index, :no_follow, :no_archive, :no_image_index, :no_snippet,
+            :max_snippet, :max_video_preview, :max_image_preview,
+            :schema_enabled
+        )
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception("Database prepare failed: " . $errorInfo[2]);
+    }
+
+    if ($stmt->execute([
+        ':title' => $title,
+        ':slug' => $slug,
+        ':content_json' => $content_json,
+        ':status' => $status,
+        ':meta_title' => $meta_title,
+        ':meta_description' => $meta_description,
+        ':focus_keywords' => $focus_keywords,
+        ':canonical_url' => $canonical_url,
+        ':og_title' => $ogTitle,
+        ':og_description' => $ogDescription,
+        ':og_image' => $og_image,
+        ':og_image_id' => $og_image_id,
+        ':twitter_title' => $twitterTitle,
+        ':twitter_description' => $twitterDescription,
+        ':twitter_image' => $twitterImage,
+        ':twitter_image_id' => $twitter_image_id,
+        ':no_index' => $no_index,
+        ':no_follow' => $no_follow,
+        ':no_archive' => $no_archive,
+        ':no_image_index' => $no_image_index,
+        ':no_snippet' => $no_snippet,
+        ':max_snippet' => $maxSnippet,
+        ':max_video_preview' => $maxVideoPreview,
+        ':max_image_preview' => $maxImagePreview,
+        ':schema_enabled' => $schema_enabled
+    ])) {
+        $newPageId = $conn->lastInsertId();
+        sendResponse(true, ['id' => $newPageId], 'Page created successfully!', 201);
+    } else {
+        $errorInfo = $stmt->errorInfo();
+        throw new Exception("Database insert failed: " . $errorInfo[2]);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in add_page.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

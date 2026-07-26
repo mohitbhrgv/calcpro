@@ -1,0 +1,76 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    $id = isset($_GET['id']) ? (int)$_GET['id'] : null;
+    $api_base_url = $_ENV['API_PUBLIC_URL'] ?? '';
+
+    if ($id) {
+        // Added subquery to fetch the true admin creation date and internal admin name
+        $query = "SELECT a.*, m.upload_path, m.alt_text,
+                         (SELECT name FROM admins ORDER BY id ASC LIMIT 1) as internal_admin_name,
+                         (SELECT created_at FROM admins ORDER BY id ASC LIMIT 1) as admin_created_at
+                  FROM author_profiles a 
+                  LEFT JOIN media m ON a.profile_image_id = m.id 
+                  WHERE a.id = :id";
+        $stmt = $conn->prepare($query);
+        $stmt->execute([':id' => $id]);
+        $author = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($author) {
+            $author['profile_image_url'] = !empty($author['upload_path']) 
+                ? rtrim($api_base_url, '/') . '/' . ltrim($author['upload_path'], '/') 
+                : null;
+            unset($author['upload_path']);
+            $author['social_links'] = $author['social_links'] ? json_decode($author['social_links'], true) : new stdClass();
+            
+            // Sync creation date if this is the Super Admin
+            if ($author['is_super_admin'] == 1 && !empty($author['admin_created_at'])) {
+                $author['created_at'] = $author['admin_created_at'];
+            }
+            unset($author['admin_created_at']);
+
+            sendResponse(true, $author, 'Author fetched successfully.', 200);
+        } else {
+            sendResponse(false, null, 'Author not found.', 404, 'NOT_FOUND');
+        }
+    } else {
+        // Enforce Super Admin at the top, count posts robustly, and fetch true admin creation date
+        $query = "SELECT a.*, m.upload_path, m.alt_text,
+                         (SELECT name FROM admins ORDER BY id ASC LIMIT 1) as internal_admin_name,
+                         (SELECT COUNT(id) FROM posts WHERE (display_author_id = a.id OR (a.is_super_admin = 1 AND display_author_id IS NULL AND author_id = (SELECT id FROM admins ORDER BY id ASC LIMIT 1))) AND status = 'published') as total_posts,
+                         (SELECT created_at FROM admins ORDER BY id ASC LIMIT 1) as admin_created_at
+                  FROM author_profiles a 
+                  LEFT JOIN media m ON a.profile_image_id = m.id 
+                  ORDER BY a.is_super_admin DESC, a.created_at DESC";
+        $stmt = $conn->prepare($query);
+        $stmt->execute();
+        $authors = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($authors as &$author) {
+            $author['profile_image_url'] = !empty($author['upload_path']) 
+                ? rtrim($api_base_url, '/') . '/' . ltrim($author['upload_path'], '/') 
+                : null;
+            unset($author['upload_path']);
+            $author['social_links'] = $author['social_links'] ? json_decode($author['social_links'], true) : new stdClass();
+            
+            // Sync creation date if this is the Super Admin
+            if ($author['is_super_admin'] == 1 && !empty($author['admin_created_at'])) {
+                $author['created_at'] = $author['admin_created_at'];
+            }
+            unset($author['admin_created_at']);
+        }
+        sendResponse(true, $authors, 'Authors fetched successfully.', 200);
+    }
+} catch (Exception $e) {
+    error_log("DB Error in get_author_profiles: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+$conn = null;
+?>

@@ -1,0 +1,69 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php'; 
+
+// --- Security Check ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- The SQL Query ---
+    $sql = "
+        SELECT 
+            c.id, 
+            c.name, 
+            c.slug, 
+            c.description, 
+            c.meta_title,
+            c.meta_description,
+            c.featured_image_id,
+            m.upload_path AS featured_image_url,
+            m.alt_text AS featured_image_alt,
+            COUNT(cca.calculator_id) as calculator_count
+        FROM 
+            calculator_categories c
+        LEFT JOIN 
+            calculator_category_assignments cca ON c.id = cca.category_id
+        LEFT JOIN 
+            media m ON c.featured_image_id = m.id
+        GROUP BY 
+            c.id
+        ORDER BY 
+            c.name ASC
+    ";
+
+    $stmt = $conn->prepare($sql);
+
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare statement failed: ' . $errorInfo[2]);
+    }
+    
+    $stmt->execute();
+    $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Get base URL for media paths (Strict Environment Extraction)
+    $api_base_url = $_ENV['API_PUBLIC_URL'] ?? '';
+
+    // Type casting and URL formatting for consistency
+    foreach ($categories as &$cat) {
+        $cat['id'] = (int)$cat['id'];
+        $cat['calculator_count'] = (int)$cat['calculator_count'];
+        $cat['featured_image_id'] = $cat['featured_image_id'] ? (int)$cat['featured_image_id'] : null;
+
+        // Append base URL to the image path if it exists
+        if ($cat['featured_image_url']) {
+            $cat['featured_image_url'] = rtrim($api_base_url, '/') . '/' . ltrim($cat['featured_image_url'], '/');
+        }
+    }
+    
+    sendResponse(true, $categories, 'Calculator categories fetched successfully.', 200);
+
+} catch (Exception $e) {
+    error_log("Error in get_calculator_categories.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

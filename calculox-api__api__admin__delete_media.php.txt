@@ -1,0 +1,197 @@
+<?php
+// File: calcpro-api/api/admin/delete_media.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK & RBAC ---
+$admin_data = verifyAdminToken();
+
+// STRICT RBAC: Only Super Admins can permanently delete media
+$adminArray = (array)$admin_data;
+if (!isset($adminArray['adminRole']) || $adminArray['adminRole'] !== 'super_admin') {
+    sendResponse(false, null, 'Insufficient permissions. Only Super Admins can delete media.', 403, 'FORBIDDEN');
+    exit; // SECURITY FIX: Crucial exit added to prevent unauthorized execution bypass
+}
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->id) || !is_numeric($data->id)) {
+        sendResponse(false, null, 'A valid Media ID is required.', 400, 'INVALID_INPUT');
+        exit; // SECURITY FIX: Ensure execution halts on bad input
+    }
+    $mediaId = (int)$data->id;
+
+    // --- 3. Start Database Transaction ---
+    $conn->beginTransaction();
+
+    // --- 4. Fetch the media record ---
+    $sql_fetch = "SELECT upload_path FROM media WHERE id = :id";
+    $stmt_fetch = $conn->prepare($sql_fetch);
+    $stmt_fetch->execute([':id' => $mediaId]);
+    $media = $stmt_fetch->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$media) {
+        $conn->rollBack();
+        sendResponse(false, null, 'Media item not found.', 404, 'NOT_FOUND');
+        exit; // SECURITY FIX: Halt execution if media doesn't exist
+    }
+    
+    $relativePath = $media['upload_path'];
+    $fullUrl = rtrim($_ENV['API_PUBLIC_URL'], '/') . '/' . $relativePath;
+    $filePath = PROJECT_ROOT . '/' . $relativePath;
+
+    // --- 5. CLEANUP: Body Content (DOM-Safe Image Removal) ---
+    $likePatternRaw = '%' . $fullUrl . '%';
+    $likePatternEsc = '%' . str_replace('/', '\\/', $fullUrl) . '%'; // Fix for JSON fields
+
+    // Helper: Safely remove HTML Image using DOMDocument without mangling UTF-8 (e.g. ₹ or emojis)
+    function removeHtmlImage($content, $url) {
+        if (empty($content) || strpos($content, '<img') === false) return $content;
+        
+        // Enforce safe UTF-8 HTML entity conversion before DOM load
+        $safeHtml = mb_convert_encoding($content, 'HTML-ENTITIES', 'UTF-8');
+
+        $dom = new DOMDocument();
+        libxml_use_internal_errors(true);
+        $dom->loadHTML('<?xml encoding="utf-8" ?>' . $safeHtml, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+        libxml_clear_errors();
+
+        $images = $dom->getElementsByTagName('img');
+        $nodesToRemove = [];
+
+        foreach ($images as $img) {
+            if ($img->getAttribute('src') === $url) {
+                $parent = $img->parentNode;
+                // Clean up empty wrapping paragraph if it exists
+                if ($parent && strtolower($parent->nodeName) === 'p' && $parent->childNodes->length === 1) {
+                    $nodesToRemove[] = $parent;
+                } else {
+                    $nodesToRemove[] = $img;
+                }
+            }
+        }
+        
+        $changed = count($nodesToRemove) > 0;
+
+        foreach ($nodesToRemove as $node) {
+            if ($node->parentNode) {
+                $node->parentNode->removeChild($node);
+            }
+        }
+
+        if ($changed) {
+            $newContent = '';
+            foreach ($dom->childNodes as $node) {
+                $newContent .= $dom->saveHTML($node);
+            }
+            return trim(str_replace('<?xml encoding="utf-8" ?>', '', $newContent));
+        }
+        return $content;
+    }
+
+    // Helper: Process JSON safely
+    function removeJsonImage($jsonStr, $url) {
+        $decoded = json_decode($jsonStr, true);
+        if ($decoded === null) return $jsonStr; 
+        
+        array_walk_recursive($decoded, function(&$item) use ($url) {
+            if (is_string($item)) {
+                if (strpos($item, '<img') !== false) {
+                    $item = removeHtmlImage($item, $url);
+                } elseif ($item === $url) {
+                    // Direct string match inside JSON (e.g., OG Image fields)
+                    $item = '';
+                }
+            }
+        });
+        return json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    // PERFORMANCE FIX: Removed FOR UPDATE to prevent database deadlocks on high-traffic sites
+    
+    // Process Posts Content
+    $stmtPosts = $conn->prepare("SELECT id, content FROM posts WHERE content LIKE :like");
+    $stmtPosts->execute([':like' => $likePatternRaw]);
+    $updatePost = $conn->prepare("UPDATE posts SET content = :content WHERE id = :id");
+
+    while ($row = $stmtPosts->fetch(PDO::FETCH_ASSOC)) {
+        $newContent = removeHtmlImage($row['content'], $fullUrl);
+        if ($newContent !== $row['content']) { // Only write to DB if changes occurred
+            $updatePost->execute([':content' => $newContent, ':id' => $row['id']]);
+        }
+    }
+
+    // Process Calculators Content
+    $stmtCalcs = $conn->prepare("SELECT id, content FROM calculators WHERE content LIKE :like");
+    $stmtCalcs->execute([':like' => $likePatternRaw]);
+    $updateCalc = $conn->prepare("UPDATE calculators SET content = :content WHERE id = :id");
+
+    while ($row = $stmtCalcs->fetch(PDO::FETCH_ASSOC)) {
+        $newContent = removeHtmlImage($row['content'], $fullUrl);
+        if ($newContent !== $row['content']) {
+            $updateCalc->execute([':content' => $newContent, ':id' => $row['id']]);
+        }
+    }
+
+    // Process Pages Content (Checking both Raw and Escaped JSON formats)
+    $stmtPages = $conn->prepare("SELECT id, content_json FROM pages WHERE content_json LIKE :like_raw OR content_json LIKE :like_esc");
+    $stmtPages->execute([':like_raw' => $likePatternRaw, ':like_esc' => $likePatternEsc]);
+    $updatePage = $conn->prepare("UPDATE pages SET content_json = :content WHERE id = :id");
+
+    while ($row = $stmtPages->fetch(PDO::FETCH_ASSOC)) {
+        $newContent = removeJsonImage($row['content_json'], $fullUrl);
+        if ($newContent !== $row['content_json']) {
+            $updatePage->execute([':content' => $newContent, ':id' => $row['id']]);
+        }
+    }
+
+    // --- 6. CLEANUP: Relational Fields (Featured Image ID) ---
+    $stmtFeatured = $conn->prepare("UPDATE posts SET featured_image_id = NULL WHERE featured_image_id = :id");
+    $stmtFeatured->execute([':id' => $mediaId]);
+
+    // --- 7. CLEANUP: String References (OG Image, Settings) ---
+    $stmtOgPosts = $conn->prepare("UPDATE posts SET og_image = '' WHERE og_image = :url");
+    $stmtOgPosts->execute([':url' => $fullUrl]);
+
+    $stmtOgCalcs = $conn->prepare("UPDATE calculators SET og_image = '' WHERE og_image = :url");
+    $stmtOgCalcs->execute([':url' => $fullUrl]);
+
+    $stmtOgPages = $conn->prepare("UPDATE pages SET og_image = '' WHERE og_image = :url");
+    $stmtOgPages->execute([':url' => $fullUrl]);
+
+    $stmtSettings = $conn->prepare("UPDATE settings SET setting_value = '' WHERE setting_value = :url");
+    $stmtSettings->execute([':url' => $fullUrl]);
+
+    // --- 8. Delete Record ---
+    $sql_delete = "DELETE FROM media WHERE id = :id";
+    $stmt_delete = $conn->prepare($sql_delete);
+    $stmt_delete->execute([':id' => $mediaId]);
+
+    // --- 9. Delete Physical File ---
+    if (file_exists($filePath)) {
+        if (!unlink($filePath)) {
+            $conn->rollBack();
+            throw new Exception('Could not delete the physical file from server.');
+        }
+    }
+
+    $conn->commit();
+    sendResponse(true, null, 'Media permanently deleted and removed from all content.', 200);
+
+} catch (Exception $e) {
+    if (isset($conn) && $conn->inTransaction()) {
+        $conn->rollBack();
+    }
+    error_log("Error in delete_media.php: " . $e->getMessage());
+    sendResponse(false, null, 'Server error: ' . $e->getMessage(), 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

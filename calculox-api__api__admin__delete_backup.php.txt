@@ -1,0 +1,88 @@
+<?php
+// calcpro-api/api/admin/delete_backup.php
+
+require_once __DIR__ . '/../../core/config.php';
+require_once __DIR__ . '/../../core/response.php';
+require_once __DIR__ . '/../../core/auth.php';
+
+// FIX: Safe Type Handling applied.
+$admin = verifyAdminToken();
+if (!$admin) {
+    sendResponse(false, null, 'Unauthorized access.', 401);
+}
+
+// OWASP: Role-Based Access Control (RBAC) Enforcement
+// FIX: Updated key from 'role' to 'adminRole' to match login payload.
+$adminData = (array)$admin;
+if (!isset($adminData['adminRole']) || $adminData['adminRole'] !== 'super_admin') {
+    sendResponse(false, null, 'Forbidden: Insufficient privileges. Only Super Admins can perform this action.', 403);
+}
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    sendResponse(false, null, 'Method not allowed', 405);
+}
+
+$rawInput = file_get_contents('php://input');
+$data = json_decode($rawInput, true);
+
+// Support both single file and bulk arrays
+$filesToDelete = [];
+if (isset($data['file']) && !empty($data['file'])) {
+    $filesToDelete[] = $data['file'];
+} elseif (isset($data['files']) && is_array($data['files'])) {
+    $filesToDelete = $data['files'];
+}
+
+if (empty($filesToDelete)) {
+    sendResponse(false, null, 'No files specified for deletion.', 400);
+}
+
+$backupDir = __DIR__ . '/../../storage/backups/';
+$sigDir = __DIR__ . '/../../storage/signatures/'; // ADDED: Path to the Signature warehouse
+$deletedCount = 0;
+$securityViolations = 0;
+
+foreach ($filesToDelete as $file) {
+    // OWASP: Strict Path Traversal Prevention (strips ../ and forces secure directory scope)
+    $safeFile = basename($file);
+
+    // 🚨 ENTERPRISE SECURITY LOCKDOWN: Immutable Automatic Backups 🚨
+    // If a direct API request attempts to purge an automatic/cloud snapshot, actively reject it.
+    if (strpos($safeFile, '_auto_') !== false) {
+        $securityViolations++;
+        // If it's a single file request, throw a hard 403 Forbidden immediately.
+        if (count($filesToDelete) === 1) {
+            sendResponse(false, null, 'SECURITY VIOLATION: Automatic backups are immutable and cannot be deleted via the API.', 403);
+        }
+        // In a bulk array, skip this restricted file and evaluate the next one
+        continue;
+    }
+
+    // Standard local backup processing
+    if (!empty($safeFile) && pathinfo($safeFile, PATHINFO_EXTENSION) === 'zip') {
+        $filePath = $backupDir . $safeFile;
+        $sigPath = $sigDir . $safeFile . '.hmac'; // ADDED: Target the specific HMAC file
+
+        if (file_exists($filePath)) {
+            // 1. Delete the physical backup ZIP
+            @unlink($filePath);
+            
+            // 2. ENTERPRISE FIX: Delete the orphaned cryptographic signature
+            if (file_exists($sigPath)) {
+                @unlink($sigPath);
+            }
+            
+            $deletedCount++;
+        }
+    }
+}
+
+// Response Logic based on execution results
+if ($securityViolations > 0 && $deletedCount === 0) {
+     sendResponse(false, null, 'Operation blocked. One or more files are protected under disaster recovery immutability.', 403);
+} elseif ($securityViolations > 0 && $deletedCount > 0) {
+     sendResponse(true, null, "Partial success: $deletedCount local artifact(s) deleted. $securityViolations protected artifact(s) were safely ignored.");
+} else {
+     sendResponse(true, null, "Successfully purged $deletedCount local artifact(s) from the vault.");
+}
+?>

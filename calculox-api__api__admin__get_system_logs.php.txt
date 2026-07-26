@@ -1,0 +1,74 @@
+<?php
+// calcpro-api/api/admin/get_system_logs.php
+
+require_once __DIR__ . '/../../core/config.php';
+require_once __DIR__ . '/../../core/response.php';
+// FIX: Correctly include auth.php instead of SecurityGuard
+require_once __DIR__ . '/../../core/auth.php';
+
+// FIX: Call the global function correctly
+$admin = verifyAdminToken();
+if (!$admin) {
+    sendResponse(false, null, 'Unauthorized access', 401);
+}
+
+// Safely capture pagination and filters
+$page   = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+$limit  = isset($_GET['limit']) ? max(1, (int)$_GET['limit']) : 50;
+$offset = ($page - 1) * $limit;
+
+$envFilter    = isset($_GET['environment']) && $_GET['environment'] !== 'all' ? trim($_GET['environment']) : null;
+$sevFilter    = isset($_GET['severity']) && $_GET['severity'] !== 'all' ? trim($_GET['severity']) : null;
+$statusFilter = isset($_GET['status']) && $_GET['status'] !== 'all' ? trim($_GET['status']) : null;
+
+// Construct Dynamic Query
+$whereClauses = [];
+$params = [];
+
+if ($envFilter) {
+    $whereClauses[] = "environment = :env";
+    $params[':env'] = $envFilter;
+}
+if ($sevFilter) {
+    $whereClauses[] = "severity = :sev";
+    $params[':sev'] = $sevFilter;
+}
+if ($statusFilter) {
+    $whereClauses[] = "status = :status";
+    $params[':status'] = $statusFilter;
+}
+
+$whereSql = count($whereClauses) > 0 ? "WHERE " . implode(" AND ", $whereClauses) : "";
+
+try {
+    $countQuery = "SELECT COUNT(id) as total FROM system_error_logs $whereSql";
+    $countStmt = $conn->prepare($countQuery);
+    $countStmt->execute($params);
+    $totalLogs = (int)$countStmt->fetch()['total'];
+    $totalPages = ceil($totalLogs / $limit);
+
+    $dataQuery = "SELECT id, environment, severity, error_message, stack_trace, url_endpoint, user_type, status, created_at, updated_at, hit_count 
+                  FROM system_error_logs 
+                  $whereSql 
+                  ORDER BY updated_at DESC 
+                  LIMIT " . (int)$limit . " OFFSET " . (int)$offset;
+    
+    $dataStmt = $conn->prepare($dataQuery);
+    $dataStmt->execute($params);
+    $logs = $dataStmt->fetchAll();
+
+    sendResponse(true, [
+        'logs' => $logs,
+        'pagination' => [
+            'current_page' => $page,
+            'total_pages'  => $totalPages,
+            'total_records'=> $totalLogs,
+            'limit'        => $limit
+        ]
+    ], 'Logs retrieved successfully');
+
+} catch (\PDOException $e) {
+    logInternalSystemError('error', 'Error fetching system logs: ' . $e->getMessage(), __FILE__, __LINE__);
+    sendResponse(false, null, 'Database error occurred while fetching logs', 500);
+}
+?>

@@ -1,0 +1,118 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Pagination & Filter Parameters ---
+    $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+    $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 100;
+    $offset = ($page - 1) * $limit;
+    
+    $statusFilter = isset($_GET['status']) ? $_GET['status'] : 'all';
+    $actionTypeFilter = isset($_GET['action_type']) ? $_GET['action_type'] : 'all';
+
+    // --- 2. Build WHERE Clause ---
+    $whereConditions = [];
+    $executeParams = [];
+
+    if ($statusFilter === 'trash') {
+        $whereConditions[] = "status = 'trash'";
+    } elseif ($statusFilter === 'active') {
+        $whereConditions[] = "status = 'active'";
+    } elseif ($statusFilter === 'inactive') {
+        $whereConditions[] = "status = 'inactive'";
+    } else {
+        // 'all' typically shows everything EXCEPT trash in CMS interfaces
+        $whereConditions[] = "status != 'trash'";
+    }
+
+    // Add action type filter securely via prepared statement
+    if ($actionTypeFilter !== 'all' && $actionTypeFilter !== '') {
+        $whereConditions[] = "status_code = :status_code";
+        $executeParams[':status_code'] = (int)$actionTypeFilter;
+    }
+
+    $whereSQL = "WHERE " . implode(" AND ", $whereConditions);
+
+    // --- 3. Get Total Count (for Pagination) ---
+    $countSql = "SELECT COUNT(id) as total FROM redirects {$whereSQL}";
+    $countStmt = $conn->prepare($countSql);
+    $countStmt->execute($executeParams);
+    
+    $countResult = $countStmt->fetch(PDO::FETCH_ASSOC);
+    $totalRecords = $countResult ? (int)$countResult['total'] : 0;
+
+    // --- 4. Get Data ---
+    $sql = "SELECT id, source_path, target_url, status_code, status, created_at 
+            FROM redirects 
+            {$whereSQL}
+            ORDER BY created_at DESC 
+            LIMIT :limit OFFSET :offset";
+            
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare failed: ' . $errorInfo[2]);
+    }
+
+    // Bind parameters explicitly to preserve integer typing for LIMIT and OFFSET
+    foreach ($executeParams as $key => $val) {
+        $stmt->bindValue($key, $val);
+    }
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    
+    $stmt->execute();
+    $redirects = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // --- 5. Get Status Counts (for Tabs) ---
+    $counts = ['all' => 0, 'active' => 0, 'inactive' => 0, 'trash' => 0];
+    
+    // Apply the action_type filter to the stats query as well so tab counts are accurate
+    $statsWhere = "";
+    $statsParams = [];
+    if ($actionTypeFilter !== 'all' && $actionTypeFilter !== '') {
+        $statsWhere = "WHERE status_code = :status_code";
+        $statsParams[':status_code'] = (int)$actionTypeFilter;
+    }
+    
+    $statsSql = "SELECT status, COUNT(id) as count FROM redirects {$statsWhere} GROUP BY status";
+    $statsStmt = $conn->prepare($statsSql);
+    $statsStmt->execute($statsParams);
+    
+    while ($row = $statsStmt->fetch(PDO::FETCH_ASSOC)) {
+        $s = $row['status'];
+        if (isset($counts[$s])) {
+            $counts[$s] = (int)$row['count'];
+        }
+        if ($s !== 'trash') {
+            $counts['all'] += (int)$row['count'];
+        }
+    }
+
+    // --- 6. Send Response ---
+    $responseData = [
+        'redirects' => $redirects,
+        'counts' => $counts,
+        'pagination' => [
+            'currentPage' => $page,
+            'totalPages' => ceil($totalRecords / $limit) ?: 1,
+            'totalRecords' => $totalRecords
+        ]
+    ];
+    
+    sendResponse(true, $responseData, 'Redirects fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_redirects.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

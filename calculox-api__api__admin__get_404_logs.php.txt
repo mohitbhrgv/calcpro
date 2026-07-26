@@ -1,0 +1,69 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // 1. Pagination Params
+    $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+    $limit = isset($_GET['limit']) ? max(1, (int)$_GET['limit']) : 25;
+    $offset = ($page - 1) * $limit;
+    $search = isset($_GET['search']) ? trim($_GET['search']) : '';
+
+    // 2. Build Query
+    $whereSQL = "1=1";
+    $executeParams = [];
+
+    if (!empty($search)) {
+        $whereSQL .= " AND uri LIKE :search";
+        $executeParams[':search'] = "%{$search}%";
+    }
+
+    // 3. Get Total Count
+    $countSql = "SELECT COUNT(id) as total FROM monitor_404_logs WHERE {$whereSQL}";
+    $stmtCount = $conn->prepare($countSql);
+    $stmtCount->execute($executeParams);
+    
+    $totalResult = $stmtCount->fetch(PDO::FETCH_ASSOC);
+    $totalRecords = $totalResult ? (int)$totalResult['total'] : 0;
+
+    // 4. Fetch Logs (Removed ip_address for GDPR compliance)
+    $sql = "SELECT id, uri, hits, updated_at 
+            FROM monitor_404_logs 
+            WHERE {$whereSQL} 
+            ORDER BY updated_at DESC 
+            LIMIT :limit OFFSET :offset";
+
+    $stmt = $conn->prepare($sql);
+    
+    // Strict typing for LIMIT/OFFSET is mandatory in PDO
+    if (!empty($search)) {
+        $stmt->bindValue(':search', $executeParams[':search'], PDO::PARAM_STR);
+    }
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    
+    $stmt->execute();
+    $logs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // 5. Response
+    sendResponse(true, [
+        'logs' => $logs,
+        'pagination' => [
+            'currentPage' => $page,
+            'totalPages' => ceil($totalRecords / $limit) ?: 1,
+            'totalRecords' => $totalRecords
+        ]
+    ], 'Logs fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_404_logs.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

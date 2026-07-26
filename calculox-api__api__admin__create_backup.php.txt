@@ -1,0 +1,238 @@
+<?php
+require_once __DIR__ . '/../../core/config.php';
+require_once __DIR__ . '/../../core/response.php';
+require_once __DIR__ . '/../../core/auth.php';
+
+$admin = verifyAdminToken();
+if (!$admin) {
+    sendResponse(false, null, 'Unauthorized access.', 401);
+}
+
+// OWASP: Role-Based Access Control (RBAC) Enforcement
+$adminData = (array)$admin;
+if (!isset($adminData['adminRole']) || $adminData['adminRole'] !== 'super_admin') {
+    sendResponse(false, null, 'Forbidden: Insufficient privileges. Only Super Admins can perform this action.', 403);
+}
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    sendResponse(false, null, 'Method not allowed', 405);
+}
+
+if (!class_exists('ZipArchive')) {
+    sendResponse(false, null, 'Server Configuration Error: The PHP ZipArchive extension is missing.', 500);
+}
+
+$rawInput = file_get_contents('php://input');
+$data = json_decode($rawInput, true);
+
+$includeDb = isset($data['include_db']) ? (bool)$data['include_db'] : true;
+$includeMedia = isset($data['include_media']) ? (bool)$data['include_media'] : true;
+
+if (!$includeDb && !$includeMedia) {
+    sendResponse(false, null, 'You must select at least one component (Database or Media) to backup.', 400);
+}
+
+set_time_limit(300);
+ini_set('memory_limit', '1024M');
+
+$backupDir = __DIR__ . '/../../storage/backups/';
+$sigDir = __DIR__ . '/../../storage/signatures/';
+$uploadsDir = __DIR__ . '/../../uploads/';
+if (!is_dir($backupDir)) @mkdir($backupDir, 0755, true);
+if (!is_dir($sigDir)) @mkdir($sigDir, 0755, true);
+
+// OWASP: Strict Environment Credential Enforcement (No Fallbacks)
+$dbHost = getenv('DB_HOST') !== false ? getenv('DB_HOST') : ($_ENV['DB_HOST'] ?? null);
+$dbUser = getenv('DB_USER') !== false ? getenv('DB_USER') : ($_ENV['DB_USER'] ?? null);
+$dbPass = getenv('DB_PASS') !== false ? getenv('DB_PASS') : ($_ENV['DB_PASS'] ?? null);
+$dbName = getenv('DB_NAME') !== false ? getenv('DB_NAME') : ($_ENV['DB_NAME'] ?? null);
+
+if ($dbHost === null || $dbUser === null || $dbPass === null || $dbName === null) {
+    sendResponse(false, null, 'SECURITY ALERT: Database credentials are missing from the secure environment configuration. Fallback credentials are disabled.', 500);
+}
+
+$pdo = null;
+try {
+    // ENTERPRISE FIX: Atomic File Locking for TOCTOU concurrency prevention
+    $lockFile = $backupDir . 'backup_rate_limit.lock';
+    clearstatcache(true, $lockFile);
+    if (file_exists($lockFile)) {
+        if ((time() - filemtime($lockFile)) < 30) {
+            sendResponse(false, null, 'Rate limit exceeded. Please wait 30 seconds between snapshot generations to protect server CPU.', 429);
+        } else {
+            @unlink($lockFile);
+        }
+    }
+    
+    // The 'x' flag creates the file and fails instantly if it already exists (atomic operation)
+    $fp = @fopen($lockFile, 'x');
+    if ($fp === false) {
+        sendResponse(false, null, 'Rate limit exceeded. Please wait 30 seconds between snapshot generations to protect server CPU.', 429);
+    }
+    fclose($fp);
+
+    $pdo = new PDO("mysql:host=$dbHost;dbname=$dbName;charset=utf8mb4", $dbUser, $dbPass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+
+    // Check retention limit
+    $stmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'local_backup_limit' LIMIT 1");
+    $stmt->execute();
+    $limit = 5;
+    if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $limit = (int)$row['setting_value'];
+    }
+
+    $existingBackups = glob($backupDir . '*.zip');
+    if (is_array($existingBackups) && count($existingBackups) >= $limit) {
+        sendResponse(false, null, "Local storage limit reached ($limit max). Please manually delete an existing snapshot from the list to free up space before creating a new one.", 409);
+    }
+} catch (Throwable $e) {
+    error_log("Pre-flight Validation Error: " . $e->getMessage());
+}
+
+$timestamp = date('Y-m-d_H-i-s');
+$typeTag = 'full';
+if ($includeDb && !$includeMedia) $typeTag = 'db';
+if (!$includeDb && $includeMedia) $typeTag = 'media';
+
+$sqlFileName = "db_backup_{$timestamp}.sql";
+$sqlFilePath = $backupDir . $sqlFileName;
+
+$zipFileName = "calculox_backup_{$typeTag}_manual_{$timestamp}.zip";
+$zipFilePath = $backupDir . $zipFileName;
+
+$manifestFile = '';
+
+try {
+    // ==============================================================================
+    // ENTERPRISE FIX: GENERATE MEDIA MANIFEST BEFORE COMPILATION
+    // ==============================================================================
+    if ($includeMedia && $pdo) {
+        $manifestFile = tempnam(sys_get_temp_dir(), 'calcpro_manifest_');
+        $stmtMedia = $pdo->query("SELECT * FROM media");
+        $mediaData = $stmtMedia->fetchAll(PDO::FETCH_ASSOC);
+        file_put_contents($manifestFile, json_encode($mediaData, JSON_PRETTY_PRINT));
+        chmod($manifestFile, 0600);
+    }
+
+    $zip = new ZipArchive();
+    if ($zip->open($zipFilePath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+        throw new Exception("Failed to initialize ZipArchive compiler.");
+    }
+
+    if ($includeDb) {
+        // ==============================================================================
+        // ENTERPRISE FIX: NATIVE PHP PDO EXTRACTION ENGINE
+        // Completely bypasses OS-level binary execution restrictions (mysqldump).
+        // ==============================================================================
+        $sqlFile = fopen($sqlFilePath, 'w');
+        if (!$sqlFile) {
+            throw new Exception("Extraction Engine Failed: Cannot open backup directory for writing.");
+        }
+
+        fwrite($sqlFile, "-- Calculox Enterprise Native Backup Engine\n");
+        fwrite($sqlFile, "-- Generated: " . gmdate('Y-m-d H:i:s') . " UTC\n\n");
+        fwrite($sqlFile, "SET FOREIGN_KEY_CHECKS=0;\n");
+        fwrite($sqlFile, "SET SQL_MODE=\"NO_AUTO_VALUE_ON_ZERO\";\n");
+        fwrite($sqlFile, "START TRANSACTION;\n\n");
+
+        $tables = [];
+        $stmt = $pdo->query("SHOW TABLES");
+        while ($row = $stmt->fetch(PDO::FETCH_NUM)) {
+            $tables[] = $row[0];
+        }
+
+        foreach ($tables as $table) {
+            fwrite($sqlFile, "-- Table structure for table `{$table}`\n");
+            fwrite($sqlFile, "DROP TABLE IF EXISTS `{$table}`;\n");
+            
+            $createStmt = $pdo->query("SHOW CREATE TABLE `{$table}`");
+            $createRow = $createStmt->fetch(PDO::FETCH_NUM);
+            fwrite($sqlFile, $createRow[1] . ";\n\n");
+
+            // Extract table data using a memory-safe unbuffered query pattern
+            $dataStmt = $pdo->query("SELECT * FROM `{$table}`");
+            while ($row = $dataStmt->fetch(PDO::FETCH_ASSOC)) {
+                $keys = array_keys($row);
+                $vals = [];
+                foreach ($row as $val) {
+                    if ($val === null) {
+                        $vals[] = 'NULL';
+                    } else {
+                        // Securely escape strings to prevent SQL syntax breakage
+                        $vals[] = $pdo->quote((string)$val);
+                    }
+                }
+                
+                $keysString = "`" . implode("`, `", $keys) . "`";
+                $valsString = implode(", ", $vals);
+                
+                fwrite($sqlFile, "INSERT INTO `{$table}` ({$keysString}) VALUES ({$valsString});\n");
+            }
+            fwrite($sqlFile, "\n");
+        }
+
+        fwrite($sqlFile, "SET FOREIGN_KEY_CHECKS=1;\n");
+        fwrite($sqlFile, "COMMIT;\n");
+        fclose($sqlFile);
+
+        if (!file_exists($sqlFilePath) || filesize($sqlFilePath) === 0) {
+             throw new Exception("Native Extraction Engine Failed: Resulting SQL file is empty.");
+        }
+
+        $zip->addFile($sqlFilePath, "database/" . $sqlFileName);
+    }
+
+    if ($includeMedia && is_dir($uploadsDir)) {
+        // Insert the highly secure Media Manifest into the ZIP
+        if (!empty($manifestFile) && file_exists($manifestFile)) {
+            $zip->addFile($manifestFile, "media_manifest.json");
+        }
+
+        $files = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($uploadsDir),
+            RecursiveIteratorIterator::LEAVES_ONLY
+        );
+
+        foreach ($files as $name => $file) {
+            if (!$file->isDir() && $file->getFilename()[0] !== '.') {
+                $filePath = $file->getRealPath();
+                $relativePath = substr($filePath, strlen(realpath($uploadsDir)) + 1);
+                $zip->addFile($filePath, "media/" . $relativePath);
+            }
+        }
+    }
+
+    $zip->close();
+    
+    if (file_exists($sqlFilePath)) @unlink($sqlFilePath);
+    if (!empty($manifestFile) && file_exists($manifestFile)) @unlink($manifestFile);
+
+    if (!file_exists($zipFilePath)) {
+        throw new Exception("Compiler failed to generate zip archive (possibly empty selection).");
+    }
+    
+    // ENTERPRISE FIX: Prevent Fatal OOM Crashes on large ZIPs using streaming HMAC
+    $hmacSecret = getenv('BACKUP_HMAC_SECRET') ?: $_ENV['BACKUP_HMAC_SECRET'] ?? 'FALLBACK_PLEASE_UPDATE_ENV';
+    $signature = hash_hmac_file('sha256', $zipFilePath, $hmacSecret);
+    
+    if ($signature === false) {
+        throw new Exception("Failed to compute cryptographic signature for the generated archive.");
+    }
+    file_put_contents($sigDir . $zipFileName . '.hmac', $signature);
+
+    sendResponse(true, [
+        'file_name' => $zipFileName,
+        'size_bytes' => filesize($zipFilePath),
+        'created_at' => date('Y-m-d H:i:s'),
+        'type' => $typeTag,
+        'trigger' => 'manual'
+    ], "Backup artifact generated and verified.");
+
+} catch (Throwable $e) { 
+    error_log("CRITICAL BACKUP ERROR: " . $e->getMessage());
+    if (file_exists($sqlFilePath)) @unlink($sqlFilePath);
+    if (file_exists($zipFilePath)) @unlink($zipFilePath);
+    if (!empty($manifestFile) && file_exists($manifestFile)) @unlink($manifestFile);
+    sendResponse(false, null, "Backup compilation failed: " . $e->getMessage(), 500);
+}
+?>

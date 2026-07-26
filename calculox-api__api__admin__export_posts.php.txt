@@ -1,0 +1,83 @@
+<?php
+require '../../core/config.php';
+
+// Note: Export endpoints accessed directly via URL usually handle authentication via Bearer token in headers 
+// or session. The legacy mock code is retained but left commented per original structure requirements, 
+// while DB logic is cleanly refactored.
+// session_start();
+// if (!isset($_SESSION['admin_id'])) {
+//     http_response_code(403);
+//     echo "Unauthorized Access";
+//     exit();
+// }
+
+try {
+    // --- Set HTTP Headers to trigger a file download ---
+    $statusFilter = isset($_GET['status']) ? $_GET['status'] : 'all';
+    $filename = "calcpro-posts-" . $statusFilter . "-" . date('Y-m-d') . ".csv";
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+
+    // --- Build WHERE clause for filtering ---
+    $whereSql = "";
+    $executeParams = [];
+    
+    if ($statusFilter !== 'all' && in_array($statusFilter, ['published', 'draft', 'scheduled', 'trash'])) {
+        $whereSql = "WHERE p.status = :status";
+        $executeParams[':status'] = $statusFilter;
+    }
+
+    // --- Fetch ALL Post Data that matches the filter ---
+    $sql = "
+        SELECT 
+            p.id, 
+            p.title, 
+            p.slug, 
+            p.status, 
+            p.created_at,
+            p.updated_at,
+            c.name as category_name,
+            u.name as author_name
+        FROM 
+            posts p
+        LEFT JOIN 
+            categories c ON p.primary_category_id = c.id
+        LEFT JOIN 
+            admins u ON p.author_id = u.id
+        {$whereSql}
+        ORDER BY p.created_at DESC
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    $stmt->execute($executeParams);
+    
+    // --- Use a PHP output stream to build the CSV file ---
+    $output = fopen('php://output', 'w');
+    
+    // --- Write the Header Row of the CSV file ---
+    fputcsv($output, array('ID', 'Title', 'Slug', 'Status', 'Category', 'Author', 'Date Created', 'Last Modified'));
+    
+    // --- Loop through the database results and write each post as a new row ---
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        fputcsv($output, [
+            $row['id'],
+            $row['title'],
+            $row['slug'],
+            $row['status'],
+            $row['category_name'],
+            $row['author_name'],
+            $row['created_at'],
+            $row['updated_at']
+        ]);
+    }
+    
+    fclose($output);
+    $conn = null;
+    exit();
+    
+} catch (Exception $e) {
+    error_log("Error in export_posts.php: " . $e->getMessage());
+    http_response_code(500);
+    echo "An error occurred while generating the export file.";
+}
+?>

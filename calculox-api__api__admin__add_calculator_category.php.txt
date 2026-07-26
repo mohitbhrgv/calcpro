@@ -1,0 +1,97 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- Security Check ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->name) || empty(trim($data->name))) {
+        sendResponse(false, null, 'Category name is required.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->slug) || empty(trim($data->slug))) {
+        sendResponse(false, null, 'Category slug is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize and Prepare Data ---
+    $name = trim($data->name);
+    $slug = trim($data->slug);
+    $description = isset($data->description) ? trim($data->description) : null;
+    $meta_title = isset($data->meta_title) ? trim($data->meta_title) : null;
+    $meta_description = isset($data->meta_description) ? trim($data->meta_description) : null;
+    
+    // --- IMAGE FIELD ---
+    $featured_image_id = (isset($data->featured_image_id) && $data->featured_image_id !== '') ? (int)$data->featured_image_id : null;
+    
+    // --- 4. Check for Duplicates ---
+    $sql_check = "SELECT id FROM calculator_categories WHERE name = :name OR slug = :slug";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->execute([':name' => $name, ':slug' => $slug]);
+    
+    if ($stmt_check->fetch(PDO::FETCH_ASSOC)) {
+        sendResponse(false, null, 'A category with this name or slug already exists.', 409, 'DUPLICATE_ENTRY');
+    }
+    
+    // --- 5. Insert the New Category ---
+    $sql_insert = "INSERT INTO calculator_categories (name, slug, description, meta_title, meta_description, featured_image_id) VALUES (:name, :slug, :description, :meta_title, :meta_description, :featured_image_id)";
+    $stmt_insert = $conn->prepare($sql_insert);
+    
+    if ($stmt_insert === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare failed: ' . $errorInfo[2]);
+    }
+
+    if ($stmt_insert->execute([
+        ':name' => $name, 
+        ':slug' => $slug, 
+        ':description' => $description, 
+        ':meta_title' => $meta_title, 
+        ':meta_description' => $meta_description, 
+        ':featured_image_id' => $featured_image_id
+    ])) {
+        $new_id = $conn->lastInsertId();
+
+        // Fetch back to return to frontend (resolving the media relation)
+        $sql_fetch = "
+            SELECT c.id, c.name, c.slug, c.description, c.meta_title, c.meta_description, c.featured_image_id, m.upload_path AS featured_image_url, 0 as calculator_count
+            FROM calculator_categories c
+            LEFT JOIN media m ON c.featured_image_id = m.id
+            WHERE c.id = :id
+        ";
+        $stmt_fetch = $conn->prepare($sql_fetch);
+        $stmt_fetch->execute([':id' => $new_id]);
+        $new_cat = $stmt_fetch->fetch(PDO::FETCH_ASSOC);
+        
+        // Get base URL for media paths (Strict Environment Extraction)
+        $api_base_url = $_ENV['API_PUBLIC_URL'] ?? '';
+
+        if ($new_cat) {
+            $new_cat['id'] = (int)$new_cat['id'];
+            $new_cat['featured_image_id'] = $new_cat['featured_image_id'] ? (int)$new_cat['featured_image_id'] : null;
+            
+            // Format URL
+            if ($new_cat['featured_image_url']) {
+                $new_cat['featured_image_url'] = rtrim($api_base_url, '/') . '/' . ltrim($new_cat['featured_image_url'], '/');
+            }
+        }
+
+        sendResponse(true, $new_cat, 'Category created successfully!', 201);
+    } else {
+        $errorInfo = $stmt_insert->errorInfo();
+        throw new Exception("Database insert failed: " . $errorInfo[2]);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in add_calculator_category.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

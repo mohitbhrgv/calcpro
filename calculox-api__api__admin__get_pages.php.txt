@@ -1,0 +1,96 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Determine Status Filter ---
+    $statusFilter = isset($_GET['status']) ? $_GET['status'] : 'all';
+
+    // --- 2. Build SQL Query Dynamically ---
+    $whereClause = "";
+    $executeParams = [];
+
+    if ($statusFilter === 'trash') {
+        $whereClause = "WHERE status = :status";
+        $executeParams[':status'] = 'trash';
+    } elseif (in_array($statusFilter, ['published', 'draft'])) {
+        $whereClause = "WHERE status = :status";
+        $executeParams[':status'] = $statusFilter;
+    } else { // 'all' and any other case
+        $whereClause = "WHERE status != :status";
+        $executeParams[':status'] = 'trash';
+    }
+
+    // --- 3. The SQL query ---
+    // Updated to include a subquery for active redirects.
+    // We assume pages exist at the root level (e.g., source_path = 'about-us').
+    $sql = "
+        SELECT 
+            p.id, 
+            p.title, 
+            p.slug, 
+            p.status, 
+            p.updated_at,
+            (
+                SELECT target_url 
+                FROM redirects 
+                WHERE source_path = p.slug 
+                AND status = 'active' 
+                LIMIT 1
+            ) as active_redirect
+        FROM pages p 
+        {$whereClause} 
+        ORDER BY p.updated_at DESC
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare statement failed: ' . $errorInfo[2]);
+    }
+
+    $stmt->execute($executeParams);
+    
+    // --- 4. Fetch All Results ---
+    $pages = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // --- 5. Get Status Counts for the UI Tabs ---
+    $counts = ['all' => 0, 'published' => 0, 'draft' => 0, 'trash' => 0];
+    $countSql = "SELECT status, COUNT(id) as count FROM pages GROUP BY status";
+    $countStmt = $conn->query($countSql);
+    
+    $totalNonTrash = 0;
+    
+    if ($countStmt) {
+        while($row = $countStmt->fetch(PDO::FETCH_ASSOC)) {
+            if (isset($counts[$row['status']])) {
+                $counts[$row['status']] = (int)$row['count'];
+            }
+            if ($row['status'] !== 'trash') {
+                $totalNonTrash += (int)$row['count'];
+            }
+        }
+    }
+    $counts['all'] = $totalNonTrash;
+    
+    // --- 6. Assemble Final Response ---
+    $responseData = [
+        'pages' => $pages,
+        'counts' => $counts
+    ];
+    
+    sendResponse(true, $responseData, 'Pages fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_pages.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching pages.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

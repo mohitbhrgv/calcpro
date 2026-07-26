@@ -1,0 +1,235 @@
+<?php
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+// Guard: Check for GD before anything else — gives a clean JSON error instead of a fatal crash
+if (!function_exists('imagecreatetruecolor')) {
+    header('Content-Type: application/json');
+    echo json_encode([
+        'success'   => false,
+        'message'   => 'Critical: GD Library is missing on this server.',
+        'errorCode' => 'SYS_ERR_GD'
+    ]);
+    exit;
+}
+
+header('Content-Type: application/json');
+
+if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+    sendResponse(false, null, 'Method Not Allowed', 405);
+}
+
+try {
+
+    // -------------------------------------------------------------------------
+    // STEP 1: Generate the math challenge
+    // -------------------------------------------------------------------------
+    $numberWords = [
+        0 => 'Zero', 1 => 'One',   2 => 'Two',   3 => 'Three', 4 => 'Four',
+        5 => 'Five', 6 => 'Six',   7 => 'Seven', 8 => 'Eight', 9 => 'Nine', 10 => 'Ten'
+    ];
+    $operators       = ['+', '-', '*'];
+    $operatorSymbols = ['+' => 'plus', '-' => 'minus', '*' => 'times'];
+
+    $operator = $operators[array_rand($operators)];
+    $num1     = random_int(1, 10);
+    $num2     = random_int(1, 10);
+    
+    // Subtraction must never produce a negative answer
+    if ($operator === '-' && $num1 < $num2) {
+        [$num1, $num2] = [$num2, $num1];
+    }
+
+    $answer = 0;
+    switch ($operator) {
+        case '+': $answer = $num1 + $num2; break;
+        case '-': $answer = $num1 - $num2; break;
+        case '*': $answer = $num1 * $num2; break;
+    }
+
+    // Randomly show numbers as digits or words — increases OCR difficulty
+    $display1        = random_int(0, 1) === 1 ? $numberWords[$num1] : (string)$num1;
+    $display2        = random_int(0, 1) === 1 ? $numberWords[$num2] : (string)$num2;
+    $displayOperator = random_int(0, 1) === 1 ? $operatorSymbols[$operator] : $operator;
+    $challengeText   = "$display1 $displayOperator $display2";
+
+    // -------------------------------------------------------------------------
+    // STEP 2: Define the FIXED output canvas — always 340×80px, no exceptions.
+    //
+    // WHY FIXED: The React <img> tag sizes itself from the PNG aspect ratio.
+    // If the canvas changes size per-challenge, the UI box jumps on every refresh.
+    // Solution: always produce 340×80px and fit the text inside it.
+    // -------------------------------------------------------------------------
+    $finalW = 340;
+    $finalH = 80;
+
+    // -------------------------------------------------------------------------
+    // STEP 3: Render text on a temporary canvas sized to the text, then
+    //         scale it down to fit inside the fixed canvas with padding.
+    //
+    // This avoids both clipping (text too wide) and distortion (text squashed).
+    // -------------------------------------------------------------------------
+    $font       = 5; // PHP's largest built-in bitmap font
+    $charWidth  = imagefontwidth($font); // 9px per character
+    $charHeight = imagefontheight($font); // 15px per character
+
+    // Measure the actual text pixel width for this specific challenge
+    $rawTextW = strlen($challengeText) * $charWidth; // e.g. "Eight times Eight" = 153px
+
+    // Horizontal and vertical padding inside the final canvas (px)
+    $hPad = 18;
+    $vPad = 16;
+
+    // Available drawing area inside the final canvas after padding
+    $drawW = $finalW - ($hPad * 2); // 304px
+    $drawH = $finalH - ($vPad * 2); // 48px
+
+    // Render on a tiny canvas at native font size, then scale to fit the draw area.
+    // This means every challenge — short or long — fills the same space proportionally.
+    $tinyImg = imagecreatetruecolor($rawTextW, $charHeight);
+    $white   = imagecolorallocate($tinyImg, 255, 255, 255);
+    $black   = imagecolorallocate($tinyImg, 0, 0, 0);
+    imagefill($tinyImg, 0, 0, $white);
+    imagestring($tinyImg, $font, 0, 0, $challengeText, $black);
+
+    // Scale the text into the draw area — maintains aspect ratio, fits width exactly
+    $scaledImg = imagecreatetruecolor($drawW, $drawH);
+    $scaledWhite = imagecolorallocate($scaledImg, 255, 255, 255);
+    imagefill($scaledImg, 0, 0, $scaledWhite);
+    imagecopyresized($scaledImg, $tinyImg, 0, 0, 0, 0, $drawW, $drawH, $rawTextW, $charHeight);
+    imagedestroy($tinyImg); // Free immediately — no longer needed
+
+    // -------------------------------------------------------------------------
+    // STEP 4: Build the final 340×80 canvas with the dark background
+    // -------------------------------------------------------------------------
+    $finalImg = imagecreatetruecolor($finalW, $finalH);
+    $bgColor  = imagecolorallocate($finalImg, 15, 23, 42); // Deep navy — matches admin theme
+    imagefill($finalImg, 0, 0, $bgColor);
+
+    // Pre-allocate all text colour shades BEFORE the pixel loop.
+    // CRITICAL: Never call imagecolorallocate() inside a pixel loop.
+    // GD palette is capped at 256 colours — allocating inside the loop silently
+    // fails after 256 calls, causing text pixels to vanish or render incorrectly.
+    $textColors = [
+        imagecolorallocate($finalImg, 255, 255, 255), // Pure white
+        imagecolorallocate($finalImg, 224, 231, 255), // Indigo-100
+        imagecolorallocate($finalImg, 199, 210, 254), // Indigo-200
+        imagecolorallocate($finalImg, 165, 180, 252), // Indigo-300
+    ];
+    $colorCount = count($textColors) - 1;
+
+    // -------------------------------------------------------------------------
+    // STEP 5: Apply sine-wave warp and composite the text onto the final canvas
+    //
+    // We read from $scaledImg (white background, black text) and write onto
+    // $finalImg (dark background).
+    // The warp is applied during this copy pass.
+    // -------------------------------------------------------------------------
+    $amplitude = random_int(3, 6); // Horizontal wave strength — low = readable
+    $period    = random_int(28, 42); // Wave cycle width in pixels
+
+    for ($x = 0; $x < $drawW; $x++) {
+        for ($y = 0; $y < $drawH; $y++) {
+            $srcX = (int)($x + ($amplitude * sin($y / $period)));
+            // Clamp to scaled canvas bounds
+            if ($srcX < 0 || $srcX >= $drawW) continue;
+
+            $colorIdx = imagecolorat($scaledImg, $srcX, $y);
+            $rgba     = imagecolorsforindex($scaledImg, $colorIdx);
+            
+            // Dark pixels = text pixels from the white source canvas
+            if ($rgba['red'] < 128) {
+                imagesetpixel(
+                    $finalImg,
+                    $x + $hPad,  // offset into the padded position on final canvas
+                    $y + $vPad,
+                    $textColors[random_int(0, $colorCount)]
+                );
+            }
+        }
+    }
+    imagedestroy($scaledImg); // Free immediately — no longer needed
+
+    // -------------------------------------------------------------------------
+    // STEP 6: Add interference lines across the full final canvas
+    // -------------------------------------------------------------------------
+    for ($i = 0; $i < 3; $i++) {
+        $lineColor = imagecolorallocate($finalImg, 99, 102, 241); // Indigo-500
+        imageline(
+            $finalImg,
+            0,       random_int(8, $finalH - 8),
+            $finalW, random_int(8, $finalH - 8),
+            $lineColor
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 7: Add noise dots — use $finalW - 1 and $finalH - 1 (not $finalW/$finalH)
+    //         to stay strictly within canvas bounds
+    // -------------------------------------------------------------------------
+    $dotColor = imagecolorallocate($finalImg, 129, 140, 248); // Indigo-400
+    for ($i = 0; $i < 150; $i++) {
+        imagesetpixel(
+            $finalImg,
+            random_int(0, $finalW - 1),
+            random_int(0, $finalH - 1),
+            $dotColor
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 8: Capture PNG output and clean up all GD resources
+    // -------------------------------------------------------------------------
+    ob_start();
+    imagepng($finalImg);
+    $pngData = ob_get_clean();
+    imagedestroy($finalImg);
+
+    $base64Png = 'data:image/png;base64,' . base64_encode($pngData);
+
+    // -------------------------------------------------------------------------
+    // STEP 9: Generate the stateless HMAC-signed security token
+    // -------------------------------------------------------------------------
+    $expiresAt = time() + 300; // 5-minute validity window
+
+    $payloadData = json_encode([
+        'a'  => (int)$answer,
+        'e'  => $expiresAt,
+        'ip' => getSecureRealIp() // ENTERPRISE FIX: Use Proxy-Aware real IP
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    
+    if ($payloadData === false) {
+        throw new Exception('Failed to encode CAPTCHA payload.');
+    }
+
+    // Fail-closed: refuse to run without a valid 32-byte AES key
+    $secretKey  = $_ENV['APP_ENCRYPTION_KEY'] ?? '';
+    $decodedKey = base64_decode($secretKey, true);
+    if (empty($secretKey) || $decodedKey === false || strlen($decodedKey) !== 32) {
+        error_log("CRITICAL SECURITY ERROR: APP_ENCRYPTION_KEY is missing or invalid.");
+        throw new Exception('Internal Security Configuration Error.');
+    }
+
+    $signature = hash_hmac('sha256', $payloadData, $secretKey);
+    
+    $tokenEnvelope = json_encode([
+        'p' => $payloadData, // Canonical JSON string the HMAC was computed over
+        's' => $signature    // 64-char lowercase hex — safe in JSON, no escaping needed
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    
+    if ($tokenEnvelope === false) {
+        throw new Exception('Failed to encode CAPTCHA token envelope.');
+    }
+
+    // URL-safe base64 — prevents +/= characters from mangling in HTTP transport
+    $captchaToken = rtrim(strtr(base64_encode($tokenEnvelope), '+/', '-_'), '=');
+    
+    sendResponse(true, [
+        'challenge'     => $base64Png,
+        'captcha_token' => $captchaToken
+    ], 'Captcha generated successfully', 200);
+
+} catch (Exception $e) {
+    error_log("Captcha Generation Error: " . $e->getMessage());
+    sendResponse(false, null, 'Failed to generate security challenge. Please contact administrator.', 500, 'CAPTCHA_GEN_FAILED');
+}

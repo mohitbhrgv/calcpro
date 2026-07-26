@@ -1,0 +1,31 @@
+<?php
+require '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+// The script will halt here if the token is invalid or missing.
+$admin_data = verifyAdminToken();
+
+try {
+    // These queries efficiently fetch simple scalar counts using PDO fetchColumn()
+    $posts_result = $conn->query("SELECT COUNT(id) FROM posts WHERE status != 'trash'");
+    $total_posts = $posts_result ? $posts_result->fetchColumn() : 0;
+    
+    $total_categories = $conn->query("SELECT COUNT(id) FROM categories")->fetchColumn();
+
+    $stats = [
+        'posts' => ['count' => (int)$total_posts, 'change' => 3.1], // Mock change
+        'categories' => ['count' => (int)$total_categories, 'change' => 0], // Mock change
+        'traffic' => ['count' => 45621, 'change' => 12.4] // Mock data
+    ];
+
+    sendResponse(true, ['stats' => $stats], 'Dashboard stats fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in dashboard_stats.php: " . $e->getMessage());
+    sendResponse(false, null, 'Failed to fetch dashboard statistics.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

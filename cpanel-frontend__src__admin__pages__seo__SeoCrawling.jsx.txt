@@ -1,0 +1,216 @@
+// (New) cPanel_Frontend/src/admin/pages/seo/SeoCrawling.jsx
+
+import React, { useState, useEffect, useMemo } from "react";
+import toast from "react-hot-toast";
+import SafeIcon from "../../../common/SafeIcon";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import { authenticatedFetch } from "../../utils/apiService";
+import Modal from "../../components/common/Modal";
+import * as FiIcons from "react-icons/fi";
+import SitemapRobotsTab from "../../components/seo/tabs/SitemapRobotsTab";
+
+const { FiSave, FiAlertTriangle, FiMap } = FiIcons;
+
+const SeoCrawling = () => {
+  const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // Settings State
+  const [settings, setSettings] = useState({});
+  const [initialSettings, setInitialSettings] = useState({});
+
+  // Confirmation Modal State
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [confirmInput, setConfirmInput] = useState("");
+
+  // --- 1. Load Data ---
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const settingsResult = await authenticatedFetch("/api/admin/get_settings.php");
+        if (settingsResult.success) {
+            const defaults = {
+                seo_global_search_visibility: false,
+                seo_sitemap_inc_posts: true,
+                seo_sitemap_inc_pages: true,
+                seo_sitemap_inc_calcs: true,
+                seo_sitemap_inc_blog_cats: true,
+                seo_sitemap_inc_calc_cats: true,
+                seo_sitemap_pagination_limit: 1000,
+                seo_robots_custom_enable: false,
+                seo_robots_custom_content: ""
+            };
+            const mergedSettings = { ...defaults, ...settingsResult.data };
+            setSettings(mergedSettings);
+            setInitialSettings(mergedSettings);
+        }
+      } catch (e) {
+        toast.error("Failed to load settings.");
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadData();
+  }, []);
+
+  // --- 2. Change Detection ---
+  const hasChanges = useMemo(() => {
+    if (!settings || !initialSettings) return false;
+    const trackingKeys = [
+        'seo_global_search_visibility',
+        'seo_sitemap_inc_posts', 'seo_sitemap_inc_pages', 'seo_sitemap_inc_calcs',
+        'seo_sitemap_inc_blog_cats', 'seo_sitemap_inc_calc_cats',
+        'seo_sitemap_pagination_limit', 'seo_robots_custom_enable', 'seo_robots_custom_content'
+    ];
+    
+    for (let key of trackingKeys) {
+        if (JSON.stringify(settings[key]) !== JSON.stringify(initialSettings[key])) {
+            return true;
+        }
+    }
+    return false;
+  }, [settings, initialSettings]);
+
+  // Handle Custom Change
+  const handleCustomChange = (name, value) => {
+    setSettings(prev => ({ ...prev, [name]: value }));
+  };
+
+  // --- 3. Save Logic with Confirmation ---
+  const handleSaveClick = () => {
+      if (!hasChanges) return;
+      setConfirmInput("");
+      setShowConfirmModal(true);
+  };
+
+  const executeSave = async () => {
+    setShowConfirmModal(false);
+    setIsSubmitting(true);
+    const toastId = toast.loading("Saving configuration...");
+    const minDelay = new Promise(resolve => setTimeout(resolve, 1000));
+    
+    try {
+      const apiCall = authenticatedFetch("/api/admin/update_settings.php", {
+        method: "POST",
+        body: JSON.stringify(settings),
+      });
+
+      const [result] = await Promise.all([apiCall, minDelay]);
+      
+      if (result.success) {
+        toast.success("Crawling Settings saved successfully!", { id: toastId });
+        setInitialSettings(settings); // Sync initial with current
+      } else {
+        toast.error("Failed to save settings.", { id: toastId });
+      }
+    } catch (e) {
+      toast.error("Connection failed.", { id: toastId });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (loading) return <LoadingSpinner size="xl" className="h-64" />;
+
+  return (
+    <div className="flex flex-col bg-gray-100 dark:bg-gray-900 font-sans text-gray-900 dark:text-gray-100 min-h-full">
+       
+       <Modal
+          isOpen={showConfirmModal}
+          onClose={() => setShowConfirmModal(false)}
+          title="Confirm Crawling Changes"
+          type="warning"
+          size="md"
+          disableAnimation={true}
+        >
+          <div className="space-y-4">
+              <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-lg border border-amber-200 dark:border-amber-800 flex items-start gap-3">
+                  <SafeIcon icon={FiAlertTriangle} className="w-6 h-6 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                      <h4 className="text-sm font-bold text-amber-900 dark:text-amber-100">Warning: High SEO Impact</h4>
+                      <p className="text-xs text-amber-800 dark:text-amber-200/80 mt-1">
+                          Modifying global indexing and crawling rules can immediately affect your visibility on Google. Please ensure you intend to make these changes.
+                      </p>
+                  </div>
+              </div>
+              <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Type <strong>CONFIRM</strong> to save changes:
+                  </label>
+                  <input
+                      type="text"
+                      value={confirmInput}
+                      onChange={(e) => setConfirmInput(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-amber-500 dark:bg-gray-700 dark:text-white"
+                      placeholder="CONFIRM"
+                  />
+              </div>
+              <div className="flex justify-end gap-3 pt-2">
+                  <button onClick={() => setShowConfirmModal(false)} className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors">
+                      Cancel
+                  </button>
+                  <button
+                      onClick={executeSave}
+                      disabled={confirmInput !== "CONFIRM"}
+                      className="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium shadow-sm"
+                  >
+                      Save Changes
+                  </button>
+              </div>
+          </div>
+        </Modal>
+      
+      {/* Header */}
+      <div className="w-full bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shrink-0 px-8 py-6">
+         <div className="flex items-center gap-3">
+            <div className="p-2 bg-indigo-100 dark:bg-indigo-800/50 rounded-lg text-indigo-600 dark:text-indigo-400">
+                <SafeIcon icon={FiMap} className="w-6 h-6" />
+            </div>
+            <div>
+                <h2 className="font-bold text-xl text-gray-900 dark:text-white">Sitemap & Crawling</h2>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Control search engine indexing, robots.txt, and sitemap generation.</p>
+            </div>
+         </div>
+      </div>
+
+      {/* Content Area */}
+      <div className="flex-1 p-4 md:p-8 overflow-y-auto">
+         <div className="max-w-5xl mx-auto">
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+                
+                <div className="p-8 space-y-1">
+                    <SitemapRobotsTab settings={settings} handleCustomChange={handleCustomChange} />
+                </div>
+                
+                {/* Footer Actions */}
+                <div className="bg-gray-50 dark:bg-gray-900/50 px-8 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end items-center rounded-b-lg sticky bottom-0 z-10">
+                    <button 
+                        onClick={handleSaveClick} 
+                        disabled={isSubmitting || !hasChanges} 
+                        className={`px-6 py-2.5 font-medium rounded shadow-sm transition-all flex items-center gap-2 ${
+                            hasChanges 
+                            ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-md transform hover:-translate-y-0.5' 
+                            : 'bg-gray-300 dark:bg-gray-700 text-gray-500 cursor-not-allowed'
+                        }`}
+                    >
+                        {isSubmitting ? (
+                            <>
+                                <LoadingSpinner size="xs" color="white" />
+                                <span>Saving...</span>
+                            </>
+                        ) : (
+                            <>
+                                <SafeIcon icon={FiSave} className="w-4 h-4" />
+                                <span>Save Changes</span>
+                            </>
+                        )}
+                    </button>
+                </div>
+            </div>
+         </div>
+      </div>
+    </div>
+  );
+};
+
+export default SeoCrawling;

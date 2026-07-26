@@ -1,0 +1,225 @@
+// cPanel_Frontend/src/admin/pages/UnlockAccount.jsx
+import React, { useEffect, useState, useRef } from "react";
+import { useParams, Link } from "react-router-dom";
+import SafeIcon from "../../common/SafeIcon";
+import { useLayout } from "../context/LayoutContext";
+import { motion, AnimatePresence } from "framer-motion";
+
+// Using IoIcons to perfectly match the Login and Reset architecture
+import * as IoIcons from "react-icons/io5";
+import * as HiIcons from "react-icons/hi";
+
+const UnlockAccount = () => {
+  const { token } = useParams();
+  const { setBackgroundClass } = useLayout();
+  
+  const [status, setStatus] = useState("verifying"); 
+  const [message, setMessage] = useState("Verifying your recovery token...");
+  const [siteName, setSiteName] = useState("Calculox");
+  const hasAttempted = useRef(false);
+
+  // Force Premium Dark Theme Background (Copied from Login.jsx DNA)
+  useEffect(() => {
+    setBackgroundClass("bg-[#020617]");
+    return () => setBackgroundClass("bg-gray-50 dark:bg-gray-900");
+  }, [setBackgroundClass]);
+
+  // Fetch Site Identity for Dynamic Branding (Copied from Login.jsx DNA)
+  useEffect(() => {
+    const fetchPublicSiteIdentity = async () => {
+      try {
+        const envUrl = import.meta.env.VITE_API_BASE_URL || '';
+        const cleanBase = envUrl.replace(/\/+$/, '');
+        const response = await fetch(`${cleanBase}/api/public/get_public_bootstrap.php`);
+        const result = await response.json();
+        if (result && result.success) {
+          const fetchedName = result.data?.settings?.siteName || result.data?.siteName || result.data?.settings?.site_name;
+          if (fetchedName) {
+            setSiteName(fetchedName);
+          }
+        }
+      } catch (error) {
+        console.error("Could not fetch public site identity.");
+      }
+    };
+    fetchPublicSiteIdentity();
+  }, []);
+
+  // Secure API Validation Logic (Unchanged)
+  useEffect(() => {
+    if (hasAttempted.current) return;
+    hasAttempted.current = true;
+
+    if (!token) {
+      setStatus("error");
+      setMessage("No recovery token found in the URL.");
+      return;
+    }
+
+    const verifyToken = async () => {
+      try {
+        // Fallback to absolute local path if VITE_API_URL isn't catching
+        const envUrl = import.meta.env.VITE_API_BASE_URL || '';
+        const cleanBase = envUrl.replace(/\/+$/, '');
+        
+        const response = await fetch(`${cleanBase}/api/admin/verify_unblock_token.php`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ token }),
+        });
+
+        // 1. Read the raw response FIRST to prevent JSON crashes
+        const rawText = await response.text();
+
+        // 2. Catch Empty Responses
+        if (!rawText || rawText.trim() === "") {
+            console.error(`[API Error] Server returned an empty response. Status: ${response.status}`);
+            setStatus("error");
+            setMessage(`Server Communication Error (${response.status}). Please verify the backend file exists.`);
+            return;
+        }
+
+        // 3. Safely parse the JSON
+        let data;
+        try {
+            data = JSON.parse(rawText);
+        } catch (parseError) {
+            console.error("[API Error] Server returned invalid JSON:", rawText);
+            setStatus("error");
+            setMessage("The server returned an unexpected format. Check the console for details.");
+            return;
+        }
+
+        // 4. Handle logical success/failure
+        if (response.ok && data.success) {
+          setStatus("success");
+          setMessage(data.message || "Your IP address has been successfully unblocked.");
+        } else {
+          setStatus("error");
+          setMessage(data.message || "The recovery link is invalid or has expired.");
+        }
+
+      } catch (error) {
+        console.error("[Network Error]:", error);
+        setStatus("error");
+        setMessage("A network error occurred while communicating with the server.");
+      }
+    };
+
+    // Artificial slight delay for smooth UX transition
+    setTimeout(verifyToken, 600); 
+  }, [token]);
+
+  // Dynamic Background Orbs (Copied from Login.jsx DNA)
+  const renderBackgroundOrbs = () => (
+    <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0 pointer-events-none">
+      <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-indigo-500/10 rounded-full blur-[120px] mix-blend-screen animate-pulse-slow"></div>
+      <div className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] bg-slate-600/10 rounded-full blur-[150px] mix-blend-screen"></div>
+      <div className="absolute top-[40%] right-[20%] w-[300px] h-[300px] bg-blue-900/10 rounded-full blur-[100px] mix-blend-screen"></div>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen p-4 relative font-inter overflow-hidden bg-[#020617]">
+      {renderBackgroundOrbs()}
+
+      <motion.div
+        initial={{ opacity: 0, y: 40 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
+        className="w-full max-w-[440px] z-10"
+      >
+        <div className="bg-[#0B1221]/80 backdrop-blur-3xl rounded-[2.5rem] shadow-[0_20px_40px_rgb(0,0,0,0.5)] border border-slate-800/60 relative overflow-hidden p-5 sm:p-7">
+          
+          <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-white/10 to-transparent"></div>
+
+          <div className="text-center mb-6 mt-1">
+            <div className="w-14 h-14 bg-gradient-to-br from-slate-800 to-[#020617] rounded-2xl mx-auto mb-4 flex items-center justify-center shadow-[0_8px_20px_rgba(0,0,0,0.4)] ring-1 ring-slate-700/60 relative group">
+                <div className="absolute inset-0 bg-blue-500/10 rounded-2xl transition-colors duration-300 group-hover:bg-blue-500/20"></div>
+                <SafeIcon icon={IoIcons.IoGridOutline} className="w-7 h-7 text-blue-400 relative z-10" />
+            </div>
+            
+            <h1 className="text-2xl font-bold text-white mb-2 font-montserrat tracking-tight">
+              {siteName}
+            </h1>
+            <p className="text-sm text-slate-400 font-medium uppercase tracking-widest">
+              Access Control
+            </p>
+          </div>
+
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={status}
+              initial={{ opacity: 0, filter: "blur(4px)", scale: 0.98 }}
+              animate={{ opacity: 1, filter: "blur(0px)", scale: 1 }}
+              exit={{ opacity: 0, filter: "blur(4px)", scale: 0.98 }}
+              transition={{ duration: 0.3 }}
+              className="text-center py-6"
+            >
+              <div className="flex flex-col items-center justify-center space-y-4">
+                
+                {status === "verifying" && (
+                  <div className="flex flex-col items-center justify-center space-y-4">
+                    <span className="w-10 h-10 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
+                    <p className="text-sm font-semibold text-slate-400">Verifying secure token...</p>
+                  </div>
+                )}
+                
+                {status === "success" && (
+                  <>
+                    <div className="w-16 h-16 bg-emerald-900/20 rounded-full flex items-center justify-center mb-2 border border-emerald-500/30 shadow-[inset_0_1px_4px_rgba(0,0,0,0.3)]">
+                      <SafeIcon icon={IoIcons.IoCheckmarkCircleOutline} className="w-8 h-8 text-emerald-400" />
+                    </div>
+                    <h2 className="text-xl font-bold text-white mb-2">Access Restored</h2>
+                    <p className="text-sm text-slate-400 max-w-[280px] mx-auto font-medium leading-relaxed">
+                      {message}
+                    </p>
+                  </>
+                )}
+                
+                {status === "error" && (
+                  <>
+                    <div className="w-16 h-16 bg-rose-900/20 rounded-full flex items-center justify-center mb-2 border border-rose-500/30 shadow-[inset_0_1px_4px_rgba(0,0,0,0.3)]">
+                      <SafeIcon icon={IoIcons.IoCloseCircle} className="w-8 h-8 text-rose-400" />
+                    </div>
+                    <h2 className="text-xl font-bold text-white mb-2">Verification Failed</h2>
+                    <p className="text-sm text-slate-400 mb-4 max-w-[280px] mx-auto font-medium leading-relaxed">
+                      {message}
+                    </p>
+                  </>
+                )}
+              </div>
+            </motion.div>
+          </AnimatePresence>
+
+          <div className="mt-8 flex justify-center">
+            {status === "verifying" ? (
+              <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden mb-4">
+                <div className="h-full bg-blue-500/50 w-1/2 animate-[pulse_1.5s_ease-in-out_infinite] rounded-full"></div>
+              </div>
+            ) : (
+              <Link
+                to="/admin/login"
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3.5 px-4 rounded-2xl transition-all duration-300 shadow-lg shadow-blue-900/50 flex items-center justify-center space-x-2 text-sm border border-blue-500/30 mb-2"
+              >
+                Return to Login
+              </Link>
+            )}
+          </div>
+
+          {/* Footer Notice (Matched to Login.jsx) */}
+          <div className="mt-4 pt-5 border-t border-slate-700/40 text-center">
+            <p className="text-[10px] text-slate-600">
+              &copy; {new Date().getFullYear()} {siteName} &mdash; Administrator Control Panel
+            </p>
+          </div>
+          
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+export default UnlockAccount;

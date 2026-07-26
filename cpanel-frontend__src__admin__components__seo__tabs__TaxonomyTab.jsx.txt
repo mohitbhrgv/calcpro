@@ -1,0 +1,243 @@
+import React, { useState, useEffect } from "react";
+import SmartInput from "../common/SmartInput";
+import RobotsRow from "../common/RobotsRow";
+import AdvancedRobotsRow from "../common/AdvancedRobotsRow";
+import InheritanceControl from "../common/InheritanceControl";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiFolder, FiGrid, FiTag, FiLock, FiAlertTriangle } = FiIcons;
+
+const TaxonomyTab = ({ type, settings, handleChange, handleCustomChange }) => {
+  // Map UI type to DB prefix and labels
+  const typeMap = {
+    blog_categories: { prefix: "blog_category", label: "Blog Categories", icon: FiFolder },
+    calc_categories: { prefix: "calc_category", label: "Calculator Categories", icon: FiGrid },
+    tags: { prefix: "tag", label: "Tags", icon: FiTag },
+  };
+
+  const currentType = typeMap[type] || { prefix: type, label: type, icon: FiFolder };
+  const dbPrefix = `seo_tax_${currentType.prefix}`;
+  const label = currentType.label;
+
+  // --- ENTERPRISE VAULT STATE (TAGS ONLY) ---
+  const [isVaultUnlocked, setIsVaultUnlocked] = useState(false);
+  const [showVaultModal, setShowVaultModal] = useState(false);
+  const [vaultConfirmText, setVaultConfirmText] = useState("");
+
+  // Master Switch Logic (Type-Aware & Tag-Safeguarded)
+  const customEnabledKey = `${dbPrefix}_robots_custom_enabled`;
+  // UX/SEO FIX: Strictly lock "Tags" to custom settings to prevent accidental global overwrites
+  const isCustomEnabled = type === 'tags' 
+      ? true 
+      : (settings[customEnabledKey] === true || settings[customEnabledKey] === 'true');
+
+  // No Index Logic (Type-Aware check to force-freeze Advanced Settings)
+  const noIndexKey = `${dbPrefix}_robots_noindex`;
+  const isNoIndex = settings[noIndexKey] === true || settings[noIndexKey] === 'true';
+
+  // Specific variables for taxonomies
+  const vars = [
+    { label: "Title", value: "%title%" },
+    { label: "Term Name", value: "%term%" },
+    { label: "Term Description", value: "%term_description%" },
+    { label: "Separator", value: "%sep%" },
+    { label: "Site Name", value: "%sitename%" },
+    { label: "Current Year", value: "%currentyear%" },
+  ];
+
+  // --- STRICT AUTO-HEAL: Force No Index for Tags on Load ---
+  useEffect(() => {
+    if (type === 'tags') {
+      const needsHealing = settings[`${dbPrefix}_robots_index`] === true || settings[`${dbPrefix}_robots_noindex`] !== true;
+      if (needsHealing) {
+        handleCustomChange(`${dbPrefix}_robots_index`, false);
+        handleCustomChange(`${dbPrefix}_robots_noindex`, true);
+        handleCustomChange(`${dbPrefix}_robots_noarchive`, true);
+        handleCustomChange(`${dbPrefix}_robots_noimageindex`, true);
+        handleCustomChange(`${dbPrefix}_robots_nosnippet`, true);
+      }
+    }
+     
+  }, [type]);
+
+  // --- Handle Inheritance Toggle ---
+  const handleToggleInheritance = (shouldEnable) => {
+      handleCustomChange(customEnabledKey, shouldEnable);
+
+      if (shouldEnable) {
+          const keysToCopy = [
+              'index', 'noindex', 'nofollow', 'noarchive', 'noimageindex', 'nosnippet',
+              'max_snippet', 'max_video_preview', 'max_image_preview'
+          ];
+          keysToCopy.forEach(key => {
+             const globalValue = settings[`seo_robots_global_${key}`];
+             handleCustomChange(`${dbPrefix}_robots_${key}`, globalValue);
+          });
+      }
+  };
+
+  const handleUnlockConfirm = () => {
+    if (vaultConfirmText === "INDEX TAGS") {
+        setIsVaultUnlocked(true);
+        setShowVaultModal(false);
+        setVaultConfirmText("");
+    }
+  };
+
+  return (
+    <div className="animate-fade-in">
+      {/* --- Standardized Header Card --- */}
+      <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={currentType.icon} className="w-5 h-5" />
+        </div>
+        <div>
+          <h4 className="font-bold text-gray-900 dark:text-white">{label}</h4>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            Set the default SEO templates for {label.toLowerCase()} archive pages.
+          </p>
+        </div>
+      </div>
+
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+        {label} Archive Settings
+      </h3>
+
+      <SmartInput
+        label={`${label} Title`}
+        value={settings[`${dbPrefix}_title_template`]}
+        onChange={(e) =>
+          handleCustomChange(`${dbPrefix}_title_template`, e.target.value)
+        }
+        helpText={`Default title tag for single ${label.toLowerCase()}.`}
+        variables={vars}
+        placeholder="%term% %sep% %sitename%"
+        siteName={settings.siteName}
+      />
+
+      <SmartInput
+        label={`${label} Description`}
+        value={settings[`${dbPrefix}_desc_template`]}
+        onChange={(e) =>
+          handleCustomChange(`${dbPrefix}_desc_template`, e.target.value)
+        }
+        helpText={`Default description for single ${label.toLowerCase()}.`}
+        variables={vars}
+        placeholder="%term_description%"
+        siteName={settings.siteName}
+      />
+
+      <div className="py-4">
+        <hr className="border-gray-100 dark:border-gray-700" />
+      </div>
+
+      {/* --- ENTERPRISE VAULT WARNING BANNER --- */}
+      {type === 'tags' ? (
+        <div className="flex flex-col md:flex-row md:items-center justify-between bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-200 dark:border-red-800/50 mb-6">
+          <div>
+            <h4 className="font-bold text-red-700 dark:text-red-400 flex items-center gap-2">
+              <SafeIcon icon={FiLock} className="w-4 h-4" />
+              Strict SEO Lock: Tag Archives
+            </h4>
+            <p className="text-xs text-red-600/80 dark:text-red-400/80 mt-1 max-w-2xl leading-relaxed">
+              Indexing Tag Archives is highly discouraged as it creates thin, duplicate content penalties. These settings are permanently locked to "No Index" to protect your overall SEO score.
+            </p>
+          </div>
+          {!isVaultUnlocked && (
+            <button
+              onClick={() => setShowVaultModal(true)}
+              className="mt-4 md:mt-0 px-4 py-2 bg-white dark:bg-gray-800 text-red-600 dark:text-red-400 text-xs font-bold rounded shadow-sm border border-red-200 dark:border-red-800 hover:bg-red-50 transition-colors shrink-0"
+            >
+              Override Lock
+            </button>
+          )}
+        </div>
+      ) : (
+        <InheritanceControl 
+          isCustom={isCustomEnabled} 
+          onToggle={handleToggleInheritance} 
+          label={`${label} Robots`} 
+        />
+      )}
+
+      {/* --- PHYSICAL GLASS-BLUR LOCK OVERLAY --- */}
+      <div className="relative">
+        {type === 'tags' && !isVaultUnlocked && (
+            <div className="absolute inset-0 z-10 bg-white/40 dark:bg-gray-900/40 backdrop-blur-[1px] rounded-lg cursor-not-allowed"></div>
+        )}
+
+        <RobotsRow
+          label={`${label} Robots Meta`}
+          prefix={`${dbPrefix}_robots_`}
+          settings={settings}
+          onChange={handleChange}
+          disabled={!isCustomEnabled}
+        />
+
+        <AdvancedRobotsRow
+          prefix={`${dbPrefix}_robots_`}
+          settings={settings}
+          onChange={handleChange}
+          disabled={!isCustomEnabled || isNoIndex}
+        />
+      </div>
+
+      {/* --- WARNING CONFIRMATION MODAL --- */}
+      {showVaultModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in p-4">
+            <div className="bg-white dark:bg-gray-800 w-full max-w-md rounded-xl shadow-2xl overflow-hidden border border-red-500/30">
+                <div className="p-6">
+                    <div className="w-12 h-12 bg-red-100 dark:bg-red-900/50 rounded-full flex items-center justify-center mb-4 text-red-600 dark:text-red-400">
+                        <SafeIcon icon={FiAlertTriangle} className="w-6 h-6" />
+                    </div>
+                    <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">
+                        Dangerous SEO Action
+                    </h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-300 mb-6 leading-relaxed">
+                        Allowing search engines to index Tag Archives often results in <strong>Duplicate Content Penalties</strong> because tags usually list the exact same posts as your Main Blog or Categories.
+                        <br/><br/>
+                        Are you absolutely sure you want to override this safeguard?
+                    </p>
+
+                    <div className="mb-6">
+                        <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-2">
+                            Type <span className="text-red-500 font-mono select-all">INDEX TAGS</span> to confirm
+                        </label>
+                        <input
+                            type="text"
+                            value={vaultConfirmText}
+                            onChange={(e) => setVaultConfirmText(e.target.value)}
+                            className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-red-500 focus:border-red-500 transition-shadow outline-none font-mono"
+                            placeholder="INDEX TAGS"
+                        />
+                    </div>
+
+                    <div className="flex justify-end gap-3">
+                        <button
+                            onClick={() => {
+                                setShowVaultModal(false);
+                                setVaultConfirmText("");
+                            }}
+                            className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                        >
+                            Cancel, Keep Locked
+                        </button>
+                        <button
+                            onClick={handleUnlockConfirm}
+                            disabled={vaultConfirmText !== "INDEX TAGS"}
+                            className="px-4 py-2 text-sm font-bold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+                        >
+                            Unlock Settings
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
+
+    </div>
+  );
+};
+
+export default TaxonomyTab;

@@ -1,0 +1,939 @@
+// cPanel_Frontend/src/admin/pages/backups/ManualBackups.jsx
+
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { motion, AnimatePresence } from 'framer-motion';
+import { authenticatedFetch } from '../../utils/apiService';
+import SafeIcon from '../../../common/SafeIcon';
+import * as FiIcons from 'react-icons/fi';
+import Modal from '../../components/common/Modal';
+import LoadingSpinner from '../../components/common/LoadingSpinner';
+import toast from 'react-hot-toast';
+
+const { 
+  FiHardDrive, FiSearch, FiRefreshCw, FiSettings, FiDownload,
+  FiRefreshCcw, FiTrash2, FiPlus, FiChevronDown, FiChevronLeft,
+  FiChevronRight, FiPackage, FiShield, FiDatabase, FiImage, 
+  FiCheckCircle, FiCircle
+} = FiIcons;
+
+const BASE_URL = '/api';
+
+const CustomSelect = ({ value, onChange, options, className }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+  const portalRef = useRef(null);
+  const [dropdownStyles, setDropdownStyles] = useState({});
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      const clickedOutsideButton = dropdownRef.current && !dropdownRef.current.contains(event.target);
+      const clickedOutsidePortal = portalRef.current && !portalRef.current.contains(event.target);
+      
+      if (clickedOutsideButton && clickedOutsidePortal) {
+          setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    
+    const updatePosition = () => {
+        if (isOpen && dropdownRef.current) {
+            const rect = dropdownRef.current.getBoundingClientRect();
+            setDropdownStyles({
+                top: rect.bottom + window.scrollY + 4,
+                left: rect.left + window.scrollX,
+                width: rect.width
+            });
+        }
+    };
+    
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+    
+    return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+        window.removeEventListener('scroll', updatePosition, true);
+        window.removeEventListener('resize', updatePosition);
+    };
+  }, [isOpen]);
+
+  const handleToggle = () => {
+     if (!isOpen && dropdownRef.current) {
+         const rect = dropdownRef.current.getBoundingClientRect();
+         setDropdownStyles({
+            top: rect.bottom + window.scrollY + 4,
+            left: rect.left + window.scrollX,
+            width: rect.width
+         });
+     }
+     setIsOpen(!isOpen);
+  };
+
+  const selectedLabel = options.find(opt => String(opt.value) === String(value))?.label || '';
+
+  const dropdownContent = (
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            ref={portalRef}
+            initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }} transition={{ duration: 0.15 }}
+            style={dropdownStyles}
+            className="absolute z-[99999] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl overflow-hidden py-1"
+          >
+            <div className="max-h-60 overflow-y-auto custom-scrollbar">
+                {options.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onChange(opt.value); setIsOpen(false); }}
+                    className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
+                      String(value) === String(opt.value) ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 font-bold' : 'text-gray-900 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 font-medium'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+  );
+
+  return (
+    <div className={`relative ${className || ''}`} ref={dropdownRef}>
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="w-full flex items-center justify-between px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none text-gray-900 dark:text-white transition-shadow cursor-pointer shadow-sm font-medium"
+      >
+        <span className="truncate">{selectedLabel}</span>
+        <SafeIcon icon={FiChevronDown} className={`w-4 h-4 text-gray-500 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+      {createPortal(dropdownContent, document.body)}
+    </div>
+  );
+};
+
+const ManualBackups = () => {
+  const [backups, setBackups] = useState([]);
+  
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState(0);
+  const [restoreMessage, setRestoreMessage] = useState("");
+
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generateProgress, setGenerateProgress] = useState(0);
+  const [generateMessage, setGenerateMessage] = useState("");
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [sortOrder, setSortOrder] = useState("desc");
+  const [currentPage, setCurrentPage] = useState(1);
+  const displayLimit = 10;
+
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [confirmModal, setConfirmModal] = useState({ isOpen: false, type: null, data: null });
+  const [isGenerateModalOpen, setIsGenerateModalOpen] = useState(false);
+  const [generateConfig, setGenerateConfig] = useState({ db: true, media: true });
+  
+  const [restoreConfirmText, setRestoreConfirmText] = useState("");
+  const [localRetentionLimit, setLocalRetentionLimit] = useState(5);
+
+  const ACTION_TOAST_ID = "manual-vault-action";
+
+  const fetchBackupsAndSettings = async () => {
+    try {
+      const [response, settingsResponse] = await Promise.all([
+          authenticatedFetch(`${BASE_URL}/admin/get_backups.php?source=local`),
+          authenticatedFetch(`${BASE_URL}/admin/get_settings.php`)
+      ]);
+
+      if (response.success) {
+        const manualOnly = response.data.backups.filter(b => b.trigger !== 'automatic');
+        setBackups(manualOnly);
+      }
+
+      if (settingsResponse.success && settingsResponse.data.local_backup_limit) {
+        setLocalRetentionLimit(parseInt(settingsResponse.data.local_backup_limit));
+      }
+    } catch (error) { 
+        toast.error(error.message || 'Failed to retrieve local backups.');
+    }
+  };
+
+  useEffect(() => {
+    const initLoad = async () => {
+      await fetchBackupsAndSettings();
+      setInitialLoading(false);
+    };
+    initLoad();
+  }, []);
+
+  const handleManualRefresh = async () => {
+    setIsUpdating(true);
+    await fetchBackupsAndSettings();
+    setTimeout(() => setIsUpdating(false), 500);
+  };
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+        if (debouncedSearch !== searchTerm) {
+            setCurrentPage(1);
+            setDebouncedSearch(searchTerm);
+        }
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [searchTerm, debouncedSearch]);
+
+  useEffect(() => {
+      if (!isRestoring) return;
+      if (restoreProgress < 15) setRestoreMessage("Verifying cryptographic signatures...");
+      else if (restoreProgress < 35) setRestoreMessage("Extracting securely encrypted artifact...");
+      else if (restoreProgress < 60) setRestoreMessage("Overwriting core system ledger...");
+      else if (restoreProgress < 85) setRestoreMessage("Synchronizing dependencies and executing Garbage Collection...");
+  }, [restoreProgress, isRestoring]);
+
+  useEffect(() => {
+      if (!isGenerating) return;
+      if (generateProgress < 15) setGenerateMessage("Initializing compilation engine...");
+      else if (generateProgress < 35) setGenerateMessage("Exporting core database structure...");
+      else if (generateProgress < 60) setGenerateMessage("Compressing and securing media matrix...");
+      else if (generateProgress < 85) setGenerateMessage("Applying cryptographic HMAC signatures...");
+  }, [generateProgress, isGenerating]);
+
+  const filteredAndSortedBackups = useMemo(() => {
+    let result = [...backups]; 
+    if (debouncedSearch) {
+        result = result.filter(b => b.file_name.toLowerCase().includes(debouncedSearch.toLowerCase()));
+    }
+    return result.sort((a, b) => {
+        return sortOrder === 'desc' 
+            ? b.created_at.localeCompare(a.created_at) 
+            : a.created_at.localeCompare(b.created_at);
+    });
+  }, [backups, debouncedSearch, sortOrder]);
+
+  const totalRecords = filteredAndSortedBackups.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / displayLimit));
+
+  const paginatedBackups = useMemo(() => {
+    const start = (currentPage - 1) * displayLimit;
+    return filteredAndSortedBackups.slice(start, start + displayLimit);
+  }, [filteredAndSortedBackups, currentPage]);
+
+  const handleSelectAll = (e) => {
+    if (e.target.checked) setSelectedIds(paginatedBackups.map(b => b.file_name));
+    else setSelectedIds([]);
+  };
+
+  const handleSelectRow = (fileName) => {
+    setSelectedIds(prev => prev.includes(fileName) ? prev.filter(f => f !== fileName) : [...prev, fileName]);
+  };
+
+  const saveRetentionLimit = async () => {
+    setIsSubmitting(true);
+    toast.loading("Updating local retention policy...", { id: ACTION_TOAST_ID });
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    try {
+      const payload = { local_backup_limit: localRetentionLimit };
+      const res = await authenticatedFetch(`${BASE_URL}/admin/update_settings.php`, {
+        method: 'POST', body: JSON.stringify(payload)
+      });
+
+      if (res.success) {
+        toast.success("Retention rules successfully updated.", { id: ACTION_TOAST_ID });
+        setIsSettingsOpen(false);
+      } else {
+        toast.error(res.message || "Failed to update rules.", { id: ACTION_TOAST_ID });
+      }
+    } catch (err) {
+      toast.error(err.message || "Network synchronization failed.", { id: ACTION_TOAST_ID });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleOpenGenerateModal = () => {
+      setIsGenerateModalOpen(true);
+  };
+
+  const handleCreateBackup = async () => {
+    if (!generateConfig.db && !generateConfig.media) return;
+    setIsGenerateModalOpen(false);
+    
+    setIsGenerating(true);
+    setGenerateProgress(2);
+    setGenerateMessage("Initializing compilation engine...");
+
+    const interval = setInterval(() => {
+        setGenerateProgress(prev => {
+            const next = prev + (Math.random() * 4);
+            return next > 85 ? 85 : next;
+        });
+    }, 600);
+
+    try {
+      const [response] = await Promise.all([
+          authenticatedFetch(`${BASE_URL}/admin/create_backup.php`, {
+            method: 'POST', body: JSON.stringify({ include_db: generateConfig.db, include_media: generateConfig.media })
+          }),
+          new Promise(resolve => setTimeout(resolve, 3500))
+      ]);
+
+      clearInterval(interval);
+
+      if (response.success) {
+        setGenerateProgress(100);
+        setGenerateMessage("Snapshot compiled flawlessly. Finalizing vault...");
+        toast.success(response.message, { id: ACTION_TOAST_ID });
+        
+        setTimeout(async () => {
+            await fetchBackupsAndSettings();
+            setGenerateConfig({ db: true, media: true });
+            setIsGenerating(false);
+        }, 1500);
+      } else {
+          setIsGenerating(false);
+          const isSecurityBlock = response.message?.includes('Limit') || response.message?.includes('Rate limit');
+          toast.error(response.message || "Failed to compile backup.", { 
+              id: ACTION_TOAST_ID, 
+              duration: isSecurityBlock ? 8000 : 4000,
+              style: isSecurityBlock ? { border: '1px solid #EF4444', color: '#7F1D1D' } : {}
+          });
+      }
+    } catch (error) { 
+        clearInterval(interval);
+        setIsGenerating(false);
+        toast.error(error.message || "Network timeout during generation.", { id: ACTION_TOAST_ID });
+    } 
+  };
+
+  const closeConfirmModal = () => {
+      setConfirmModal({ isOpen: false, type: null, data: null });
+      setRestoreConfirmText("");
+  };
+
+  const executeDelete = async (files) => {
+    const isBulk = Array.isArray(files);
+    closeConfirmModal();
+    setIsUpdating(true);
+    toast.loading(isBulk ? "Purging artifacts..." : "Purging artifact...", { id: ACTION_TOAST_ID });
+
+    try {
+      const payload = isBulk ? { files } : { file: files };
+      const response = await authenticatedFetch(`${BASE_URL}/admin/delete_backup.php`, { method: 'POST', body: JSON.stringify(payload) });
+      
+      if (response.success) {
+        toast.success(response.message || "Artifact(s) deleted.", { id: ACTION_TOAST_ID });
+        if (isBulk) setSelectedIds([]);
+        await fetchBackupsAndSettings();
+        
+        const remainingOnPage = paginatedBackups.length - (isBulk ? files.length : 1);
+        if (currentPage > 1 && remainingOnPage <= 0) setCurrentPage(currentPage - 1);
+      } else {
+          toast.error(response.message || "Failed to delete backup(s).", { id: ACTION_TOAST_ID });
+      }
+    } catch (error) { 
+        toast.error(error.message || "Network error during deletion.", { id: ACTION_TOAST_ID });
+    } 
+    finally { setIsUpdating(false); }
+  };
+
+  const executeRestore = async () => {
+    const payload = { 
+        file: confirmModal.data.file, 
+        restore_db: confirmModal.data.db, 
+        restore_media: confirmModal.data.media 
+    };
+    closeConfirmModal();
+    
+    setIsRestoring(true);
+    setRestoreProgress(2);
+    setRestoreMessage("Authenticating secure override sequence...");
+
+    const interval = setInterval(() => {
+        setRestoreProgress(prev => {
+            const next = prev + (Math.random() * 4);
+            return next > 85 ? 85 : next;
+        });
+    }, 600);
+
+    try {
+      const [response] = await Promise.all([
+          authenticatedFetch(`${BASE_URL}/admin/restore_backup.php`, { method: 'POST', body: JSON.stringify(payload) }),
+          new Promise(resolve => setTimeout(resolve, 4500))
+      ]);
+
+      clearInterval(interval);
+      if (response.success) {
+        setRestoreProgress(100);
+        setRestoreMessage("System restored flawlessly. Rebooting interface...");
+        toast.success("System restored successfully.");
+        setTimeout(() => window.location.reload(), 2500);
+      } else {
+          setIsRestoring(false);
+          const isSecurityBlock = response.message?.includes('SECURITY') || response.message?.includes('integrity');
+          toast.error(response.message || "Restoration failed.", { 
+              duration: isSecurityBlock ? 10000 : 4000,
+              style: isSecurityBlock ? { border: '1px solid #DC2626', background: '#FEF2F2', color: '#991B1B', fontWeight: 'bold' } : {}
+          });
+      }
+    } catch (error) { 
+        clearInterval(interval);
+        setIsRestoring(false);
+        toast.error(error.message || "Critical error during restoration.");
+    } 
+  };
+
+  const handleDownload = async (fileName) => {
+    const toastId = toast.loading(`Requesting secure download token...`);
+    try {
+      const ticketResponse = await authenticatedFetch(`${BASE_URL}/admin/download_backup.php`, {
+        method: 'POST', body: JSON.stringify({ file: fileName })
+      });
+
+      if (!ticketResponse.success) throw new Error(ticketResponse.message || "Failed to authorize.");
+      const ticket = ticketResponse.data.ticket;
+      
+      toast.success("Token verified. Initiating file transfer...", { id: toastId });
+      
+      setTimeout(() => {
+        const envUrl = import.meta.env.VITE_API_BASE_URL || '';
+        const cleanBase = envUrl.replace(/\/+$/, '');
+        const downloadUrl = `${cleanBase}/api/admin/download_backup.php?file=${fileName}&ticket=${ticket}`;
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }, 800);
+
+    } catch (error) { toast.error(`Download failed: ${error.message}`, { id: toastId }); }
+  };
+
+  const formatBytes = (bytes, decimals = 2) => {
+    if (!+bytes) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+  };
+
+  const sortOptions = [
+    { value: 'desc', label: 'Newest First' },
+    { value: 'asc', label: 'Oldest First' }
+  ];
+
+  const retentionOptions = [
+    { value: 3, label: '3 Snapshots (Recommended)' },
+    { value: 5, label: '5 Snapshots' },
+    { value: 7, label: '7 Snapshots (1 Week Max)' }
+  ];
+
+  if (isRestoring) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, scale: 0.98 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.4, ease: "easeOut" }}
+        className="flex flex-col items-center justify-center min-h-[70vh] bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 m-2"
+      >
+        <div className="w-full max-w-xl space-y-10">
+          
+          <div className="text-center space-y-3">
+            <div className="mx-auto w-20 h-20 bg-indigo-50 dark:bg-indigo-900/30 rounded-2xl flex items-center justify-center border border-indigo-100 dark:border-indigo-800/50 mb-6 shadow-inner relative overflow-hidden">
+               <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 4, ease: "linear" }} className="absolute inset-0 border-t-4 border-indigo-600 dark:border-indigo-400 rounded-2xl opacity-70" />
+               <SafeIcon icon={FiShield} className="w-8 h-8 text-indigo-600 dark:text-indigo-400 relative z-10" />
+            </div>
+            <h2 className="text-3xl font-bold text-gray-900 dark:text-white tracking-tight">System Override in Progress</h2>
+            <p className="text-sm font-medium text-red-500 dark:text-red-400">Do not close, refresh, or navigate away from this window.</p>
+          </div>
+
+          <div className="space-y-4">
+             <div className="flex justify-between items-end text-sm">
+                <span className="font-semibold text-gray-700 dark:text-gray-300 animate-pulse">{restoreMessage}</span>
+                <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400 text-lg">{Math.min(Math.round(restoreProgress), 100)}%</span>
+             </div>
+             <div className="w-full h-4 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden shadow-inner p-0.5">
+                <motion.div
+                   className="h-full bg-indigo-600 rounded-full relative"
+                   initial={{ width: 0 }}
+                   animate={{ width: `${Math.min(restoreProgress, 100)}%` }}
+                   transition={{ ease: "easeOut", duration: 0.5 }}
+                >
+                  <div className="absolute inset-0 bg-white/20 w-full animate-pulse" />
+                </motion.div>
+             </div>
+          </div>
+
+          <div className="bg-gray-50 dark:bg-gray-900/50 rounded-xl p-5 border border-gray-200 dark:border-gray-700/50 shadow-inner">
+             <ul className="space-y-4 text-sm font-medium">
+                <li className={`flex items-center gap-3 transition-colors duration-300 ${restoreProgress > 10 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-600'}`}>
+                   <SafeIcon icon={restoreProgress > 10 ? FiCheckCircle : FiCircle} className="w-5 h-5" />
+                   Cryptographic payload signature verified
+                </li>
+                <li className={`flex items-center gap-3 transition-colors duration-300 ${restoreProgress > 30 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-600'}`}>
+                   <SafeIcon icon={restoreProgress > 30 ? FiCheckCircle : FiCircle} className="w-5 h-5" />
+                   Artifact uncompressed and staged safely
+                </li>
+                <li className={`flex items-center gap-3 transition-colors duration-300 ${restoreProgress > 60 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-600'}`}>
+                   <SafeIcon icon={restoreProgress > 60 ? FiCheckCircle : FiCircle} className="w-5 h-5" />
+                   Core ledger synchronized with historical state
+                </li>
+                <li className={`flex items-center gap-3 transition-colors duration-300 ${restoreProgress > 90 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-600'}`}>
+                   <SafeIcon icon={restoreProgress > 90 ? FiCheckCircle : FiCircle} className="w-5 h-5" />
+                   Orphan records mapped and garbage-collected
+                </li>
+             </ul>
+          </div>
+        </div>
+      </motion.div>
+    );
+  }
+
+  if (isGenerating) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, scale: 0.98 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.4, ease: "easeOut" }}
+        className="flex flex-col items-center justify-center min-h-[70vh] bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-8 m-2"
+      >
+        <div className="w-full max-w-xl space-y-10">
+        
+          <div className="text-center space-y-3">
+            <div className="mx-auto w-20 h-20 bg-indigo-50 dark:bg-indigo-900/30 rounded-2xl flex items-center justify-center border border-indigo-100 dark:border-indigo-800/50 mb-6 shadow-inner relative overflow-hidden">
+               <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 4, ease: "linear" }} className="absolute inset-0 border-t-4 border-indigo-600 dark:border-indigo-400 rounded-2xl opacity-70" />
+               <SafeIcon icon={FiPackage} className="w-8 h-8 text-indigo-600 dark:text-indigo-400 relative z-10" />
+            </div>
+            <h2 className="text-3xl font-bold text-gray-900 dark:text-white tracking-tight">Compiling System Snapshot</h2>
+            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Please wait while the server securely packages the selected components.</p>
+          </div>
+
+          <div className="space-y-4">
+             <div className="flex justify-between items-end text-sm">
+                <span className="font-semibold text-gray-700 dark:text-gray-300 animate-pulse">{generateMessage}</span>
+                <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400 text-lg">{Math.min(Math.round(generateProgress), 100)}%</span>
+             </div>
+             <div className="w-full h-4 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden shadow-inner p-0.5">
+                <motion.div
+                   className="h-full bg-indigo-600 rounded-full relative"
+                   initial={{ width: 0 }}
+                   animate={{ width: `${Math.min(generateProgress, 100)}%` }}
+                   transition={{ ease: "easeOut", duration: 0.5 }}
+                >
+                 <div className="absolute inset-0 bg-white/20 w-full animate-pulse" />
+                </motion.div>
+             </div>
+          </div>
+
+          <div className="bg-gray-50 dark:bg-gray-900/50 rounded-xl p-5 border border-gray-200 dark:border-gray-700/50 shadow-inner">
+             <ul className="space-y-4 text-sm font-medium">
+                <li className={`flex items-center gap-3 transition-colors duration-300 ${generateProgress > 10 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-600'}`}>
+                   <SafeIcon icon={generateProgress > 10 ? FiCheckCircle : FiCircle} className="w-5 h-5" />
+                   Database schema and records extracted
+                </li>
+                <li className={`flex items-center gap-3 transition-colors duration-300 ${generateProgress > 30 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-600'}`}>
+                   <SafeIcon icon={generateProgress > 30 ? FiCheckCircle : FiCircle} className="w-5 h-5" />
+                   Physical media files compressed into matrix
+                </li>
+                <li className={`flex items-center gap-3 transition-colors duration-300 ${generateProgress > 60 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-600'}`}>
+                   <SafeIcon icon={generateProgress > 60 ? FiCheckCircle : FiCircle} className="w-5 h-5" />
+                   Cryptographic HMAC signature generated
+                </li>
+                <li className={`flex items-center gap-3 transition-colors duration-300 ${generateProgress > 90 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-600'}`}>
+                   <SafeIcon icon={generateProgress > 90 ? FiCheckCircle : FiCircle} className="w-5 h-5" />
+                   Artifact safely committed to local vault
+                </li>
+             </ul>
+          </div>
+        </div>
+      </motion.div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+
+      {/* --- ENTERPRISE SETTINGS MODAL --- */}
+      <Modal isOpen={isSettingsOpen} onClose={() => !isSubmitting && setIsSettingsOpen(false)} title="Local Vault Settings" size="md" disableAnimation={true}>
+        <div className="space-y-6 pt-2 pb-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
+            {/* ORANGE ZONE FOR RETENTION SETTINGS */}
+            <div className="bg-orange-50/50 dark:bg-orange-900/10 p-5 rounded-2xl border border-orange-100 dark:border-orange-800/30 space-y-4">
+              <h3 className="text-sm font-extrabold text-orange-900 dark:text-orange-300 uppercase tracking-wider flex items-center gap-2">
+                <SafeIcon icon={FiIcons.FiHardDrive} className="w-4 h-4 text-orange-500" />
+                Local Retention Limits
+              </h3>
+              <p className="text-[11px] text-orange-800/80 dark:text-orange-200/70 mb-4 leading-relaxed font-medium">
+                Local backups are stored directly on the server's hard drive. To prevent disk exhaustion, a strict maximum storage limit is enforced. When the limit is reached, you must manually delete an existing snapshot to free up space before creating a new one.
+              </p>
+              <div>
+                <label className="block text-[11px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+                  Maximum Retained Snapshots
+                </label>
+                <CustomSelect 
+                    value={localRetentionLimit} 
+                    onChange={(val) => setLocalRetentionLimit(parseInt(val))} 
+                    options={retentionOptions} 
+                />
+              </div>
+            </div>
+        </div>
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800">
+            <button onClick={() => setIsSettingsOpen(false)} disabled={isSubmitting} className="px-4 py-2.5 text-sm font-bold text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors shadow-sm focus:outline-none disabled:opacity-50">
+              Cancel
+            </button>
+            <button onClick={saveRetentionLimit} disabled={isSubmitting} className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-all shadow-md active:scale-95 disabled:opacity-50 focus:outline-none">
+              {isSubmitting ? "Saving..." : "Save Policies"}
+            </button>
+        </div>
+      </Modal>
+
+      {/* --- ENTERPRISE GENERATE MODAL --- */}
+      <Modal isOpen={isGenerateModalOpen} onClose={() => setIsGenerateModalOpen(false)} title="Create Snapshot" size="md" disableAnimation={true}>
+        <div className="space-y-6 pt-2 pb-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
+            {/* EMERALD ZONE FOR GENERATE SETTINGS */}
+            <div className="bg-emerald-50/50 dark:bg-emerald-900/10 p-5 rounded-2xl border border-emerald-100 dark:border-emerald-800/30 space-y-4">
+                <h3 className="text-sm font-extrabold text-emerald-900 dark:text-emerald-300 uppercase tracking-wider flex items-center gap-2">
+                    <SafeIcon icon={FiIcons.FiPackage} className="w-4 h-4 text-emerald-500" />
+                    Snapshot Configuration
+                </h3>
+                <p className="text-[11px] text-emerald-800/80 dark:text-emerald-200/70 mb-4 leading-relaxed font-medium">
+                    Create a fast local snapshot on the server. Compiling media may take extra time depending on the size of the directory.
+                </p>
+                <div className="space-y-3">
+                    <label className="flex items-center gap-3 p-4 border border-gray-200 dark:border-gray-700 rounded-xl cursor-pointer hover:bg-white dark:hover:bg-gray-800 transition-colors bg-white/50 dark:bg-gray-900/30">
+                    <input type="checkbox" className="w-5 h-5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:border-gray-600 transition-colors cursor-pointer" checked={generateConfig.db} onChange={(e) => setGenerateConfig({...generateConfig, db: e.target.checked})} />
+                    <div><h4 className="font-bold text-gray-900 dark:text-white text-sm">Database Snapshot</h4><p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Settings, content, and logs.</p></div>
+                    </label>
+                    <label className="flex items-center gap-3 p-4 border border-gray-200 dark:border-gray-700 rounded-xl cursor-pointer hover:bg-white dark:hover:bg-gray-800 transition-colors bg-white/50 dark:bg-gray-900/30">
+                    <input type="checkbox" className="w-5 h-5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:border-gray-600 transition-colors cursor-pointer" checked={generateConfig.media} onChange={(e) => setGenerateConfig({...generateConfig, media: e.target.checked})} />
+                    <div><h4 className="font-bold text-gray-900 dark:text-white text-sm">Media Directory</h4><p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Images and documents.</p></div>
+                    </label>
+                </div>
+            </div>
+        </div>
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800">
+            <button onClick={() => setIsGenerateModalOpen(false)} className="px-4 py-2.5 text-sm font-bold text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors shadow-sm focus:outline-none">
+                Cancel
+            </button>
+            <button onClick={handleCreateBackup} disabled={!generateConfig.db && !generateConfig.media} className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-all shadow-md active:scale-95 disabled:opacity-50 focus:outline-none">
+                Compile Artifact
+            </button>
+        </div>
+      </Modal>
+
+      {/* UNIVERSAL CONFIRMATION MODAL */}
+      <Modal isOpen={confirmModal.isOpen} onClose={closeConfirmModal} title={confirmModal.type === 'restore' ? "⚠️ Execute Local Restore" : "Delete Artifact(s)"} type={confirmModal.type === 'restore' ? "danger" : "default"} size="md" disableAnimation={true}>
+        <div className="space-y-4">
+          <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg text-sm text-gray-600 dark:text-gray-300">
+             {confirmModal.type === 'bulk_delete' && `You are about to permanently delete ${selectedIds.length} artifacts.`}
+             {confirmModal.type === 'delete' && <>Permanently delete <strong className="text-gray-900 dark:text-white">{confirmModal.data}</strong>?</>}
+             {confirmModal.type === 'restore' && <>Restoring from <strong className="text-gray-900 dark:text-white">{confirmModal.data?.file}</strong>. Current data will be overwritten.</>}
+             <p className={`mt-2 font-medium ${confirmModal.type === 'restore' ? 'text-red-600 dark:text-red-400' : 'text-gray-500'}`}>This action cannot be undone.</p>
+          </div>
+          
+          {confirmModal.type === 'restore' && confirmModal.data?.type === 'full' && (
+            <div className="space-y-2 py-2">
+              <h4 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Select Target Components:</h4>
+              <label className="flex items-center gap-3 cursor-pointer p-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition-colors">
+                  <input type="checkbox" className="w-4 h-4 text-indigo-600 rounded border-gray-300 bg-white dark:bg-gray-900 dark:border-gray-600 focus:ring-indigo-500 transition-colors cursor-pointer" 
+                  checked={confirmModal.data?.db} onChange={(e) => setConfirmModal(prev => ({...prev, data: {...prev.data, db: e.target.checked}}))} />
+                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Overwrite Database Core</span>
+              </label>
+              <label className="flex items-center gap-3 cursor-pointer p-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition-colors">
+                  <input type="checkbox" className="w-4 h-4 text-indigo-600 rounded border-gray-300 bg-white dark:bg-gray-900 dark:border-gray-600 focus:ring-indigo-500 transition-colors cursor-pointer" 
+                  checked={confirmModal.data?.media} onChange={(e) => setConfirmModal(prev => ({...prev, data: {...prev.data, media: e.target.checked}}))} />
+                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Synchronize Media (Differential)</span>
+              </label>
+            </div>
+          )}
+
+          {confirmModal.type === 'restore' && confirmModal.data?.type !== 'full' && (
+             <div className="py-2">
+                <div className="inline-flex items-center px-3 py-2 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800/50 text-indigo-700 dark:text-indigo-400 text-sm font-bold shadow-sm">
+                    <SafeIcon icon={confirmModal.data?.type === 'db' ? FiDatabase : FiImage} className="w-4 h-4 mr-2" />
+                    Target Profile: Restoring {confirmModal.data?.type === 'db' ? 'Database Only' : 'Media Only'}
+                </div>
+            </div>
+          )}
+
+          {confirmModal.type === 'restore' && (
+            <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    To proceed, please type <strong className="text-red-600 dark:text-red-400 select-none">RESTORE</strong> below:
+                </label>
+                <input
+                    type="text"
+                    value={restoreConfirmText}
+                    onChange={(e) => setRestoreConfirmText(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 placeholder-gray-500 dark:text-white dark:placeholder-gray-400 bg-white dark:bg-gray-800 focus:ring-red-500 focus:border-red-500 transition-colors outline-none"
+                    placeholder="Type RESTORE to confirm"
+                    autoComplete="off"
+                />
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-2 border-t border-gray-200 dark:border-gray-700 mt-2">
+            <button type="button" onClick={closeConfirmModal} className="px-4 py-2.5 text-sm font-bold text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors shadow-sm focus:outline-none">
+              Cancel
+            </button>
+            <button type="button" 
+              disabled={
+                  (confirmModal.type === 'restore' && (!confirmModal.data?.db && !confirmModal.data?.media)) ||
+                  (confirmModal.type === 'restore' && restoreConfirmText !== 'RESTORE')
+              }
+              onClick={() => {
+                if (confirmModal.type === "bulk_delete") executeDelete(selectedIds);
+                else if (confirmModal.type === "delete") executeDelete(confirmModal.data);
+                else if (confirmModal.type === "restore") executeRestore();
+              }} 
+              className={`flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white rounded-lg transition-all shadow-md active:scale-95 disabled:opacity-50 focus:outline-none ${confirmModal.type === 'restore' ? 'bg-red-600 hover:bg-red-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+              {confirmModal.type === 'restore' ? 'Execute Override' : 'Confirm Action'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* HEADER BLOCK */}
+      <motion.div 
+        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} 
+        className="flex items-start gap-4 p-5 rounded-xl bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-800/30 shadow-sm"
+      >
+        <div className="p-3 bg-indigo-100 dark:bg-indigo-800/50 rounded-xl text-indigo-600 dark:text-indigo-400 shrink-0 shadow-sm border border-indigo-200 dark:border-indigo-700/50">
+          <SafeIcon icon={FiHardDrive} className="w-6 h-6" />
+        </div>
+        <div className="flex-1">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+                <div className="flex items-center gap-2">
+                    <h1 className="text-xl font-bold text-gray-900 dark:text-white tracking-tight">Manual Local Vault</h1>
+                </div>
+                <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                    High-speed, temporary snapshots stored directly on disk. Ideal for safe pre-deployment testing.
+                </p>
+            </div>
+            <button onClick={handleOpenGenerateModal} className="shrink-0 px-4 py-2 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 border border-transparent rounded-lg transition-all shadow-md active:scale-95 flex items-center gap-2 focus:outline-none">
+              <SafeIcon icon={FiPlus} className="w-4 h-4" /> Create Snapshot
+            </button>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* TOOLBAR */}
+      <motion.div 
+        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
+        className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col xl:flex-row justify-between items-center gap-4 relative z-20"
+      >
+        <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
+            <div className="relative w-full sm:w-64 flex items-center">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-500 dark:text-gray-400">
+                    <SafeIcon icon={FiSearch} className="w-4 h-4" />
+                </div>
+                <input
+                    type="text"
+                    placeholder="Search local archives..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm bg-gray-50 dark:bg-gray-700 text-gray-900 placeholder-gray-500 dark:text-white dark:placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow"
+                />
+            </div>
+            
+            <div className="w-full sm:w-44">
+              <CustomSelect 
+                 value={sortOrder}
+                 onChange={(val) => { setSortOrder(val); setCurrentPage(1); }}
+                 options={sortOptions}
+              />
+            </div>
+        </div>
+
+        <div className="flex items-center gap-3 w-full xl:w-auto">
+            <div className="flex items-center gap-3 bg-gray-50 dark:bg-gray-900/50 p-2 rounded-lg border border-gray-100 dark:border-gray-700 flex-1 xl:flex-none">
+                <button
+                    onClick={() => setConfirmModal({ isOpen: true, type: "bulk_delete" })}
+                    disabled={selectedIds.length === 0}
+                    className="px-4 py-2 bg-red-600 text-white rounded-md text-sm font-semibold hover:bg-red-700 disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700 dark:disabled:text-gray-500 transition-colors shadow-sm whitespace-nowrap flex items-center gap-2 focus:outline-none"
+                >
+                    <SafeIcon icon={FiTrash2} className="w-4 h-4" />
+                    Apply Delete
+                </button>
+                {selectedIds.length > 0 && (
+                 <span className="text-xs font-bold text-red-600 dark:text-red-400 px-2 whitespace-nowrap">
+                    {selectedIds.length} selected
+                  </span>
+                )}
+            </div>
+            
+            <div className="flex items-center gap-1 border-l border-gray-200 dark:border-gray-700 pl-3 ml-auto shrink-0">
+               <button
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="p-2 text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors focus:outline-none"
+                    title="Vault Settings"
+                >
+                    <SafeIcon icon={FiSettings} className="w-4 h-4" />
+                </button>
+               <button
+                    onClick={handleManualRefresh}
+                    className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors focus:outline-none"
+                    title="Refresh List"
+                >
+                    {/* [UX FIX] SystemLogs styling: Spins ONLY when manually refreshing */}
+                    <SafeIcon icon={FiRefreshCw} className={`w-4 h-4 ${isUpdating ? "animate-spin text-indigo-600" : ""}`} />
+                </button>
+            </div>
+        </div>
+      </motion.div>
+
+      {/* DATA TABLE AREA */}
+      <motion.div 
+        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+        className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden relative flex flex-col"
+      >
+        <AnimatePresence>
+            {/* [UX FIX] Exact replica of the SystemLogs small spinner overlay */}
+            {(initialLoading || isUpdating) && (
+                <motion.div 
+                  initial={{ opacity: 0 }} 
+                  animate={{ opacity: 1 }} 
+                  exit={{ opacity: 0 }} 
+                  className="absolute inset-0 bg-white/50 dark:bg-gray-800/50 flex items-center justify-center z-10"
+                >
+                    <LoadingSpinner />
+                </motion.div>
+            )}
+        </AnimatePresence>
+
+        <div className={`w-full overflow-x-auto min-h-[300px] flex flex-col ${(initialLoading || isUpdating) ? "opacity-50 pointer-events-none" : ""}`}>
+          {filteredAndSortedBackups.length === 0 && !initialLoading ? (
+            <div className="flex flex-col items-center justify-center p-16 text-center flex-1">
+              <SafeIcon icon={FiHardDrive} className="w-12 h-12 text-gray-400 dark:text-gray-500 mb-4 opacity-50" />
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">Local Vault is Empty</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm">No local records exist matching your criteria. Generate a snapshot before testing deployments.</p>
+            </div>
+          ) : (
+            <>
+            <table className="w-full text-left border-collapse min-w-[900px]">
+              <thead>
+                <tr className="bg-gray-50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300 text-xs font-bold uppercase tracking-wider border-b border-gray-200 dark:border-gray-700">
+                  <th className="px-6 py-4 w-12 text-center">
+                      <input type="checkbox" className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 bg-white dark:bg-gray-900 dark:border-gray-600 transition-colors cursor-pointer" 
+                      checked={paginatedBackups.length > 0 && selectedIds.length === paginatedBackups.length} 
+                      onChange={handleSelectAll} />
+                  </th>
+                  <th className="px-6 py-4">Artifact Name</th>
+                  <th className="px-6 py-4 w-[160px]">Content Type</th>
+                  <th className="px-6 py-4 w-[120px]">Size</th>
+                  <th className="px-6 py-4 w-[180px]">Timestamp (UTC)</th>
+                  <th className="px-6 py-4 text-right w-[160px]">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 dark:divide-gray-700 text-sm">
+                {paginatedBackups.map((backup) => {
+                  const isSelected = selectedIds.includes(backup.file_name);
+                  return (
+                  <tr key={backup.file_name} className={`transition-colors ${isSelected ? 'bg-indigo-50/50 dark:bg-indigo-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'}`}>
+                    <td className="px-6 py-4 text-center">
+                        <input type="checkbox" className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 bg-white dark:bg-gray-900 dark:border-gray-600 transition-colors cursor-pointer" 
+                          checked={isSelected} onChange={() => handleSelectRow(backup.file_name)} />
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        <SafeIcon icon={FiPackage} className="text-gray-400 dark:text-gray-500 w-5 h-5 shrink-0" />
+                        <span className="font-mono text-sm font-medium text-indigo-600 dark:text-indigo-400 truncate">{backup.file_name}</span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="inline-flex items-center justify-center px-2.5 py-1 rounded-md text-[10px] font-bold uppercase bg-gray-100 text-gray-700 border border-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-600 shadow-sm">
+                          {backup.type === 'full' ? 'DB + Media' : backup.type === 'db' ? 'Database' : 'Media'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4"><span className="font-mono text-xs text-gray-500 dark:text-gray-400">{formatBytes(backup.size_bytes)}</span></td>
+                    <td className="px-6 py-4 text-gray-500 dark:text-gray-400 font-medium text-xs">{backup.created_at}</td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => handleDownload(backup.file_name)} className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-colors focus:outline-none" title="Download"><SafeIcon icon={FiDownload} className="w-4 h-4" /></button>
+                          <button onClick={() => {
+                            setRestoreConfirmText("");
+                            setConfirmModal({
+                                isOpen: true, 
+                                type: 'restore', 
+                                data: {
+                                    file: backup.file_name, 
+                                    type: backup.type, 
+                                    db: backup.type === 'full' || backup.type === 'db', 
+                                    media: backup.type === 'full' || backup.type === 'media'
+                                }
+                              });
+                            }} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors focus:outline-none" title="Restore"><SafeIcon icon={FiRefreshCcw} className="w-4 h-4" /></button>
+                        <button onClick={() => setConfirmModal({ isOpen: true, type: 'delete', data: backup.file_name })} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors focus:outline-none" title="Delete"><SafeIcon icon={FiTrash2} className="w-4 h-4" /></button>
+                      </div>
+                    </td>
+                  </tr>
+                )})}
+              </tbody>
+            </table>
+
+            {/* PAGINATION ENGINE */}
+            {totalRecords > 0 && (
+              <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 flex flex-col sm:flex-row items-center justify-between gap-4 transition-all mt-auto rounded-b-xl">
+                <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
+                  Showing
+                  <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                     {Math.min((currentPage - 1) * displayLimit + 1, totalRecords)}
+                  </span>
+                  to
+                  <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                      {Math.min(currentPage * displayLimit, totalRecords)}
+                  </span>
+                  of
+                  <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                   {totalRecords}
+                   </span>
+                  entries
+                </div>
+
+                {totalPages > 1 && (
+                  <div className="flex items-center p-1 bg-gray-100/80 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700/50 shadow-inner">
+                   <button
+                      onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                      disabled={currentPage === 1}
+                      className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-800 hover:text-indigo-600 dark:hover:text-indigo-400 hover:shadow-sm disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:hover:text-gray-600 transition-all focus:outline-none"
+                    >
+                      <SafeIcon icon={FiChevronLeft} className="w-4 h-4" />
+                      Prev
+                   </button>
+                   <div className="flex items-center px-4 border-x border-gray-200 dark:border-gray-700/50">
+                      <span className="text-sm font-bold text-gray-900 dark:text-white">{currentPage}</span>
+                      <span className="text-sm text-gray-400 dark:text-gray-500 mx-1.5">/</span>
+                      <span className="text-sm font-medium text-gray-500 dark:text-gray-400">{totalPages}</span>
+                    </div>
+                    <button
+                      onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                      disabled={currentPage === totalPages}
+                      className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-800 hover:text-indigo-600 dark:hover:text-indigo-400 hover:shadow-sm disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:hover:text-gray-600 transition-all focus:outline-none"
+                    >
+                      Next
+                      <SafeIcon icon={FiChevronRight} className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            </>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+export default ManualBackups;

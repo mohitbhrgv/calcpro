@@ -1,0 +1,128 @@
+// (Update) cPanel_Frontend/src/admin/components/seo/tabs/PostTypeTab.jsx
+
+import React from "react";
+import SmartInput from "../common/SmartInput";
+import RobotsRow from "../common/RobotsRow";
+import AdvancedRobotsRow from "../common/AdvancedRobotsRow";
+import InheritanceControl from "../common/InheritanceControl";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiFileText, FiSettings } = FiIcons;
+
+const PostTypeTab = ({ type, settings, handleChange, handleCustomChange }) => {
+  // Map the UI tab ID to the database prefix key
+  const typeMap = {
+    posts: { prefix: "post", label: "Post", icon: FiFileText },
+    pages: { prefix: "page", label: "Page", icon: FiFileText },
+    calculators: { prefix: "calc", label: "Calculator", icon: FiSettings },
+  };
+
+  const currentType = typeMap[type] || { prefix: type, label: type, icon: FiFileText };
+  const dbPrefix = `seo_${currentType.prefix}`;
+
+  // Master switch logic
+  const customEnabledKey = `${dbPrefix}_robots_custom_enabled`;
+  const isCustomEnabled = settings[customEnabledKey] === true;
+
+  const vars = [
+    { label: "Title", value: "%title%" },
+    { label: "Separator", value: "%sep%" },
+    { label: "Site Name", value: "%sitename%" },
+    { label: "Excerpt", value: "%excerpt%" },
+    { label: "Current Year", value: "%currentyear%" },
+  ];
+
+  const handleToggleInheritance = (shouldEnable) => {
+      handleCustomChange(customEnabledKey, shouldEnable);
+
+      if (shouldEnable) {
+          const keysToCopy = [
+              'index', 'noindex', 'nofollow', 'noarchive', 'noimageindex', 'nosnippet',
+              'max_snippet', 'max_video_preview', 'max_image_preview'
+          ];
+          keysToCopy.forEach(key => {
+             const globalValue = settings[`seo_robots_global_${key}`];
+             handleCustomChange(`${dbPrefix}_robots_${key}`, globalValue);
+          });
+      }
+  };
+
+  return (
+    <div className="animate-fade-in">
+      {/* --- Standardized Header Card --- */}
+      <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={currentType.icon} className="w-5 h-5" />
+        </div>
+        <div>
+          <h4 className="font-bold text-gray-900 dark:text-white">{currentType.label} Defaults</h4>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            Set the default SEO title and description templates for all single {type}. These can be overridden individually in the editor.
+          </p>
+        </div>
+      </div>
+
+      {/* --- General Meta Settings --- */}
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+        Single {currentType.label} Settings
+      </h3>
+
+      <SmartInput
+        label={`Single ${currentType.label} Title`}
+        value={settings[`${dbPrefix}_title_template`]}
+        onChange={(e) =>
+          handleCustomChange(`${dbPrefix}_title_template`, e.target.value)
+        }
+        helpText={`Default title tag for single ${type}.`}
+        variables={vars}
+        placeholder="%title% %sep% %sitename%"
+        siteName={settings.siteName}
+      />
+
+      <SmartInput
+        label={`Single ${currentType.label} Description`}
+        value={settings[`${dbPrefix}_desc_template`]}
+        onChange={(e) =>
+          handleCustomChange(`${dbPrefix}_desc_template`, e.target.value)
+        }
+        helpText={`Default description for single ${type}.`}
+        variables={vars}
+        placeholder="%excerpt%"
+        siteName={settings.siteName}
+      />
+
+      <div className="py-4">
+        <hr className="border-gray-100 dark:border-gray-700" />
+      </div>
+
+      {/* --- Robots Meta with Inheritance Control --- */}
+      <InheritanceControl 
+        isCustom={isCustomEnabled} 
+        onToggle={handleToggleInheritance} 
+        label={`${currentType.label} Robots Meta`} 
+      />
+
+      <RobotsRow
+        label={`${currentType.label} Robots Meta`}
+        prefix={`${dbPrefix}_robots_`}
+        settings={settings}
+        onChange={handleChange}
+        disabled={!isCustomEnabled}
+      />
+
+      <AdvancedRobotsRow
+        prefix={`${dbPrefix}_robots_`}
+        settings={settings}
+        onChange={handleChange}
+        disabled={!isCustomEnabled}
+      />
+      
+      <div className="p-4 mt-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-sm rounded border border-blue-100 dark:border-blue-800">
+        <strong>Note:</strong> These are the <em>default</em> settings. You can override these for individual {type} in the editor.
+      </div>
+    </div>
+  );
+};
+
+export default PostTypeTab;

@@ -1,0 +1,392 @@
+// cPanel_Frontend/src/admin/context/AuthContext.jsx
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
+import toast from "react-hot-toast";
+import InactivityWarningModal from "../components/auth/InactivityWarningModal";
+import ForcePasswordUpdateModal from "../components/auth/ForcePasswordUpdateModal";
+import { authenticatedFetch, setIntentionalLogout } from "../utils/apiService";
+
+const AuthContext = createContext();
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error("useAuth must be used within an AuthProvider");
+  }
+  return context;
+};
+
+// --- CONSTANTS ---
+const STORAGE_KEY_LAST_ACTIVE = "calcpro_last_active";
+const SYNC_LOGOUT_SIGNAL = "calcpro_logout_signal";
+const REFRESH_LOCK_KEY = "calcpro_auto_refresh_lock"; // Enterprise concurrency lock
+const THROTTLE_MS = 2000;
+
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [passwordSecurity, setPasswordSecurity] = useState(null);
+
+  const [authSettings, setAuthSettings] = useState({
+    inactivity_logout_enabled: true,
+    inactivity_timeout_minutes: 60, 
+  });
+
+  const [isWarningModalOpen, setWarningModalOpen] = useState(false);
+  const [secondsRemaining, setSecondsRemaining] = useState(300);
+
+  const lastActivityWrite = useRef(Date.now());
+  const workerRef = useRef(null); // Web Worker reference
+
+  // --- ENTERPRISE FIX: PRECISION TIMING CALCULATION ---
+  const getWarningThreshold = (minutes) => {
+      if (minutes <= 1.5) return 15 * 1000; // 1 minute limits & 1.5m password resets
+      if (minutes <= 5) return 30 * 1000;   // 2 to 5 minutes limits
+      if (minutes <= 10) return 45 * 1000;  // 6 to 10 minutes limits
+      return 60 * 1000;                     // 11+ minutes limits
+  };
+
+  const logout = useCallback(async (message = "You have been logged out.") => {
+    setIntentionalLogout(true);
+
+    try {
+        // --- ENTERPRISE FIX: CSRF INTEGRATION ---
+        await authenticatedFetch("/api/admin/logout.php", {
+            method: "POST"
+        });
+    } catch (error) {
+        console.error("Backend logout sync failed:", error);
+    }
+
+    setUser(null);
+    setPasswordSecurity(null); 
+    setWarningModalOpen(false);
+
+    // --- ENTERPRISE FIX: WIPE ALL MEMORY ANCHORS ---
+    localStorage.removeItem(STORAGE_KEY_LAST_ACTIVE);
+    localStorage.removeItem(REFRESH_LOCK_KEY); 
+    localStorage.setItem(SYNC_LOGOUT_SIGNAL, Date.now().toString());
+
+    if (workerRef.current) {
+        workerRef.current.postMessage({ type: 'STOP' });
+    }
+
+    const isExpiration = message.toLowerCase().includes("expired") || message.toLowerCase().includes("inactivity") || message.toLowerCase().includes("securely closed");
+    const isSecurityViolation = message.toLowerCase().includes("terminated");
+
+    if (isSecurityViolation || isExpiration) {
+       toast.error(message, { id: "auth-timeout-toast", duration: 5000 });
+    } else if (!message.includes("sync")) {
+      toast.success(message, { id: "auth-toast" });
+    }
+
+    // [ENTERPRISE FIX] Modern BrowserRouter compatible redirect
+    if (!window.location.pathname.includes("/login")) {
+        window.location.href = "/login";
+    }
+
+    setTimeout(() => setIntentionalLogout(false), 2000);
+  }, []);
+
+  const recordActivity = useCallback(() => {
+    if (isWarningModalOpen || passwordSecurity?.isExpired) return;
+
+    const now = Date.now();
+    
+    if (now - lastActivityWrite.current > THROTTLE_MS) {
+      localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, now.toString());
+      lastActivityWrite.current = now;
+      // Sync activity to the isolated Worker thread
+      workerRef.current?.postMessage({ type: 'ACTIVITY', payload: { lastActivity: now } });
+    }
+  }, [isWarningModalOpen, passwordSecurity]);
+
+  const handleStayLoggedIn = useCallback(async () => {
+    try {
+      try { await authenticatedFetch("/api/admin/get_me.php", { skipAuthHandler: true, skipConcurrencyHandler: true }); } catch (preflightErr) { console.debug("[AuthContext] Preflight token check failed:", preflightErr.message); }
+      await authenticatedFetch("/api/admin/refresh_token.php", {
+        method: "POST"
+      });
+      
+      const now = Date.now();
+      localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, now.toString());
+      localStorage.setItem(REFRESH_LOCK_KEY, now.toString());
+      lastActivityWrite.current = now;
+      workerRef.current?.postMessage({ type: 'ACTIVITY', payload: { lastActivity: now } });
+      setWarningModalOpen(false);
+    } catch (error) {
+       logout("Session expired. Please log in again.");
+    }
+  }, [logout]);
+
+  useEffect(() => {
+    const handleStorageChange = (event) => {
+      // Cross-tab logout sync
+      if (event.key === SYNC_LOGOUT_SIGNAL) {
+        setUser(null);
+        setPasswordSecurity(null); 
+        setWarningModalOpen(false);
+        workerRef.current?.postMessage({ type: 'STOP' });
+      }
+      // Cross-tab activity sync (keeps the Web Worker alive if active in another tab)
+      if (event.key === STORAGE_KEY_LAST_ACTIVE && event.newValue) {
+         const syncedActivity = parseInt(event.newValue);
+         lastActivityWrite.current = syncedActivity;
+         workerRef.current?.postMessage({ type: 'ACTIVITY', payload: { lastActivity: syncedActivity } });
+      }
+    };
+
+    const handleUnauthorizedEvent = () => {
+        logout("Your session has expired. Please log in again.");
+    };
+
+    const handleConcurrencyEvent = (e) => {
+        const msg = e.detail || "Session terminated because your account was logged into from another device.";
+        logout(msg);
+    };
+
+    const handleTimerPause = () => workerRef.current?.postMessage({ type: 'PAUSE' });
+    const handleTimerResume = () => workerRef.current?.postMessage({ type: 'RESUME' });
+
+    window.addEventListener("storage", handleStorageChange);
+    window.addEventListener("auth-unauthorized", handleUnauthorizedEvent);
+    window.addEventListener("auth-concurrency-violation", handleConcurrencyEvent);
+    window.addEventListener("SESSION_TIMER_PAUSE", handleTimerPause);
+    window.addEventListener("SESSION_TIMER_RESUME", handleTimerResume);
+    
+    return () => {
+        window.removeEventListener("storage", handleStorageChange);
+        window.removeEventListener("auth-unauthorized", handleUnauthorizedEvent);
+        window.removeEventListener("auth-concurrency-violation", handleConcurrencyEvent);
+        window.removeEventListener("SESSION_TIMER_PAUSE", handleTimerPause);
+        window.removeEventListener("SESSION_TIMER_RESUME", handleTimerResume);
+    };
+  }, [logout]);
+
+  // --- ENTERPRISE FIX: WEB WORKER INITIALIZATION ---
+  useEffect(() => {
+    if (!user || !authSettings.inactivity_logout_enabled) {
+        if (workerRef.current) workerRef.current.postMessage({ type: 'STOP' });
+        return;
+    }
+
+    if (!localStorage.getItem(STORAGE_KEY_LAST_ACTIVE)) {
+        localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, Date.now().toString());
+    }
+
+    // Initialize standard Vite Web Worker
+    if (!workerRef.current) {
+        workerRef.current = new Worker(new URL('../components/security/sessionWorker.js', import.meta.url), { type: 'module' });
+    }
+
+    const activeTimeoutMinutes = passwordSecurity?.isExpired ? 1.5 : authSettings.inactivity_timeout_minutes;
+    const warningBufferMs = getWarningThreshold(activeTimeoutMinutes);
+    const lastActive = parseInt(localStorage.getItem(STORAGE_KEY_LAST_ACTIVE) || Date.now());
+
+    workerRef.current.postMessage({
+        type: 'INIT',
+        payload: {
+            timeoutMinutes: activeTimeoutMinutes,
+            warningBufferMs: warningBufferMs,
+            lastActivity: lastActive,
+            isExpired: !!passwordSecurity?.isExpired
+        }
+    });
+
+    workerRef.current.onmessage = (e) => {
+        const { type, remaining } = e.data;
+        
+        if (type === 'TERMINATE') {
+            const timeoutMsg = passwordSecurity?.isExpired 
+                ? "Time expired. Session securely closed." 
+                : `You have been securely logged out due to ${activeTimeoutMinutes} minutes of inactivity.`;
+            logout(timeoutMsg);
+            
+        } else if (type === 'SHOW_WARNING') {
+            setSecondsRemaining(remaining);
+            setWarningModalOpen(true);
+            
+        } else if (type === 'UPDATE_TIME_ONLY') {
+            setSecondsRemaining(remaining);
+            
+        } else if (type === 'HIDE_WARNING') {
+            setWarningModalOpen((isOpen) => isOpen ? false : isOpen);
+            
+        } else if (type === 'SILENT_REFRESH') {
+            // Enterprise Race-Condition Lock: Prevents multiple tabs from killing the strict backend token logic
+            const lockTime = parseInt(localStorage.getItem(REFRESH_LOCK_KEY) || "0");
+            const now = Date.now();
+            if (now - lockTime > 15000) { 
+                localStorage.setItem(REFRESH_LOCK_KEY, now.toString());
+                
+                authenticatedFetch("/api/admin/get_me.php", { skipAuthHandler: true, skipConcurrencyHandler: true })
+                .catch((err) => { console.debug("[AuthContext] Silent preflight check failed:", err.message); }) // Catch preflight 401 silently
+                .then(() => {
+                    return authenticatedFetch("/api/admin/refresh_token.php", {
+                        method: "POST", skipAuthHandler: true, skipConcurrencyHandler: true
+                    });
+                }).catch(() => {
+                    console.warn("Silent background refresh skipped or failed.");
+                });
+            }
+        }
+    };
+
+    return () => {
+        if (workerRef.current) {
+            workerRef.current.postMessage({ type: 'STOP' });
+        }
+    };
+  }, [user, authSettings, logout, passwordSecurity]);
+
+  useEffect(() => {
+    if (!user) return;
+    
+    const events = ["mousemove", "keydown", "scroll", "click", "touchstart", "touchmove", "wheel"];
+    const options = { passive: true, capture: true };
+    const handler = () => recordActivity();
+
+    events.forEach(evt => window.addEventListener(evt, handler, options));
+   
+    return () => {
+        events.forEach(evt => window.removeEventListener(evt, handler, options));
+    };
+  }, [user, recordActivity]);
+
+  const fetchAuthSettings = useCallback(async () => {
+    try {
+      const result = await authenticatedFetch("/api/admin/get_settings.php");
+      if (result && result.success) {
+        setAuthSettings({
+             inactivity_logout_enabled: result.data.inactivity_logout_enabled === true || result.data.inactivity_logout_enabled === 'true',
+             inactivity_timeout_minutes: parseFloat(result.data.inactivity_timeout_minutes) || 60
+        });
+      }
+    } catch (error) {
+      if (error?.errorCode === 'AUTH_TOKEN_REVOKED' || error?.errorCode === 'AUTH_TOKEN_INVALID' ||
+          error?.message?.includes('401') || error?.message?.includes('Session expired')) {
+          logout("Your session has expired. Please log in again.");
+      }
+    }
+  }, [logout]);
+
+  const setAuthenticatedSession = useCallback(async (authData) => {
+      if (!authData?.user) throw new Error("Invalid Auth Data");
+      
+      const now = Date.now().toString();
+      setUser(authData.user);
+      setPasswordSecurity(authData.user.passwordSecurity || null); 
+      
+      localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, now);
+      localStorage.setItem(REFRESH_LOCK_KEY, now); 
+      localStorage.removeItem(SYNC_LOGOUT_SIGNAL); 
+      
+      if (!authData.user.passwordSecurity?.isExpired) {
+          await fetchAuthSettings();
+      }
+  }, [fetchAuthSettings]);
+
+  const login = useCallback(async (email, password) => {
+      const envUrl = import.meta.env.VITE_API_BASE_URL || '';
+      const cleanBase = envUrl.replace(/\/+$/, '');
+      const response = await fetch(`${cleanBase}/api/admin/admin_login.php`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include", 
+        body: JSON.stringify({ email, password }),
+      });
+      const result = await response.json();
+      if (response.ok && result.success) {
+        if (result.data && !result.data.otp_required) {
+          await setAuthenticatedSession(result.data);
+        }
+        return result;
+      } else {
+        throw result;
+      }
+  }, [setAuthenticatedSession]);
+
+  useEffect(() => {
+    const initializeAuth = async () => {
+      try {
+        let response;
+        try {
+            response = await authenticatedFetch("/api/admin/get_me.php", { 
+                skipAuthHandler: true, skipConcurrencyHandler: true 
+            });
+        } catch (e) {
+            if (e.status === 401) {
+                // --- ENTERPRISE FIX: STATE HYDRATION VERIFICATION ---
+                // We only attempt emergency token rotation if the browser possesses 
+                // proof of an active session. If a user is freshly visiting the login page, 
+                // this gracefully bypasses the sequence, preventing 403 API spam.
+                if (localStorage.getItem(STORAGE_KEY_LAST_ACTIVE)) {
+                    try {
+                        try { await authenticatedFetch("/api/admin/get_me.php", { skipAuthHandler: true, skipConcurrencyHandler: true }); } catch (preflightErr) { console.debug("[AuthContext] Preflight token check failed:", preflightErr.message); }
+                        await authenticatedFetch("/api/admin/refresh_token.php", { method: "POST", skipAuthHandler: true, skipConcurrencyHandler: true });
+                        response = await authenticatedFetch("/api/admin/get_me.php", { skipAuthHandler: true, skipConcurrencyHandler: true });
+                    } catch (refreshErr) {
+                        // Silent fail for genuine expiration
+                    }
+                }
+            } else {
+                throw e;
+            }
+        }
+        
+        if (response && response.success && response.data?.user) {
+          localStorage.setItem(REFRESH_LOCK_KEY, Date.now().toString());
+          
+          setUser(response.data.user);
+          setPasswordSecurity(response.data.user.passwordSecurity || null); 
+          
+          if (!response.data.user.passwordSecurity?.isExpired) {
+              await fetchAuthSettings();
+          }
+        } else {
+          setUser(null);
+        }
+      } catch (e) {
+        setUser(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeAuth();
+  }, [fetchAuthSettings]);
+
+  const updateUser = (data) => {
+      setUser(prev => {
+          return { ...prev, ...data };
+      });
+  };
+
+  const value = {
+    user,
+    passwordSecurity, 
+    login,
+    logout,
+    initiateLogout: () => logout(),
+    loading,
+    updateUser,
+    refreshAuthSettings: () => fetchAuthSettings(),
+    setAuthenticatedSession,
+  };
+
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+      <InactivityWarningModal
+        isOpen={isWarningModalOpen}
+        onStay={handleStayLoggedIn}
+        countdownStart={secondsRemaining}
+      />
+      <ForcePasswordUpdateModal 
+        isOpen={passwordSecurity?.isExpired === true} 
+        onSuccess={(msg) => logout(msg)}
+        onLogout={() => logout("You have securely signed out.")} 
+        timeLeft={secondsRemaining}
+      />
+    </AuthContext.Provider>
+  );
+};

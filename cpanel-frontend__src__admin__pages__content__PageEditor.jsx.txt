@@ -1,0 +1,759 @@
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  useMemo,
+} from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { AnimatePresence } from "framer-motion";
+import toast from "react-hot-toast";
+
+// --- Icons & UI ---
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import Modal from "../../components/common/Modal";
+
+// --- API & Utils ---
+import { authenticatedFetch } from "../../utils/apiService";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+// --- Configuration ---
+import { pageStructures } from "../../config/pageStructures";
+
+// --- Modals ---
+import MediaLibrary from "../../components/media/MediaLibrary";
+import PreviewSnippetEditor from "../../components/seo/PreviewSnippetEditor";
+
+// --- Sub-Components (Views) ---
+import PageSidebar from "../../components/content/PageSidebar";
+import HomeEditor from "../../components/content/editors/HomeEditor";
+import AboutEditor from "../../components/content/editors/AboutEditor";
+import ContactEditor from "../../components/content/editors/ContactEditor";
+import FaqEditor from "../../components/content/editors/FaqEditor";
+import StandardEditor from "../../components/content/editors/StandardEditor";
+import TiptapEditor from "../../components/editor/TiptapEditor";
+
+const {
+  FiSave,
+  FiArrowLeft,
+  FiAlertTriangle,
+  FiCheckCircle,
+  FiFileText,
+  FiCornerUpRight,
+  FiCopy,
+  FiExternalLink
+} = FiIcons;
+
+const PageEditor = () => {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const { invalidateCache } = useAdminCache();
+  
+  // Refs
+  const titleTextareaRef = useRef(null);
+
+  const isEditing = Boolean(id);
+
+  // --- Global State ---
+  const [initialData, setInitialData] = useState(null);
+  const [globalSettings, setGlobalSettings] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [initialLoad, setInitialLoad] = useState(true);
+
+  // --- New State for Page Selector ---
+  const [pagesList, setPagesList] = useState([]);
+
+  // --- Form Data ---
+  const [isRobotsDefault, setIsRobotsDefault] = useState(true);
+
+  const [formData, setFormData] = useState({
+    title: "",
+    slug: "",
+    page_key: null,
+    content_json: {},
+    status: "draft",
+    featuredImageId: null, 
+    
+    // SEO - General
+    metaTitle: "",
+    metaDescription: "",
+    focusKeywords: "",
+    canonical_url: "",
+    
+    // SEO - Social (Facebook)
+    ogTitle: "",
+    ogDescription: "",
+    og_image: "",
+ 
+    // SEO - Social (Twitter)
+    twitterTitle: "",
+    twitterDescription: "",
+    twitterImage: "",
+    twitterSync: true,
+
+    // Robots Meta
+    no_index: false,
+    no_follow: false,
+    no_archive: false,
+    no_image_index: false,
+    no_snippet: false,
+    maxSnippet: null,
+    maxVideoPreview: null,
+    maxImagePreview: null,
+    
+    schema_enabled: true,
+    tags: []
+  });
+
+  const [isMinorEdit, setIsMinorEdit] = useState(true);
+  
+  const [activeRedirect, setActiveRedirect] = useState(null);
+  const [originalSlug, setOriginalSlug] = useState(null);
+  const [editorStructureKey, setEditorStructureKey] = useState(null);
+
+  // --- Aux Data ---
+  const [allTags, setAllTags] = useState([]);
+  const [allMedia, setAllMedia] = useState([]);
+  const [featuredImage, setFeaturedImage] = useState(null);
+
+  // --- UI Toggles ---
+  const [expandedSections, setExpandedSections] = useState({
+    seo: true,
+    featuredImage: true,
+    tags: true
+  });
+
+  // --- Modals State ---
+  const [isSnippetModalOpen, setIsSnippetModalOpen] = useState(false);
+  const [isSeoHazardModalOpen, setIsSeoHazardModalOpen] = useState(false);
+  const [isPermalinkModalOpen, setIsPermalinkModalOpen] = useState(false);
+  const [showSaveConfirmation, setShowSaveConfirmation] = useState(false);
+  const [confirmationInput, setConfirmationInput] = useState("");
+  const [publishConfirmInput, setPublishConfirmInput] = useState("");
+
+  const [isFeaturedMediaLibraryOpen, setIsFeaturedMediaLibraryOpen] = useState(false);
+  // NEW: State for Tiptap Editor's internal image insertions
+  const [isEditorMediaLibraryOpen, setIsEditorMediaLibraryOpen] = useState(false);
+  const [editorImageContext, setEditorImageContext] = useState(null);
+
+  const hasChanges = useMemo(() => {
+    return JSON.stringify(formData) !== JSON.stringify(initialData);
+  }, [formData, initialData]);
+
+  const structureKey = isEditing ? editorStructureKey : formData.slug;
+
+  // --- Data Fetching ---
+  const fetchPageData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [settingsResult, mediaResult, tagsResult, pagesResult] = await Promise.all([
+        authenticatedFetch("/api/admin/get_settings.php"),
+        authenticatedFetch("/api/admin/get_media.php"),
+        authenticatedFetch("/api/admin/get_tags.php?context=page"),
+        authenticatedFetch("/api/admin/get_pages.php?status=published")
+      ]);
+
+      if (settingsResult.success) setGlobalSettings(settingsResult.data);
+      if (mediaResult.success) setAllMedia(mediaResult.data.media);
+    
+      if (tagsResult.success) setAllTags(tagsResult.data);
+      if (pagesResult.success) setPagesList(pagesResult.data.pages || []);
+
+      if (isEditing) {
+        const result = await authenticatedFetch(
+          `/api/admin/get_page.php?id=${id}`
+        );
+
+        if (result.success) {
+          const pageData = result.data;
+          const contentJson = typeof pageData.content_json === "string"
+              ? JSON.parse(pageData.content_json || "{}")
+              : pageData.content_json;
+
+          setActiveRedirect(pageData.active_redirect || null);
+
+          // Robots Inheritance
+          const gIndex = settingsResult.data?.seo_robots_global_noindex === "true";
+          const isRobotsNull =
+            pageData.no_index === null &&
+            pageData.no_follow === null &&
+            pageData.no_archive === null &&
+            pageData.no_image_index === null &&
+            pageData.no_snippet === null;
+
+          const isAdvancedNull =
+            pageData.max_snippet === null &&
+            pageData.max_video_preview === null &&
+            pageData.max_image_preview === null;
+
+          setIsRobotsDefault(isRobotsNull && isAdvancedNull);
+
+          delete pageData.active_redirect;
+
+          const normalizedData = {
+            ...pageData,
+            title: pageData.title || "",
+            slug: pageData.slug || "",
+            content_json: contentJson,
+            featuredImageId: pageData.featuredImageId || null, 
+            
+            metaTitle: pageData.meta_title || "",
+            metaDescription: pageData.meta_description || "",
+            focusKeywords: pageData.focusKeywords || "",
+            canonical_url: pageData.canonical_url || "",
+            
+            ogTitle: pageData.ogTitle || "",
+            ogDescription: pageData.ogDescription || "",
+            og_image: pageData.og_image || "",
+            
+            twitterTitle: pageData.twitterTitle || pageData.twitter_title || "", 
+            twitterDescription: pageData.twitterDescription || pageData.twitter_description || "",
+            twitterImage: pageData.twitterImage || pageData.twitter_image || "",
+            twitterSync: pageData.twitterSync !== undefined ? pageData.twitterSync : true,
+
+            no_index: pageData.no_index === null ? gIndex : Boolean(pageData.no_index),
+            no_follow: pageData.no_follow === null ? (settingsResult.data?.seo_robots_global_nofollow === 'true') : Boolean(pageData.no_follow),
+            no_archive: pageData.no_archive === null ? (settingsResult.data?.seo_robots_global_noarchive === 'true') : Boolean(pageData.no_archive),
+            no_image_index: pageData.no_image_index === null ? (settingsResult.data?.seo_robots_global_noimageindex === 'true') : Boolean(pageData.no_image_index),
+            no_snippet: pageData.no_snippet === null ? (settingsResult.data?.seo_robots_global_nosnippet === 'true') : Boolean(pageData.no_snippet),
+            
+            maxSnippet: pageData.max_snippet,
+            maxVideoPreview: pageData.max_video_preview,
+            maxImagePreview: pageData.max_image_preview,
+            
+            tags: pageData.tags || [], 
+            schema_enabled: pageData.schema_enabled !== undefined ? Boolean(pageData.schema_enabled) : true,
+          };
+
+          setFormData(normalizedData);
+          setInitialData(JSON.parse(JSON.stringify(normalizedData)));
+          setOriginalSlug(pageData.slug);
+          setEditorStructureKey(pageData.page_key || pageData.slug);
+
+          if (pageData.featuredImageId) {
+            const image = mediaResult.data.media.find(item => item.id === pageData.featuredImageId);
+            if (image) setFeaturedImage(image);
+          }
+        } else {
+          toast.error(result.message || "Failed to load page data.");
+          navigate("/content/pages");
+        }
+      } else {
+        let defaultData = { ...formData };
+        if (settingsResult.data) {
+           const gSet = settingsResult.data;
+           defaultData = {
+             ...defaultData,
+             no_index: gSet.seo_robots_global_noindex === "true",
+             no_follow: gSet.seo_robots_global_nofollow === "true",
+             no_archive: gSet.seo_robots_global_noarchive === "true",
+             no_image_index: gSet.seo_robots_global_noimageindex === "true",
+             no_snippet: gSet.seo_robots_global_nosnippet === "true",
+           };
+        }
+        setFormData(defaultData);
+        setIsRobotsDefault(true);
+        setInitialData(JSON.parse(JSON.stringify(defaultData)));
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error("Error loading data.");
+    } finally {
+      setLoading(false);
+      setInitialLoad(false);
+    }
+  }, [id, isEditing, navigate]);
+
+  useEffect(() => {
+    fetchPageData();
+  }, [id]);
+
+  useEffect(() => {
+    if (titleTextareaRef.current) {
+      titleTextareaRef.current.style.height = "auto";
+      titleTextareaRef.current.style.height = titleTextareaRef.current.scrollHeight + "px";
+    }
+  }, [formData.title]);
+
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setFormData((prev) => {
+      const newValues = {
+        ...prev,
+        [name]: type === "checkbox" ? checked : value,
+      };
+      if (name === "title" && !isEditing) {
+        newValues.slug = value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+        newValues.metaTitle = value;
+      }
+      return newValues;
+    });
+  };
+
+  const handleSlugChange = (e) => {
+    const cleanSlug = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    setFormData((prev) => ({ ...prev, slug: cleanSlug }));
+  };
+
+  const handleContentJsonChange = (newContent) => {
+    setFormData(prev => ({ ...prev, content_json: newContent }));
+  };
+
+  const toggleRobotsDefault = () => {
+    if (!globalSettings) return;
+    if (!isRobotsDefault) {
+      setFormData((prev) => ({
+        ...prev,
+        no_index: globalSettings.seo_robots_global_noindex === "true",
+        no_follow: globalSettings.seo_robots_global_nofollow === "true",
+        no_archive: globalSettings.seo_robots_global_noarchive === "true",
+        no_image_index: globalSettings.seo_robots_global_noimageindex === "true",
+        no_snippet: globalSettings.seo_robots_global_nosnippet === "true",
+        maxSnippet: null,
+        maxVideoPreview: null,
+        maxImagePreview: null,
+      }));
+      setIsRobotsDefault(true);
+      toast.success("Restored to global defaults.");
+    } else {
+      setFormData((prev) => ({
+        ...prev,
+        no_index: globalSettings.seo_robots_global_noindex === "true",
+        no_follow: globalSettings.seo_robots_global_nofollow === "true",
+        no_archive: globalSettings.seo_robots_global_noarchive === "true",
+        no_image_index: globalSettings.seo_robots_global_noimageindex === "true",
+        no_snippet: globalSettings.seo_robots_global_nosnippet === "true",
+        maxSnippet: parseInt(globalSettings.seo_robots_global_max_snippet),
+        maxVideoPreview: parseInt(globalSettings.seo_robots_global_max_video_preview),
+        maxImagePreview: globalSettings.seo_robots_global_max_image_preview,
+      }));
+      setIsRobotsDefault(false);
+    }
+  };
+
+  const executeSave = async () => {
+    setIsSubmitting(true);
+    toast.loading("Saving page...", { id: "page-save-toast" });
+
+    let dataToSend = { 
+        ...formData,
+        max_snippet: formData.maxSnippet,
+        max_video_preview: formData.maxVideoPreview,
+        max_image_preview: formData.maxImagePreview
+    };
+
+    if (isRobotsDefault) {
+      dataToSend.no_index = null;
+      dataToSend.no_follow = null;
+      dataToSend.no_archive = null;
+      dataToSend.no_image_index = null;
+      dataToSend.no_snippet = null;
+      dataToSend.max_snippet = null;
+      dataToSend.max_video_preview = null;
+      dataToSend.max_image_preview = null;
+    }
+
+    if (isEditing) {
+        dataToSend.id = id;
+        if (isMinorEdit) dataToSend.is_minor_edit = true;
+    }
+
+    const url = isEditing
+      ? `/api/admin/update_page.php`
+      : `/api/admin/add_page.php`;
+    
+    // SECURITY & UX FIX: Standardized 600ms delay to prevent fast-click racing and provide natural UX confirmation.
+    const minDelay = new Promise((resolve) => setTimeout(resolve, 600));
+
+    try {
+      const apiCall = authenticatedFetch(url, {
+        method: "POST",
+        body: JSON.stringify(dataToSend),
+      });
+
+      const [result] = await Promise.all([apiCall, minDelay]);
+
+      if (result.success) {
+        toast.success(result.message, { id: "page-save-toast" });
+        setIsMinorEdit(true); 
+        setPublishConfirmInput("");
+
+        if (!isEditing && result.data && result.data.id) {
+          invalidateCache("pages_");
+          navigate(`/content/pages/edit/${result.data.id}`, { replace: true });
+        } else if (isEditing) {
+          await fetchPageData();
+        }
+      } else {
+        toast.error(result.message || "An unknown error occurred.", { id: "page-save-toast" });
+      }
+    } catch (error) {
+      toast.error(error.message || "Connection error.", { id: "page-save-toast" });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (isEditing && formData.slug !== originalSlug) {
+      setIsPermalinkModalOpen(true);
+      return;
+    }
+    if (isEditing && initialData?.status === "published" && formData.status !== "published") {
+      setIsSeoHazardModalOpen(true);
+      return;
+    }
+    setShowSaveConfirmation(true);
+  };
+
+  const handleSelectFeaturedMedia = (media) => {
+    setFeaturedImage(media);
+    setFormData((prev) => ({ ...prev, featuredImageId: media.id }));
+    setIsFeaturedMediaLibraryOpen(false);
+  };
+  
+  const handleRemoveFeaturedImage = () => {
+    setFeaturedImage(null);
+    setFormData((prev) => ({ ...prev, featuredImageId: null }));
+  };
+
+  // --- Image Handling specifically for Tiptap Editor Content ---
+  const handleEditorMediaRequest = (context) => {
+    setEditorImageContext(context);
+    setIsEditorMediaLibraryOpen(true);
+  };
+
+  const handleSelectEditorMedia = (media) => {
+    if (editorImageContext && editorImageContext.insertImage) {
+      editorImageContext.insertImage(media.full_url, media.alt_text || '');
+    }
+    setIsEditorMediaLibraryOpen(false);
+    setEditorImageContext(null);
+  };
+
+  const renderContentEditor = () => {
+    const key = structureKey || "standard";
+    
+    switch (key) {
+        case "home":
+            return <HomeEditor content={formData.content_json} onContentChange={handleContentJsonChange} globalSettings={globalSettings} />;
+        case "about":
+            return <AboutEditor content={formData.content_json} onContentChange={handleContentJsonChange} globalSettings={globalSettings} />;
+        case "contact":
+        case "contact-us":
+            return <ContactEditor content={formData.content_json} onContentChange={handleContentJsonChange} globalSettings={globalSettings} />;
+        case "faq":
+            return <FaqEditor content={formData.content_json} onContentChange={handleContentJsonChange} globalSettings={globalSettings} />;
+        default:
+            if (pageStructures[key]) {
+                return (
+                    <StandardEditor 
+                        content={formData.content_json} 
+                        onContentChange={handleContentJsonChange} 
+                        structure={pageStructures[key]} 
+                        pagesList={pagesList} 
+                        onRequestMedia={handleEditorMediaRequest} 
+                    />
+                );
+            }
+            return (
+                <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+                     <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">Page Content</h3>
+                     <TiptapEditor
+                        value={formData.content_json.mainContent || ""}
+                        onChange={(val) => handleContentJsonChange({...formData.content_json, mainContent: val})}
+                        onRequestMedia={handleEditorMediaRequest} 
+                     />
+                </div>
+            );
+    }
+  };
+
+  const handleTagsChange = (ids) =>
+    setFormData((prev) => ({ ...prev, tags: ids }));
+
+  const handleStatusChange = (newStatus) =>
+    setFormData((prev) => ({ ...prev, status: newStatus }));
+
+  const handleKeywordsChange = (keywordsArray) => {
+    const keywordsString = keywordsArray.join(", ");
+    setFormData((prev) => ({ ...prev, focusKeywords: keywordsString }));
+  };
+  
+  const getKeywordsArray = () => {
+    if (!formData.focusKeywords) return [];
+    return formData.focusKeywords
+      .split(",")
+      .map((k) => k.trim())
+      .filter((k) => k);
+  };
+  
+  const getButtonLabel = () => {
+    if (isSubmitting) return "Saving...";
+    if (formData.status === "draft") return "Save Draft";
+    return isEditing ? "Update" : "Save & Publish";
+  };
+
+  const toggleSection = (section) => {
+    setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
+  };
+
+  // Advanced SEO Setters
+  const onMaxSnippetChange = (val) => setFormData(prev => ({...prev, maxSnippet: val}));
+  const onMaxVideoChange = (val) => setFormData(prev => ({...prev, maxVideoPreview: val}));
+  const onMaxImageChange = (val) => setFormData(prev => ({...prev, maxImagePreview: val}));
+
+  if (loading && initialLoad)
+    return <LoadingSpinner size="xl" className="h-64" />;
+
+  const siteUrl = (globalSettings?.site_url || "https://yourdomain.com").replace(/\/$/, "");
+
+  return (
+    <>
+      <MediaLibrary
+        isOpen={isFeaturedMediaLibraryOpen}
+        onClose={() => setIsFeaturedMediaLibraryOpen(false)}
+        onSelectMedia={handleSelectFeaturedMedia}
+        disableAnimation={true}
+        initialSelectedUrl={featuredImage ? featuredImage.full_url : ""}
+      />
+
+      <MediaLibrary
+        isOpen={isEditorMediaLibraryOpen}
+        onClose={() => { setIsEditorMediaLibraryOpen(false); setEditorImageContext(null); }}
+        onSelectMedia={handleSelectEditorMedia}
+        disableAnimation={true}
+        initialSelectedUrl={editorImageContext?.src || ""} 
+      />
+
+      <PreviewSnippetEditor
+        isOpen={isSnippetModalOpen}
+        onClose={() => setIsSnippetModalOpen(false)}
+        formData={formData}
+        onFormDataChange={handleChange}
+        basePath=""
+        featuredImage={featuredImage}
+        globalSettings={globalSettings}
+      />
+
+      <Modal
+         isOpen={isSeoHazardModalOpen}
+         onClose={() => setIsSeoHazardModalOpen(false)}
+         title="SEO Warning: Unpublishing Content"
+         type="warning"
+      >
+          <div className="space-y-4">
+              <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4 flex gap-3">
+                  <SafeIcon icon={FiAlertTriangle} className="w-6 h-6 text-amber-600 shrink-0" />
+                  <div>
+                      <h4 className="font-bold text-amber-900 dark:text-amber-100">Potential 404 Error</h4>
+                      <p className="text-xs text-amber-800 dark:text-amber-200">You are unpublishing a live page. This will break existing links.</p>
+                  </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                  <button onClick={() => setIsSeoHazardModalOpen(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Cancel</button>
+                  <button onClick={() => { setIsSeoHazardModalOpen(false); executeSave(); }} className="px-4 py-2 bg-amber-600 text-white rounded">Proceed</button>
+              </div>
+          </div>
+      </Modal>
+
+      <Modal
+        isOpen={showSaveConfirmation}
+        onClose={() => setShowSaveConfirmation(false)}
+        title={formData.status === 'draft' ? "Save Draft" : (isEditing ? "Update Live Page" : "Publish Page")}
+        type="default"
+      >
+        <div className="space-y-4">
+            <div className="flex items-start space-x-3">
+                 <div className={`p-2 rounded-full ${formData.status === "published" ? "bg-green-100 text-green-600" : "bg-blue-100 text-blue-600"}`}>
+                      <SafeIcon icon={formData.status === "published" ? FiCheckCircle : FiFileText} className="w-5 h-5" />
+                 </div>
+                 <div>
+                      <p className="text-gray-800 dark:text-gray-200 font-medium">
+                          {formData.status === 'draft' ? "Your page will be saved as a draft." : "This content will be visible to the public."}
+                      </p>
+                 </div>
+            </div>
+
+            {formData.status !== 'draft' && (
+                <div className="mt-3">
+                     <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Type PUBLISH to confirm:</label>
+                     {/* FIX: Added bg-white text-gray-900 for explicit light mode visibility */}
+                     <input 
+                        type="text" 
+                        placeholder="PUBLISH" 
+                        value={publishConfirmInput} 
+                        onChange={(e) => setPublishConfirmInput(e.target.value)} 
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 dark:bg-gray-800 dark:text-white dark:border-gray-600 focus:ring-2 focus:ring-blue-500 focus:outline-none" 
+                     />
+                </div>
+            )}
+            
+            {isEditing && formData.status === "published" && (
+                <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800">
+                   <label className="flex items-start gap-3 cursor-pointer select-none">
+                        <div className="flex items-center h-5">
+                            <input type="checkbox" checked={isMinorEdit} onChange={(e) => setIsMinorEdit(e.target.checked)} className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500" />
+                        </div>
+                        <div>
+                            <span className="block text-sm font-semibold text-blue-800 dark:text-blue-300">Minor Update</span>
+                            <span className="block text-xs text-blue-600 dark:text-blue-400">Preserve original publish date.</span>
+                        </div>
+                    </label>
+                </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-3">
+                <button onClick={() => setShowSaveConfirmation(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded transition-colors">Cancel</button>
+                <button 
+                    onClick={() => { setShowSaveConfirmation(false); executeSave(); }}
+                    disabled={formData.status !== 'draft' && publishConfirmInput !== 'PUBLISH'}
+                    className={`px-5 py-2 text-white rounded-lg disabled:opacity-50 transition-colors ${formData.status === 'published' ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+                >
+                    Confirm
+                </button>
+            </div>
+        </div>
+      </Modal>
+
+      <Modal
+         isOpen={isPermalinkModalOpen}
+         onClose={() => { setIsPermalinkModalOpen(false); setConfirmationInput(""); }}
+         title="Confirm Permalink Change"
+         type="danger"
+      >
+          <div className="space-y-4">
+               <p className="text-red-600 dark:text-red-400">Changing the slug will break existing links. Type CONFIRM to proceed.</p>
+               {/* FIX: Added bg-white text-gray-900 for explicit light mode visibility */}
+               <input 
+                  type="text" 
+                  value={confirmationInput} 
+                  onChange={(e) => setConfirmationInput(e.target.value)} 
+                  className="w-full border border-gray-300 p-2 rounded bg-white text-gray-900 dark:bg-gray-800 dark:text-white dark:border-gray-600 focus:ring-2 focus:ring-red-500 focus:outline-none" 
+               />
+               <div className="flex justify-end gap-2">
+                   <button onClick={() => setIsPermalinkModalOpen(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded transition-colors">Cancel</button>
+                   <button onClick={() => { if(confirmationInput==='CONFIRM') { setIsPermalinkModalOpen(false); executeSave(); } }} disabled={confirmationInput !== 'CONFIRM'} className="px-4 py-2 bg-red-600 text-white rounded disabled:opacity-50 transition-colors">Change</button>
+               </div>
+          </div>
+      </Modal>
+
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={() => navigate("/content/pages")}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              <SafeIcon icon={FiArrowLeft} className="w-5 h-5 dark:text-gray-300" />
+            </button>
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+                {isEditing ? "Edit Page" : "New Page"}
+              </h1>
+            </div>
+          </div>
+          <button
+            onClick={handleSave}
+            disabled={isSubmitting || !hasChanges}
+            className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl shadow-sm font-semibold transition-all ${!hasChanges ? "bg-gray-200 text-gray-500 dark:bg-gray-700 cursor-not-allowed" : formData.status === "published" ? "bg-green-600 text-white hover:bg-green-700" : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 dark:bg-gray-800 dark:text-white dark:border-gray-700 dark:hover:bg-gray-700"}`}
+          >
+            <SafeIcon icon={FiSave} className="w-4 h-4" />
+            <span>{getButtonLabel()}</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* LEFT COLUMN: Content Editors */}
+          <div className="lg:col-span-9 space-y-6">
+            {activeRedirect && (
+              <div className="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-xl p-4 flex items-start gap-4">
+                  <div className="p-2 bg-indigo-100 dark:bg-indigo-800/50 rounded-lg text-indigo-600 dark:text-indigo-400 shrink-0"><SafeIcon icon={FiCornerUpRight} className="w-6 h-6" /></div>
+                  <div className="flex-1">
+                      <h4 className="text-sm font-bold text-indigo-900 dark:text-indigo-100">Active Redirect</h4>
+                      <p className="text-sm text-indigo-800 dark:text-indigo-300 mt-1">Traffic is redirecting to: {activeRedirect.target_url}</p>
+                  </div>
+                  <button onClick={() => window.open("/seo/redirects", "_blank")} className="px-4 py-2 bg-white text-indigo-600 border border-indigo-200 rounded-lg text-sm transition-colors hover:bg-indigo-50">Manage</button>
+              </div>
+            )}
+
+            <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700 space-y-4">
+              {/* FIX: Added text-gray-900 and explicitly updated placeholder for proper light/dark contrast */}
+              <textarea
+                ref={titleTextareaRef}
+                name="title"
+                value={formData.title}
+                onChange={handleChange}
+                rows={1}
+                placeholder="Enter page title..."
+                className="w-full text-3xl font-bold border-none focus:ring-0 bg-transparent text-gray-900 dark:text-white p-0 placeholder-gray-400 dark:placeholder-gray-500 resize-none overflow-hidden leading-snug"
+                style={{ minHeight: "42px" }}
+              />
+              {formData.slug && (
+                 <div className="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-1 mb-4 mt-1">
+                    <span className="font-medium text-gray-400">Permalink:</span>
+                    <a href={`${siteUrl}/${formData.slug}`} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline flex items-center gap-1">
+                        {`${siteUrl}/${formData.slug}`} <SafeIcon icon={FiExternalLink} className="w-3.5 h-3.5 opacity-75" />
+                    </a>
+                    <button onClick={() => { navigator.clipboard.writeText(`${siteUrl}/${formData.slug}`); toast.success("Slug copied"); }} className="ml-2 text-gray-400 hover:text-gray-600 transition-colors" title="Copy Slug"><SafeIcon icon={FiCopy} className="w-3.5 h-3.5" /></button>
+                 </div>
+              )}
+            </div>
+
+            {/* DYNAMIC EDITOR RENDERING */}
+            {renderContentEditor()}
+
+          </div>
+
+          {/* RIGHT COLUMN: Sidebar */}
+          <div className="lg:col-span-3">
+             <PageSidebar 
+                // Data
+                formData={formData}
+                initialData={initialData}
+                allTags={allTags}
+                globalSettings={globalSettings}
+                featuredImage={featuredImage}
+                
+                // State
+                expandedSections={expandedSections}
+                toggleSection={(section) => setExpandedSections(prev => ({...prev, [section]: !prev[section]}))}
+                isRobotsDefault={isRobotsDefault}
+                
+                // Handlers
+                handleChange={handleChange}
+                handleSlugChange={handleSlugChange}
+                handleStatusChange={(val) => setFormData(prev => ({ ...prev, status: val }))}
+                
+                // Tags Handler
+                handleTagsChange={(newTags) => setFormData(prev => ({...prev, tags: newTags}))}
+                
+                // Keywords Handler
+                getKeywordsArray={() => formData.focusKeywords ? formData.focusKeywords.split(',').filter(Boolean) : []}
+                handleKeywordsChange={(newKeywords) => setFormData(prev => ({ ...prev, focusKeywords: newKeywords.join(',') }))}
+                
+                // SEO Handlers
+                toggleRobotsDefault={toggleRobotsDefault}
+                setIsSnippetModalOpen={setIsSnippetModalOpen}
+                
+                // Media Handlers
+                setIsFeaturedMediaLibraryOpen={setIsFeaturedMediaLibraryOpen}
+                handleRemoveFeaturedImage={handleRemoveFeaturedImage}
+
+                // Advanced SEO Setters
+                onMaxSnippetChange={(val) => setFormData(prev => ({...prev, maxSnippet: val}))}
+                onMaxVideoChange={(val) => setFormData(prev => ({...prev, maxVideoPreview: val}))}
+                onMaxImageChange={(val) => setFormData(prev => ({...prev, maxImagePreview: val}))}
+             />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+};
+
+export default PageEditor;

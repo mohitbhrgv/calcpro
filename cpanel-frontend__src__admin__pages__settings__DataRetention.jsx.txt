@@ -1,0 +1,793 @@
+// cPanel_Frontend/src/admin/pages/settings/DataRetention.jsx
+
+import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import { authenticatedFetch } from "../../utils/apiService";
+import SafeIcon from "../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import * as IoIcons from "react-icons/io5";
+import * as BiIcons from "react-icons/bi";
+import toast from "react-hot-toast";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import Modal from "../../components/common/Modal";
+import { useAdminCache } from "../../context/AdminCacheContext";
+
+const apiService = {
+  getSettings: () => authenticatedFetch(`/api/admin/get_settings.php`),
+  updateSettings: (data) =>
+    authenticatedFetch(`/api/admin/update_settings.php`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+};
+
+// --- Optimal Default Configuration (All 12 Tables Isolated) ---
+const DEFAULT_SETTINGS = {
+  login_attempt_retention_days: 30,
+  admin_login_failures_retention_days: 30,
+  security_escalation_timeframe_hours: 168,
+  jwt_blacklist_retention_minutes: 15, // ENTERPRISE FIX: Transitioned to high-frequency minute metric
+  otp_retention_hours: 1,
+  trusted_device_retention_days: 30,
+  unblock_token_retention_hours: 24,
+  password_reset_retention_hours: 24,
+  captcha_retention_hours: 24, 
+  system_log_retention_days: 90,
+  log_retention_info: 30,
+  log_retention_resolved: 90,
+  seo_404_log_retention_days: 30,
+};
+
+// --- Premium Viewport-Aware Headless Portal Dropdown ---
+const CustomSelect = ({ value, onChange, options, className }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+  const portalRef = useRef(null);
+  const [dropdownStyles, setDropdownStyles] = useState({});
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      const clickedOutsideButton = dropdownRef.current && !dropdownRef.current.contains(event.target);
+      const clickedOutsidePortal = portalRef.current && !portalRef.current.contains(event.target);
+      
+      if (clickedOutsideButton && clickedOutsidePortal) {
+          setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    
+    const updatePosition = () => {
+        if (isOpen && dropdownRef.current) {
+            const rect = dropdownRef.current.getBoundingClientRect();
+            const spaceBelow = window.innerHeight - rect.bottom;
+            const placeAbove = spaceBelow < 250 && rect.top > spaceBelow;
+
+            setDropdownStyles({
+                top: placeAbove ? 'auto' : rect.bottom + window.scrollY + 4,
+                bottom: placeAbove ? (window.innerHeight - rect.top - window.scrollY + 4) : 'auto',
+                left: rect.left + window.scrollX,
+                width: rect.width
+            });
+        }
+    };
+    
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+    
+    return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+        window.removeEventListener('scroll', updatePosition, true);
+        window.removeEventListener('resize', updatePosition);
+    };
+  }, [isOpen]);
+
+  const handleToggle = () => {
+     if (!isOpen && dropdownRef.current) {
+         const rect = dropdownRef.current.getBoundingClientRect();
+         const spaceBelow = window.innerHeight - rect.bottom;
+         const placeAbove = spaceBelow < 250 && rect.top > spaceBelow;
+
+         setDropdownStyles({
+            top: placeAbove ? 'auto' : rect.bottom + window.scrollY + 4,
+            bottom: placeAbove ? (window.innerHeight - rect.top - window.scrollY + 4) : 'auto',
+            left: rect.left + window.scrollX,
+            width: rect.width
+         });
+     }
+     setIsOpen(!isOpen);
+  };
+
+  const selectedLabel = options.find(opt => String(opt.value) === String(value))?.label || '';
+
+  const dropdownContent = (
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            ref={portalRef}
+            initial={{ opacity: 0, y: dropdownStyles.bottom !== 'auto' ? 5 : -5 }} 
+            animate={{ opacity: 1, y: 0 }} 
+            exit={{ opacity: 0, y: dropdownStyles.bottom !== 'auto' ? 5 : -5 }} 
+            transition={{ duration: 0.15 }}
+            style={dropdownStyles}
+            className="absolute z-[99999] bg-white dark:bg-[#0f172a] border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl overflow-hidden py-1"
+          >
+            <div className="max-h-60 overflow-y-auto custom-scrollbar">
+                {options.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onChange(opt.value); setIsOpen(false); }}
+                    className={`w-full text-left px-4 py-3 text-[13px] transition-colors ${
+                      String(value) === String(opt.value) 
+                        ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 font-bold' 
+                        : 'text-gray-900 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 font-medium'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+  );
+
+  return (
+    <div className={`relative w-full lg:w-64 shrink-0 ${className || ''}`} ref={dropdownRef}>
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="flex items-center justify-between w-full bg-white dark:bg-[#0B1221] border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white rounded-xl px-4 py-2.5 text-[14px] focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-semibold cursor-pointer shadow-sm hover:border-gray-400 dark:hover:border-gray-500"
+      >
+        <span className="truncate pr-2">{selectedLabel}</span>
+        <SafeIcon 
+            icon={FiIcons.FiChevronDown} 
+            className={`w-4 h-4 text-gray-400 shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-180 text-indigo-500' : ''}`} 
+        />
+      </button>
+      {createPortal(dropdownContent, document.body)}
+    </div>
+  );
+};
+
+// --- Standard Status Indicator ---
+const ImpactBadge = ({ days, type }) => {
+  let impact = "Optimal";
+  let styleClass = "bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800/50";
+  
+  if (type === "minutes") {
+    if (days > 60) { impact = "Moderate Risk"; styleClass = "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800/50"; }
+    if (days >= 1440) { impact = "High Storage"; styleClass = "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800/50"; }
+  } else if (type === "hours") {
+    if (days > 24) { impact = "Moderate Risk"; styleClass = "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800/50"; }
+    if (days > 48) { impact = "Security Risk"; styleClass = "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800/50"; }
+  } else {
+    if (days > 30) { impact = "High Storage"; styleClass = "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800/50"; }
+    if (days >= 180) { impact = "Data Bloat"; styleClass = "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800/50"; }
+  }
+
+  return (
+    <span className={`px-2 py-0.5 text-[10px] font-extrabold tracking-wider uppercase rounded-md border shadow-sm whitespace-nowrap ${styleClass}`}>
+      {impact}
+    </span>
+  );
+};
+
+// --- Database Table Reference Badge ---
+const TableBadge = ({ tableName }) => (
+  <span className="ml-1 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400 font-mono border border-slate-200 dark:border-slate-700 shadow-sm transition-all hover:bg-slate-200 dark:hover:bg-slate-700" title="Corresponds to MySQL Database Table">
+    <SafeIcon icon={FiIcons.FiDatabase} className="w-3 h-3 mr-1.5 text-indigo-500 opacity-70" />
+    {tableName}
+  </span>
+);
+
+// --- The Advanced Scope: Dirty State Micro-Indicator ---
+const ModifiedIndicator = ({ isModified }) => {
+    if (!isModified) return null;
+    return (
+        <span className="flex h-2 w-2 relative ml-1" title="Unsaved Modification">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+        </span>
+    );
+};
+
+const DataRetention = () => {
+  const { refreshCache } = useAdminCache();
+  
+  // UX State Architecture
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [isManualRefresh, setIsManualRefresh] = useState(false);
+  const [saving, setSaving] = useState(false);
+  
+  // STATE MANAGEMENT
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [originalSettings, setOriginalSettings] = useState(DEFAULT_SETTINGS);
+
+  // Intent Verification State
+  const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+
+  const fetchSettings = async () => {
+    setIsUpdating(true);
+    try {
+      const response = await apiService.getSettings();
+      if (response && response.success) {
+        const parsedData = {};
+        Object.keys(DEFAULT_SETTINGS).forEach(key => {
+            parsedData[key] = response.data[key] !== undefined ? parseInt(response.data[key], 10) : DEFAULT_SETTINGS[key];
+        });
+        setSettings(parsedData);
+        setOriginalSettings(parsedData);
+      }
+    } catch (error) {
+      toast.error("Failed to load Data Retention configurations.");
+    } finally {
+      setInitialLoading(false);
+      setIsUpdating(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSettings();
+  }, []);
+
+  const handleManualRefresh = async () => {
+    if (isUpdating || isManualRefresh || saving) return;
+    setIsManualRefresh(true);
+    await fetchSettings();
+    setTimeout(() => setIsManualRefresh(false), 800);
+  };
+
+  const handleRestoreDefaults = () => {
+    setSettings(DEFAULT_SETTINGS);
+    toast.success("Settings restored to optimal defaults. Save to apply.", { id: 'restore-toast' });
+  };
+
+  const initSaveProcess = () => {
+    setConfirmText("");
+    setIsConfirmModalOpen(true);
+  };
+
+  const executeSave = async () => {
+    setIsConfirmModalOpen(false);
+    setSaving(true);
+    toast.loading("Securing configuration...", { id: "save-retention" });
+
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    try {
+      const response = await apiService.updateSettings(settings);
+      if (response && response.success) {
+        toast.success("Settings updated successfully.", { id: "save-retention" });
+        setOriginalSettings(settings); 
+        if (typeof refreshCache === 'function') {
+            await refreshCache("settings_general");
+        }
+      } else {
+        toast.error(response?.message || "Failed to update settings.", { id: "save-retention" });
+      }
+    } catch (error) {
+      toast.error("Network error while saving settings.", { id: "save-retention" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleChange = (key, value) => setSettings((prev) => ({ ...prev, [key]: value }));
+
+  const hasChanges = Object.keys(DEFAULT_SETTINGS).some(
+    (key) => settings[key] !== originalSettings[key]
+  );
+  
+  const isDefault = Object.keys(DEFAULT_SETTINGS).every(
+    (key) => settings[key] === DEFAULT_SETTINGS[key]
+  );
+
+  // ENTERPRISE SEC FIX: High-frequency interval dropdown specifically for JWTs
+  const retentionMinutesStandard = [
+    { value: 15, label: "15 Minutes (Optimal)" },
+    { value: 30, label: "30 Minutes" },
+    { value: 60, label: "1 Hour" },
+    { value: 120, label: "2 Hours" },
+    { value: 1440, label: "24 Hours" },
+  ];
+
+  const retentionDaysStandard = [
+    { value: 7, label: "7 Days" },
+    { value: 15, label: "15 Days" },
+    { value: 30, label: "30 Days (Optimal)" },
+    { value: 60, label: "60 Days" },
+    { value: 90, label: "90 Days" },
+    { value: 180, label: "6 Months" },
+    { value: 365, label: "1 Year" },
+  ];
+  
+  const retentionHoursStandard = [
+    { value: 1, label: "1 Hour (Optimal)" },
+    { value: 4, label: "4 Hours" },
+    { value: 12, label: "12 Hours" },
+    { value: 24, label: "24 Hours" },
+    { value: 72, label: "72 Hours" },
+  ];
+  
+  const retentionEscalationHours = [
+    { value: 24, label: "24 Hours" },
+    { value: 72, label: "3 Days" },
+    { value: 168, label: "7 Days (Optimal)" },
+    { value: 336, label: "14 Days" },
+    { value: 720, label: "30 Days" },
+  ];
+
+  const CustomDivider = () => (
+      <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-200 dark:via-gray-700 to-transparent opacity-60" />
+  );
+
+  return (
+    <div className="space-y-6">
+      
+      {/* --- Standardized Confirmation Modal --- */}
+      <Modal
+        isOpen={isConfirmModalOpen}
+        onClose={() => !saving && setIsConfirmModalOpen(false)}
+        title="Confirm Policy Update"
+        type="danger"
+        disableAnimation={true}
+      >
+        <div className="space-y-4">
+          <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg text-sm text-gray-600 dark:text-gray-300">
+            You are modifying global data retention rules. Any system logs, security tokens, or records that exceed your new limitations will be permanently destroyed during the next automated maintenance cycle. This action cannot be undone.
+          </div>
+          
+          <div>
+             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+               Please type <span className="font-bold text-gray-900 dark:text-white">CONFIRM</span> to proceed:
+             </label>
+             <input 
+                type="text" 
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder="CONFIRM"
+                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm bg-white dark:bg-gray-800 dark:text-white focus:ring-2 focus:ring-red-500 outline-none transition-shadow"
+                autoComplete="off"
+             />
+          </div>
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => setIsConfirmModalOpen(false)}
+              className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50 focus:outline-none"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={saving || confirmText !== 'CONFIRM'}
+              onClick={executeSave}
+              className="px-4 py-2 text-sm font-bold text-white rounded-lg transition-colors shadow-sm disabled:opacity-50 bg-red-600 hover:bg-red-700 focus:outline-none active:scale-95"
+            >
+              Confirm Action
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* --- Standardized Header --- */}
+      <motion.div 
+        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} 
+        className="flex items-start gap-4 p-5 rounded-xl bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-800/30 shadow-sm"
+      >
+        <div className="p-3 bg-amber-100 dark:bg-amber-800/50 rounded-xl text-amber-600 dark:text-amber-400 shrink-0 shadow-sm border border-amber-200 dark:border-amber-700/50">
+          <SafeIcon icon={FiIcons.FiDatabase} className="w-6 h-6" />
+        </div>
+        <div className="flex-1">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+                <div className="flex items-center gap-2">
+                    <h1 className="text-xl font-bold text-gray-900 dark:text-white tracking-tight">Database Retention & CRON Management</h1>
+                </div>
+                 <p className="text-[13.5px] text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                    Configure automated database pruning mapped directly to your 12 dynamic SQL tables. Setting strict retention limits guarantees GDPR compliance and sustains lightning-fast query performance.
+                </p>
+            </div>
+            
+            <div className="flex items-center gap-2 shrink-0">
+               <button
+                    onClick={handleManualRefresh}
+                    disabled={isUpdating || isManualRefresh || saving}
+                    className={`p-2.5 text-amber-600 bg-amber-100/50 hover:bg-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:hover:bg-amber-900/40 rounded-lg transition-colors border border-amber-200/50 dark:border-amber-800 focus:outline-none ${
+                        isManualRefresh || isUpdating ? "opacity-50 cursor-not-allowed" : ""
+                    }`}
+                    title="Sync Database Settings"
+                >
+                    <SafeIcon icon={FiIcons.FiRefreshCw} className={`w-4 h-4 ${isManualRefresh ? "animate-spin" : ""}`} />
+                </button>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* --- CRON Notice Banner --- */}
+      <motion.div
+        initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}
+        className="bg-indigo-50 dark:bg-indigo-900/20 border-l-4 border-indigo-400 dark:border-indigo-500 p-4 rounded-r-lg flex gap-3 shadow-sm"
+      >
+        <SafeIcon icon={FiIcons.FiInfo} className="w-5 h-5 text-indigo-600 dark:text-indigo-400 flex-shrink-0 mt-0.5" />
+        <p className="text-[13px] text-indigo-800 dark:text-indigo-200/90 leading-relaxed font-medium">
+          High-frequency background CRON triggers will apply these policies automatically. Ensure all retention thresholds meet your internal SOC 2 compliance requirements.
+        </p>
+      </motion.div>
+
+      {/* ENTERPRISE ZONE ARCHITECTURE 2.0 */}
+      <div className="relative z-10 flex flex-col min-h-[400px]">
+        <AnimatePresence>
+            {(initialLoading || isUpdating || saving) && (
+                <motion.div 
+                    initial={{ opacity: 0 }} 
+                    animate={{ opacity: 1 }} 
+                    exit={{ opacity: 0 }} 
+                    className="absolute inset-0 bg-white/50 dark:bg-gray-900/50 backdrop-blur-[1px] flex items-center justify-center z-50 rounded-2xl"
+                >
+                    <LoadingSpinner />
+                </motion.div>
+            )}
+        </AnimatePresence>
+
+        <div className={`space-y-6 transition-opacity duration-200 ${(initialLoading || isUpdating || saving) ? "opacity-50 pointer-events-none" : ""}`}>
+          
+          {/* Panel 1: Security & Threat Logs (ROSE ZONE) */}
+          <motion.div
+            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
+            className="bg-white dark:bg-[#0B1221] rounded-2xl shadow-sm border-l-4 border-rose-500 border-y border-r border-gray-200 dark:border-gray-800 relative z-40 overflow-visible"
+          >
+            <div className="px-6 py-4 border-b border-rose-100 dark:border-rose-900/30 bg-rose-50/30 dark:bg-rose-900/10 rounded-t-xl flex items-center gap-3">
+               <div className="p-2 bg-rose-100 dark:bg-rose-900/50 rounded-lg text-rose-600 dark:text-rose-400">
+                  <SafeIcon icon={IoIcons.IoShieldCheckmarkOutline} className="w-4 h-4" />
+               </div>
+               <h3 className="text-sm font-extrabold uppercase tracking-widest text-gray-900 dark:text-gray-100">
+                  Security & Threat Logs
+               </h3>
+            </div>
+            
+            <div className="p-6 space-y-7">
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    General Login Attempts
+                    <ModifiedIndicator isModified={settings.login_attempt_retention_days !== originalSettings.login_attempt_retention_days} />
+                    <ImpactBadge days={settings.login_attempt_retention_days} type="days" />
+                    <TableBadge tableName="login_attempts" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Retains an audit trail of standard login failures across the application.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.login_attempt_retention_days}
+                  onChange={(val) => handleChange("login_attempt_retention_days", val)}
+                  options={retentionDaysStandard}
+                />
+              </div>
+
+              <CustomDivider />
+
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    Admin Login Failures
+                    <ModifiedIndicator isModified={settings.admin_login_failures_retention_days !== originalSettings.admin_login_failures_retention_days} />
+                    <ImpactBadge days={settings.admin_login_failures_retention_days} type="days" />
+                    <TableBadge tableName="admin_login_failures" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Isolated audit trail specifically for high-privilege account brute force attempts.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.admin_login_failures_retention_days}
+                  onChange={(val) => handleChange("admin_login_failures_retention_days", val)}
+                  options={retentionDaysStandard}
+                />
+              </div>
+
+              <CustomDivider />
+
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    Temporary Block Lifespan
+                    <ModifiedIndicator isModified={settings.security_escalation_timeframe_hours !== originalSettings.security_escalation_timeframe_hours} />
+                    <ImpactBadge days={settings.security_escalation_timeframe_hours} type="hours" />
+                    <TableBadge tableName="temporary_blocks" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Defines when temporary IP block records are purged from the database after expiring.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.security_escalation_timeframe_hours}
+                  onChange={(val) => handleChange("security_escalation_timeframe_hours", val)}
+                  options={retentionEscalationHours}
+                />
+              </div>
+            </div>
+          </motion.div>
+
+          {/* Panel 2: Authentication & Session Tokens (BLUE ZONE) */}
+          <motion.div
+            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+            className="bg-white dark:bg-[#0B1221] rounded-2xl shadow-sm border-l-4 border-blue-500 border-y border-r border-gray-200 dark:border-gray-800 relative z-30 overflow-visible"
+          >
+            <div className="px-6 py-4 border-b border-blue-100 dark:border-blue-900/30 bg-blue-50/30 dark:bg-blue-900/10 rounded-t-xl flex items-center gap-3">
+               <div className="p-2 bg-blue-100 dark:bg-blue-900/50 rounded-lg text-blue-600 dark:text-blue-400">
+                  <SafeIcon icon={FiIcons.FiKey} className="w-4 h-4" />
+               </div>
+               <h3 className="text-sm font-extrabold uppercase tracking-widest text-gray-900 dark:text-gray-100">
+                  Authentication & Session Tokens
+               </h3>
+            </div>
+            
+            <div className="p-6 space-y-7">
+              
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    Used Security Challenges (CAPTCHAs)
+                    <ModifiedIndicator isModified={settings.captcha_retention_hours !== originalSettings.captcha_retention_hours} />
+                    <ImpactBadge days={settings.captcha_retention_hours} type="hours" />
+                    <TableBadge tableName="consumed_captchas" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Deletes used math challenge tickets to prevent database bloat.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.captcha_retention_hours}
+                  onChange={(val) => handleChange("captcha_retention_hours", val)}
+                  options={retentionHoursStandard}
+                />
+              </div>
+
+              <CustomDivider />
+
+              {/* ENTERPRISE SEC FIX: High-Frequency JWT Block */}
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    Auto-Logout Tokens (JWT)
+                    <ModifiedIndicator isModified={settings.jwt_blacklist_retention_minutes !== originalSettings.jwt_blacklist_retention_minutes} />
+                    <ImpactBadge days={settings.jwt_blacklist_retention_minutes} type="minutes" />
+                    <TableBadge tableName="jwt_blacklist" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Stores explicitly revoked API session tokens to prevent replay attacks. Cleaned at high-frequency intervals to ensure flawless server performance.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.jwt_blacklist_retention_minutes}
+                  onChange={(val) => handleChange("jwt_blacklist_retention_minutes", val)}
+                  options={retentionMinutesStandard}
+                />
+              </div>
+
+              <CustomDivider />
+
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    Two-Factor Auth Codes
+                    <ModifiedIndicator isModified={settings.otp_retention_hours !== originalSettings.otp_retention_hours} />
+                    <ImpactBadge days={settings.otp_retention_hours} type="hours" />
+                    <TableBadge tableName="admin_otp_verifications" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Defines the maximum audit lifespan of generated 2FA codes.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.otp_retention_hours}
+                  onChange={(val) => handleChange("otp_retention_hours", val)}
+                  options={retentionHoursStandard}
+                />
+              </div>
+
+              <CustomDivider />
+
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    Trusted Device Sessions
+                    <ModifiedIndicator isModified={settings.trusted_device_retention_days !== originalSettings.trusted_device_retention_days} />
+                    <ImpactBadge days={settings.trusted_device_retention_days} type="days" />
+                    <TableBadge tableName="admin_trusted_devices" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Sweeps inactive devices that bypass MFA limits.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.trusted_device_retention_days}
+                  onChange={(val) => handleChange("trusted_device_retention_days", val)}
+                  options={retentionDaysStandard}
+                />
+              </div>
+
+              <CustomDivider />
+
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    Ignored Unblock Tokens
+                    <ModifiedIndicator isModified={settings.unblock_token_retention_hours !== originalSettings.unblock_token_retention_hours} />
+                    <ImpactBadge days={settings.unblock_token_retention_hours} type="hours" />
+                    <TableBadge tableName="admin_unblock_tokens" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Deletes orphaned IP unblock recovery emails that were never clicked.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.unblock_token_retention_hours}
+                  onChange={(val) => handleChange("unblock_token_retention_hours", val)}
+                  options={retentionHoursStandard}
+                />
+              </div>
+
+              <CustomDivider />
+
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    Ignored Password Resets
+                    <ModifiedIndicator isModified={settings.password_reset_retention_hours !== originalSettings.password_reset_retention_hours} />
+                    <ImpactBadge days={settings.password_reset_retention_hours} type="hours" />
+                    <TableBadge tableName="admin_password_resets" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Deletes orphaned forgotten password tokens that users never followed through on.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.password_reset_retention_hours}
+                  onChange={(val) => handleChange("password_reset_retention_hours", val)}
+                  options={retentionHoursStandard}
+                />
+              </div>
+
+            </div>
+          </motion.div>
+
+          {/* Panel 3: System Errors & SEO Logs (EMERALD ZONE) */}
+          <motion.div
+            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}
+            className="bg-white dark:bg-[#0B1221] rounded-2xl shadow-sm border-l-4 border-emerald-500 border-y border-r border-gray-200 dark:border-gray-800 relative z-20 overflow-visible"
+          >
+            <div className="px-6 py-4 border-b border-emerald-100 dark:border-emerald-900/30 bg-emerald-50/30 dark:bg-emerald-900/10 rounded-t-xl flex items-center gap-3">
+               <div className="p-2 bg-emerald-100 dark:bg-emerald-900/50 rounded-lg text-emerald-600 dark:text-emerald-400">
+                  <SafeIcon icon={BiIcons.BiServer} className="w-4 h-4" />
+               </div>
+               <h3 className="text-sm font-extrabold uppercase tracking-widest text-gray-900 dark:text-gray-100">
+                  System Errors & SEO Logs
+               </h3>
+            </div>
+            
+            <div className="p-6 space-y-7">
+              
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    System Notifications & Audits
+                    <ModifiedIndicator isModified={settings.system_log_retention_days !== originalSettings.system_log_retention_days} />
+                    <ImpactBadge days={settings.system_log_retention_days} type="days" />
+                    <TableBadge tableName="admin_notifications" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Absolute hard limit for dashboard alerts, regardless of read status.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.system_log_retention_days}
+                  onChange={(val) => handleChange("system_log_retention_days", val)}
+                  options={retentionDaysStandard}
+                />
+              </div>
+
+              <CustomDivider />
+
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    404 Monitor Logs
+                    <ModifiedIndicator isModified={settings.seo_404_log_retention_days !== originalSettings.seo_404_log_retention_days} />
+                    <ImpactBadge days={settings.seo_404_log_retention_days} type="days" />
+                    <TableBadge tableName="monitor_404_logs" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Controls the history of broken links encountered by users and bots.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.seo_404_log_retention_days}
+                  onChange={(val) => handleChange("seo_404_log_retention_days", val)}
+                  options={retentionDaysStandard}
+                />
+              </div>
+
+              <CustomDivider />
+
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    Routine System Error Logs
+                    <ModifiedIndicator isModified={settings.log_retention_info !== originalSettings.log_retention_info} />
+                    <ImpactBadge days={settings.log_retention_info} type="days" />
+                    <TableBadge tableName="system_error_logs" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Stores non-critical events in the Crash Vault (excludes active investigating bugs).
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.log_retention_info}
+                  onChange={(val) => handleChange("log_retention_info", val)}
+                  options={retentionDaysStandard}
+                />
+              </div>
+
+              <CustomDivider />
+
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 group">
+                <div className="flex-1 max-w-2xl">
+                  <label className="text-[14px] font-semibold text-gray-900 dark:text-gray-100 flex items-center flex-wrap gap-2">
+                    Archived System Error Logs
+                    <ModifiedIndicator isModified={settings.log_retention_resolved !== originalSettings.log_retention_resolved} />
+                    <ImpactBadge days={settings.log_retention_resolved} type="days" />
+                    <TableBadge tableName="system_error_logs" />
+                  </label>
+                  <p className="text-[13px] text-gray-500 dark:text-gray-400 mt-1.5 leading-relaxed font-normal">
+                    Sets the deletion schedule for crashes manually marked as 'Resolved' or 'Ignored'.
+                  </p>
+                </div>
+                <CustomSelect
+                  value={settings.log_retention_resolved}
+                  onChange={(val) => handleChange("log_retention_resolved", val)}
+                  options={retentionDaysStandard}
+                />
+              </div>
+
+            </div>
+          </motion.div>
+        </div>
+      </div>
+
+      {/* Standard Action Footer */}
+      <div className="flex items-center justify-end gap-3 w-full pt-4 mt-2 border-t border-transparent dark:border-transparent">
+        <button
+          onClick={handleRestoreDefaults}
+          disabled={saving || isDefault}
+          className="px-5 py-2.5 text-[14px] font-bold text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-xl transition-colors focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+        >
+          Restore Defaults
+        </button>
+        <button
+          onClick={initSaveProcess}
+          disabled={saving || !hasChanges}
+          className="flex items-center gap-2 px-6 py-2.5 text-[14px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition-all shadow-lg shadow-indigo-500/30 hover:-translate-y-0.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none disabled:hover:-translate-y-0"
+        >
+          {saving ? (
+            <><SafeIcon icon={FiIcons.FiRefreshCw} className="animate-spin w-4 h-4" /> Saving...</>
+          ) : (
+            <><SafeIcon icon={FiIcons.FiSave} className="w-4 h-4" /> Save Policies</>
+          )}
+        </button>
+      </div>
+
+    </div>
+  );
+};
+
+export default DataRetention;

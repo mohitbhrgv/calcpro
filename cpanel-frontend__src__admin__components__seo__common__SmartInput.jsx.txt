@@ -1,0 +1,179 @@
+import React, { useState, useEffect, useRef } from "react";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiChevronDown, FiAlertCircle } = FiIcons;
+
+const SmartInput = ({ label, value, onChange, helpText, variables = [], placeholder, siteName = "Site Name" }) => {
+  const [showVars, setShowVars] = useState(false);
+  const [preview, setPreview] = useState("");
+  const dropdownRef = useRef(null);
+  
+  // Only show the dropdown button if variables exist
+  const hasVariables = variables && variables.length > 0;
+
+  // Type-casting safeguard
+  const rawText = value || placeholder || "";
+  const textToPreview = String(rawText);
+
+  // UX VALIDATION: Check if the value is strictly numeric
+  const isStrictlyNumeric = value !== undefined && value !== null && value !== "" && /^\d+$/.test(String(value).trim());
+
+  // 🚀 ENTERPRISE UX: Auto-detect Description fields to apply multi-line Textarea and specific SEO limits
+  const isDescription = label?.toLowerCase().includes("description");
+  const InputComponent = isDescription ? "textarea" : "input";
+  
+  // SEO Character Counter Logic
+  const count = String(value || "").length;
+  const absoluteMax = isDescription ? 160 : 60;
+  const optimalMin = isDescription ? 120 : 40;
+  const isOver = count > absoluteMax;
+  const isOptimal = count >= optimalMin && count <= absoluteMax;
+
+  let statusClass = "bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700";
+  if (count > 0) {
+      if (isOver) statusClass = "bg-red-100 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800/50";
+      else if (isOptimal) statusClass = "bg-green-100 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800/50";
+      else statusClass = "bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800/50";
+  }
+
+  useEffect(() => {
+    if (!textToPreview || textToPreview === "undefined" || textToPreview === "null") { 
+        setPreview(""); 
+        return; 
+    }
+    
+    // Dynamically inject the siteName prop instead of a hardcoded string
+    let p = textToPreview
+      .replace(/%title%/gi, "Sample Post Title")
+      .replace(/%sep%/gi, "-")
+      .replace(/%sitename%/gi, siteName)
+      .replace(/%excerpt%/gi, "This is a sample description showing how it looks on Google...")
+      .replace(/%count%/gi, "24")
+      .replace(/%currentyear%/gi, new Date().getFullYear().toString());
+      
+    setPreview(p);
+  }, [value, placeholder, textToPreview, siteName]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setShowVars(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const insertVar = (v) => {
+    const newValue = String(value || "") + " " + v;
+    onChange({ target: { value: newValue } });
+    setShowVars(false);
+  };
+
+  return (
+    <div className="flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700 last:border-0">
+      <div className="w-full md:w-1/4 pt-2">
+        <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">
+          {label}
+        </label>
+        {helpText && !isStrictlyNumeric && (
+            <div className="mt-2 text-xs text-gray-500 dark:text-gray-400 leading-relaxed pr-4">
+            {helpText}
+            </div>
+        )}
+      </div>
+
+      <div className="w-full md:w-3/4 relative group" ref={dropdownRef}>
+        
+        {/* 🚀 NEW: Character Counter positioned Top Right above the input */}
+        <div className="flex justify-end mb-1.5">
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border transition-colors shadow-sm ${statusClass}`}>
+                {count} / {absoluteMax}
+                {count > 0 && !isOver && !isOptimal ? " (Too short)" : ""}
+                {isOver ? " (Too long)" : ""}
+                {isOptimal ? " (Optimal)" : ""}
+            </span>
+        </div>
+
+        <div className="relative flex items-start">
+         
+          <InputComponent
+            type={!isDescription ? "text" : undefined}
+            rows={isDescription ? 4 : undefined}
+            value={value !== null && value !== undefined ? String(value) : ""}
+            onChange={onChange}
+            placeholder={placeholder}
+            className={`w-full pl-4 py-2 border rounded-md transition-all shadow-sm outline-none ${
+              isDescription ? 'resize-y min-h-[90px] pr-12' : (hasVariables ? "pr-10" : "pr-4")
+            } ${
+              isStrictlyNumeric 
+                ? "border-red-400 dark:border-red-500 focus:ring-1 focus:ring-red-500 focus:border-red-500 text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/10" 
+                // FIX: Explicitly added bg-white text-gray-900 placeholder-gray-400 for guaranteed light mode visibility
+                : "border-gray-300 dark:border-gray-600 bg-white text-gray-900 placeholder-gray-400 dark:text-white dark:bg-gray-800 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+            }`}
+          />
+          
+          {hasVariables && (
+            <button
+              type="button"
+              onClick={() => setShowVars(!showVars)}
+              className={`absolute right-0 top-0 px-3 text-gray-400 transition-colors border-l focus:outline-none ${
+                isDescription ? 'h-10 rounded-tr-md' : 'h-full rounded-r-md'
+              } ${
+                isStrictlyNumeric
+                  ? "border-red-400 dark:border-red-500 hover:text-red-600 bg-red-50 dark:bg-red-900/10"
+                  : "border-gray-300 dark:border-gray-600 hover:text-blue-600 bg-gray-50 dark:bg-gray-700"
+              }`}
+              title="Insert Variable"
+            >
+              <SafeIcon icon={FiChevronDown} className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        {/* Numeric Error Alert */}
+        {isStrictlyNumeric && (
+          <div className="mt-2 flex items-center gap-1.5 text-sm font-medium text-red-600 dark:text-red-400 animate-fade-in">
+            <SafeIcon icon={FiAlertCircle} className="w-4 h-4" />
+            <span>Numeric-only values are bad for SEO. Please include text.</span>
+          </div>
+        )}
+
+        {showVars && hasVariables && (
+          <div className="absolute right-0 top-12 mt-1 w-64 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-md shadow-xl z-50 max-h-60 overflow-y-auto">
+            <div className="p-2 text-xs font-bold text-gray-400 uppercase bg-gray-50 dark:bg-gray-900/50 border-b border-gray-100 dark:border-gray-700">
+              Insert Variable
+            </div>
+         
+            {variables.map((v) => (
+              <button
+                key={v.value}
+                type="button"
+                onClick={() => insertVar(v.value)}
+                className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 transition-colors focus:outline-none"
+              >
+                {v.label} <span className="text-xs text-gray-400 ml-1">({v.value})</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* 🚀 NEW: Optimized Preview Text Box (No truncation, multiline visible) */}
+        {textToPreview && hasVariables && (
+          <div className="mt-4 bg-gray-50 dark:bg-gray-900/40 p-3 rounded-lg border border-gray-200 dark:border-gray-700 shadow-sm animate-fade-in">
+            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1.5">
+               Preview Snippet {(!value && placeholder) && <span className="text-indigo-400 normal-case">(Fallback)</span>}
+            </span>
+            <p className={`${isStrictlyNumeric ? 'text-red-500' : 'text-gray-800 dark:text-gray-200'} text-sm font-medium leading-relaxed break-words whitespace-normal transition-colors`}>
+              {preview}
+            </p>
+          </div>
+        )}
+        
+      </div>
+    </div>
+  );
+};
+
+export default SmartInput;

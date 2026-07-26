@@ -1,0 +1,128 @@
+import React from "react";
+
+/**
+ * AdvancedRobotsRow
+ * * Handles advanced SEO meta tags like max-snippet, max-video-preview, and max-image-preview.
+ * * Inheritance Logic:
+ * - disabled={true}: Reads values from "seo_robots_global_" prefix. Inputs are locked.
+ * - disabled={false}: Reads/Writes values from the specific local `prefix`.
+ */
+const AdvancedRobotsRow = ({ settings, prefix, onChange, disabled = false }) => {
+  
+  // 1. Determine Read Source
+  const readPrefix = disabled ? "seo_robots_global_" : prefix;
+
+  // 2. Logic to handle updates (Always writes to Local prefix)
+  const handleInputChange = (key, val) => {
+    if (disabled) return; // Prevent edits if locked
+    onChange({ target: { name: `${prefix}${key}`, value: val } });
+  };
+
+  // 3. Dependency Logic (Cascading Failsafes)
+  const isNoIndexActive = settings[`${readPrefix}noindex`] === true;
+  const isNoSnippetActive = settings[`${readPrefix}nosnippet`] === true;
+  const isNoImageIndexActive = settings[`${readPrefix}noimageindex`] === true;
+
+  const isTextVideoDisabled = disabled || isNoIndexActive || isNoSnippetActive;
+  const isImageDisabled = disabled || isNoIndexActive || isNoSnippetActive || isNoImageIndexActive;
+
+  return (
+    <div className={`flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700 transition-opacity duration-300 ${disabled ? 'opacity-60 grayscale' : ''}`}>
+      <div className="w-full md:w-1/4 pt-1">
+        <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">
+          Advanced Robots Meta
+        </label>
+        <p className="text-xs text-gray-500 mt-1">
+          {disabled 
+            ? "Inheriting advanced rules from Global Settings." 
+            : "Fine-tune snippet limits for this specific section."}
+        </p>
+      </div>
+      <div className="w-full md:w-3/4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            
+            {/* Max Snippet */}
+            <div>
+                <label className={`block text-xs font-medium mb-1 transition-colors ${(isNoIndexActive || isNoSnippetActive) && !disabled ? "text-gray-400 dark:text-gray-500" : "text-gray-600 dark:text-gray-400"}`}>
+                    Snippet (max-chars)
+                    {!disabled && isNoIndexActive ? (
+                      <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-500">
+                        (Forced by "No Index")
+                      </span>
+                    ) : !disabled && isNoSnippetActive ? (
+                      <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-500">
+                        (Disabled by "No Snippet")
+                      </span>
+                    ) : null}
+                </label>
+                <input 
+                    type="number" 
+                    value={settings[`${readPrefix}max_snippet`] ?? -1}
+                    onChange={(e) => handleInputChange('max_snippet', e.target.value)}
+                    disabled={isTextVideoDisabled}
+                    className={`w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm dark:bg-gray-700 dark:text-white transition-colors ${isTextVideoDisabled ? 'bg-gray-100 dark:bg-gray-800 cursor-not-allowed opacity-70' : 'focus:ring-blue-500 focus:border-blue-500'}`}
+                />
+                <span className="text-[10px] text-gray-400">-1 for no limit</span>
+            </div>
+
+             {/* Max Video Preview */}
+             <div>
+                <label className={`block text-xs font-medium mb-1 transition-colors ${(isNoIndexActive || isNoSnippetActive) && !disabled ? "text-gray-400 dark:text-gray-500" : "text-gray-600 dark:text-gray-400"}`}>
+                    Video Preview (sec)
+                    {!disabled && isNoIndexActive ? (
+                      <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-500">
+                        (Forced by "No Index")
+                      </span>
+                    ) : !disabled && isNoSnippetActive ? (
+                      <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-500">
+                        (Disabled by "No Snippet")
+                      </span>
+                    ) : null}
+                </label>
+                <input 
+                    type="number" 
+                    value={settings[`${readPrefix}max_video_preview`] ?? -1}
+                    onChange={(e) => handleInputChange('max_video_preview', e.target.value)}
+                    disabled={isTextVideoDisabled}
+                    className={`w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm dark:bg-gray-700 dark:text-white transition-colors ${isTextVideoDisabled ? 'bg-gray-100 dark:bg-gray-800 cursor-not-allowed opacity-70' : 'focus:ring-blue-500 focus:border-blue-500'}`}
+                />
+                <span className="text-[10px] text-gray-400">-1 for no limit</span>
+            </div>
+
+            {/* Max Image Preview */}
+            <div>
+                <label className={`block text-xs font-medium mb-1 transition-colors ${(isNoIndexActive || isNoSnippetActive || isNoImageIndexActive) && !disabled ? "text-gray-400 dark:text-gray-500" : "text-gray-600 dark:text-gray-400"}`}>
+                    Image Preview
+                    {!disabled && isNoIndexActive ? (
+                      <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-500">
+                        (Forced by "No Index")
+                      </span>
+                    ) : !disabled && isNoSnippetActive ? (
+                      <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-500">
+                        (Disabled by "No Snippet")
+                      </span>
+                    ) : !disabled && isNoImageIndexActive ? (
+                      <span className="ml-1 text-[10px] font-normal italic text-amber-600 dark:text-amber-500">
+                        (Disabled by "No Image Index")
+                      </span>
+                    ) : null}
+                </label>
+                <select 
+                    value={isNoImageIndexActive ? 'none' : (settings[`${readPrefix}max_image_preview`] ?? 'large')}
+                    onChange={(e) => handleInputChange('max_image_preview', e.target.value)}
+                    disabled={isImageDisabled}
+                    className={`w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm dark:bg-gray-700 dark:text-white transition-colors ${isImageDisabled ? 'bg-gray-100 dark:bg-gray-800 cursor-not-allowed opacity-70' : 'focus:ring-blue-500 focus:border-blue-500'}`}
+                >
+                    <option value="large">Large</option>
+                    <option value="standard">Standard</option>
+                    <option value="none">None</option>
+                </select>
+            </div>
+            
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default AdvancedRobotsRow;

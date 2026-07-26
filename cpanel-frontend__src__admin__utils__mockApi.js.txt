@@ -1,0 +1,176 @@
+// Mock API responses with realistic data
+export const mockApi = {
+  // Dashboard stats
+  getDashboardStats: () => 
+    new Promise(resolve => {
+      setTimeout(() => {
+        resolve({
+          users: { count: 12547, change: 8.2 },
+          calculations: { count: 89234, change: 15.6 },
+          posts: { count: 156, change: 3.1 },
+          pages: { count: 42, change: 0 },
+          categories: { count: 18, change: 0 },
+          traffic: { count: 45621, change: 12.4 }
+        });
+      }, 800);
+    }),
+
+  // Chart data
+  getSignupChart: () =>
+    new Promise(resolve => {
+      setTimeout(() => {
+        const data = Array.from({ length: 30 }, (_, i) => ({
+          date: new Date(Date.now() - (29 - i) * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          signups: Math.floor(Math.random() * 50) + 20
+        }));
+        resolve(data);
+      }, 600);
+    }),
+
+  getTopCalculators: () =>
+    new Promise(resolve => {
+      setTimeout(() => {
+        resolve([
+          { name: 'BMI Calculator', uses: 15420 },
+          { name: 'Mortgage Calculator', uses: 12340 },
+          { name: 'Tax Calculator', uses: 9870 },
+          { name: 'Loan Calculator', uses: 8650 },
+          { name: 'Percentage Calculator', uses: 7430 }
+        ]);
+      }, 700);
+    }),
+
+  // Recent activity
+  getRecentActivity: () =>
+    new Promise(resolve => {
+      setTimeout(() => {
+        resolve([
+          { id: 1, user: 'John Doe', action: 'Created new calculator', time: '2 minutes ago', type: 'create' },
+          { id: 2, user: 'Jane Smith', action: 'Updated BMI Calculator', time: '15 minutes ago', type: 'update' },
+          { id: 3, user: 'Mike Johnson', action: 'Published blog post', time: '1 hour ago', type: 'publish' },
+          { id: 4, user: 'Sarah Wilson', action: 'Deleted spam comment', time: '2 hours ago', type: 'delete' },
+          { id: 5, user: 'Tom Brown', action: 'Updated site settings', time: '3 hours ago', type: 'update' }
+        ]);
+      }, 500);
+    }),
+
+  // SEO data
+  getSeoOverview: () =>
+    new Promise(resolve => {
+      setTimeout(() => {
+        resolve({
+          topKeywords: [
+            { keyword: 'calculator online', position: 3, traffic: 2340 },
+            { keyword: 'bmi calculator', position: 1, traffic: 1890 },
+            { keyword: 'mortgage calculator', position: 2, traffic: 1650 },
+            { keyword: 'percentage calculator', position: 5, traffic: 1200 }
+          ],
+          crawlErrors: [
+            { url: '/calculator/broken-link', error: '404 Not Found', date: '2024-01-15' },
+            { url: '/blog/old-post', error: 'Redirect Loop', date: '2024-01-14' }
+          ]
+        });
+      }, 900);
+    }),
+
+  // Content management
+  getPages: (page = 1, limit = 10) =>
+    new Promise(resolve => {
+      setTimeout(() => {
+        const pages = [
+          { id: 1, title: 'About Us', slug: 'about-us', author: 'Admin', date: '2024-01-15', status: 'published' },
+          { id: 2, title: 'Privacy Policy', slug: 'privacy-policy', author: 'Admin', date: '2024-01-14', status: 'published' },
+          { id: 3, title: 'Terms of Service', slug: 'terms-of-service', author: 'Admin', date: '2024-01-13', status: 'draft' },
+          { id: 4, title: 'Contact Us', slug: 'contact-us', author: 'Editor', date: '2024-01-12', status: 'published' },
+          { id: 5, title: 'FAQ', slug: 'faq', author: 'Editor', date: '2024-01-11', status: 'published' }
+        ];
+        resolve({
+          data: pages.slice((page - 1) * limit, page * limit),
+          total: pages.length,
+          page,
+          totalPages: Math.ceil(pages.length / limit)
+        });
+      }, 600);
+    }),
+
+  getPosts: (page = 1, limit = 10) =>
+    new Promise(resolve => {
+      setTimeout(() => {
+        const posts = [
+          { id: 1, title: 'How to Calculate BMI Correctly', author: 'John Doe', category: 'Health', tags: ['BMI', 'Health'], date: '2024-01-15', status: 'published' },
+          { id: 2, title: 'Understanding Mortgage Calculations', author: 'Jane Smith', category: 'Finance', tags: ['Mortgage', 'Finance'], date: '2024-01-14', status: 'published' },
+          { id: 3, title: 'Tax Calculator Guide 2024', author: 'Mike Johnson', category: 'Finance', tags: ['Tax', 'Guide'], date: '2024-01-13', status: 'draft' },
+          { id: 4, title: 'Best Online Calculators', author: 'Sarah Wilson', category: 'Technology', tags: ['Calculators', 'Review'], date: '2024-01-12', status: 'published' }
+        ];
+        resolve({
+          data: posts.slice((page - 1) * limit, page * limit),
+          total: posts.length,
+          page,
+          totalPages: Math.ceil(posts.length / limit)
+        });
+      }, 600);
+    }),
+
+  getCategories: () =>
+    new Promise(resolve => {
+      setTimeout(() => {
+        resolve([
+          { id: 1, name: 'Health', slug: 'health', count: 15, description: 'Health and fitness calculators' },
+          { id: 2, name: 'Finance', slug: 'finance', count: 23, description: 'Financial calculators and tools' },
+          { id: 3, name: 'Technology', slug: 'technology', count: 8, description: 'Tech-related content' },
+          { id: 4, name: 'Education', slug: 'education', count: 12, description: 'Educational calculators' }
+        ]);
+      }, 500);
+    }),
+
+  getTags: () =>
+    new Promise(resolve => {
+      setTimeout(() => {
+        resolve([
+          { id: 1, name: 'BMI', slug: 'bmi', count: 5 },
+          { id: 2, name: 'Mortgage', slug: 'mortgage', count: 8 },
+          { id: 3, name: 'Tax', slug: 'tax', count: 6 },
+          { id: 4, name: 'Health', slug: 'health', count: 12 },
+          { id: 5, name: 'Finance', slug: 'finance', count: 18 }
+        ]);
+      }, 500);
+    }),
+
+  // Users
+  getUsers: (page = 1, limit = 10) =>
+    new Promise(resolve => {
+      setTimeout(() => {
+        const users = [
+          { id: 1, name: 'John Doe', email: 'john@example.com', role: 'admin', date: '2024-01-15', status: 'active' },
+          { id: 2, name: 'Jane Smith', email: 'jane@example.com', role: 'editor', date: '2024-01-14', status: 'active' },
+          { id: 3, name: 'Mike Johnson', email: 'mike@example.com', role: 'viewer', date: '2024-01-13', status: 'banned' },
+          { id: 4, name: 'Sarah Wilson', email: 'sarah@example.com', role: 'editor', date: '2024-01-12', status: 'active' }
+        ];
+        resolve({
+          data: users.slice((page - 1) * limit, page * limit),
+          total: users.length,
+          page,
+          totalPages: Math.ceil(users.length / limit)
+        });
+      }, 600);
+    }),
+
+  // Audit logs
+  getAuditLogs: (page = 1, limit = 10) =>
+    new Promise(resolve => {
+      setTimeout(() => {
+        const logs = [
+          { id: 1, user: 'John Doe', action: 'Login', timestamp: '2024-01-15 10:30:00', ip: '192.168.1.1' },
+          { id: 2, user: 'Jane Smith', action: 'Updated Page', timestamp: '2024-01-15 09:45:00', ip: '192.168.1.2' },
+          { id: 3, user: 'Mike Johnson', action: 'Deleted Post', timestamp: '2024-01-15 09:15:00', ip: '192.168.1.3' },
+          { id: 4, user: 'Sarah Wilson', action: 'Created User', timestamp: '2024-01-15 08:30:00', ip: '192.168.1.4' }
+        ];
+        resolve({
+          data: logs.slice((page - 1) * limit, page * limit),
+          total: logs.length,
+          page,
+          totalPages: Math.ceil(logs.length / limit)
+        });
+      }, 600);
+    })
+};

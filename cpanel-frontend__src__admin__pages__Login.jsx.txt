@@ -1,0 +1,828 @@
+// cPanel_Frontend/src/admin/pages/Login.jsx
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Navigate, Link } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import { useAuth } from "../context/AuthContext";
+import { useLayout } from "../context/LayoutContext";
+import SafeIcon from "../../common/SafeIcon";
+import toast from "react-hot-toast";
+import * as IoIcons from "react-icons/io5";
+import * as HiIcons from "react-icons/hi";
+import * as BiIcons from "react-icons/bi";
+
+// [NEW] ENTERPRISE FIX: Native Fetch 503 Interceptor for Login Page
+// This silently catches infrastructure crashes on unauthenticated routes to prevent console spam.
+const safeFetch = async (url, options = {}) => {
+  let finalUrl = url;
+  if (url.startsWith('/api/')) {
+      const envUrl = import.meta.env.VITE_API_BASE_URL || '';
+      const cleanBase = envUrl.replace(/\/+$/, '');
+      finalUrl = `${cleanBase}${url}`;
+  }
+  const response = await fetch(finalUrl, options);
+  if (response.status === 503) {
+    window.dispatchEvent(new CustomEvent("SYSTEM_OFFLINE"));
+    return new Promise(() => {}); // Freeze thread instantly
+  }
+  return response;
+};
+
+const Login = () => {
+  const { user, setAuthenticatedSession } = useAuth();
+  const { setBackgroundClass } = useLayout();
+  
+  const captchaRef = useRef(null);
+  
+  const [siteName, setSiteName] = useState("Calculox");
+
+  useEffect(() => {
+    const fetchPublicSiteIdentity = async () => {
+      try {
+        const response = await safeFetch("/api/public/get_public_bootstrap.php");
+        const result = await response.json();
+        if (result && result.success) {
+          const fetchedName = result.data?.settings?.siteName || result.data?.siteName || result.data?.settings?.site_name;
+          if (fetchedName) {
+            setSiteName(fetchedName);
+          }
+        }
+      } catch (error) {
+        console.error("Could not fetch public site identity for login screen.");
+      }
+    };
+    
+    fetchPublicSiteIdentity();
+  }, []);
+
+  const [uiStep, setUiStep] = useState("credentials");
+  const [formData, setFormData] = useState({
+    email: "",
+    password: "",
+  });
+
+  const [captchaAnswer, setCaptchaAnswer] = useState("");
+  const [captchaChallengeImg, setCaptchaChallengeImg] = useState("");
+  const [captchaToken, setCaptchaToken] = useState("");
+  const [captchaLoading, setCaptchaLoading] = useState(false);
+  const [captchaStatus, setCaptchaStatus] = useState("idle"); 
+
+  const [otpCode, setOtpCode] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const [isLocked, setIsLocked] = useState(false);
+  const [lockoutMessage, setLockoutMessage] = useState("");
+  
+  const [lockoutExpiry, setLockoutExpiry] = useState(null);
+  const [liveTimeLeft, setLiveTimeLeft] = useState("");
+
+  const [initialCheckDone, setInitialCheckDone] = useState(false);
+  const [countdown, setCountdown] = useState(60);
+  const [canResend, setCanResend] = useState(false);
+
+  // [ENTERPRISE UX FIX] Track initial load to prevent animation glitch on existing blocks
+  const isInitialMount = useRef(true);
+  const lockedOnLoadRef = useRef(false);
+
+  useEffect(() => {
+    setBackgroundClass("bg-[#020617]");
+    return () => {
+      setBackgroundClass("bg-gray-50 dark:bg-gray-900");
+    };
+  }, [setBackgroundClass]);
+
+  const fetchNewCaptcha = useCallback(async () => {
+    setCaptchaLoading(true);
+    setCaptchaStatus("idle");
+    try {
+      const response = await safeFetch("/api/admin/generate_captcha.php", {
+          credentials: "include"
+      });
+      const result = await response.json();
+      if (result.success) {
+        setCaptchaChallengeImg(result.data.challenge); 
+        setCaptchaToken(result.data.captcha_token);
+        setCaptchaAnswer("");
+      } else {
+        toast.error("Security challenge generation failed.");
+      }
+    } catch (err) {
+      toast.error("Failed to load security challenge.");
+    } finally {
+      setCaptchaLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let timer;
+    if (uiStep === "otp" && !canResend) {
+      timer = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(timer);
+            setCanResend(true);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [uiStep, canResend]);
+
+  const verifyLockoutStatus = useCallback(async () => {
+    try {
+      const response = await safeFetch(
+        "/api/public/check_ip_status.php", {
+            credentials: "include"
+        }
+      );
+      const result = await response.json();
+      if (result.success && result.data.locked) {
+        if (isInitialMount.current) {
+          lockedOnLoadRef.current = true;
+        }
+        setIsLocked(true);
+        setLockoutMessage(result.data.message);
+        if (result.data.expiry && !result.data.permanent) {
+          setLockoutExpiry(result.data.expiry * 1000);
+        } else {
+          setLockoutExpiry(null);
+        }
+        setUiStep("credentials");
+      }
+    } catch (error) {
+      console.error("Could not verify IP status with the server.");
+    } finally {
+      setInitialCheckDone(true);
+      isInitialMount.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    verifyLockoutStatus();
+    fetchNewCaptcha();
+  }, [verifyLockoutStatus, fetchNewCaptcha]);
+
+  // [NEW] ENTERPRISE UX FIX: Proactive Background Refresh (Silent)
+  // Backend TTL is 5 minutes (300s). We automatically refresh silently at 4.5 minutes (270s)
+  // to ensure the user never encounters a hard expiration if they idle on the login screen.
+  useEffect(() => {
+    if (!captchaToken || uiStep !== "credentials" || isLocked) return;
+    
+    const autoRefreshTimer = setTimeout(() => {
+      fetchNewCaptcha();
+    }, 270000); 
+    
+    return () => clearTimeout(autoRefreshTimer);
+  }, [captchaToken, uiStep, isLocked, fetchNewCaptcha]);
+
+  useEffect(() => {
+    if (!isLocked || !lockoutExpiry) {
+      setLiveTimeLeft("");
+      if (!isLocked) {
+        lockedOnLoadRef.current = false;
+      }
+      return;
+    }
+
+    const updateTimer = () => {
+      const now = Date.now();
+      const diff = lockoutExpiry - now;
+      
+      if (diff <= 0) {
+        setIsLocked(false);
+        setLockoutExpiry(null);
+        setLockoutMessage("");
+        setLiveTimeLeft("");
+        return;
+      }
+      
+      const m = Math.floor((diff / 1000) / 60);
+      const s = Math.floor((diff / 1000) % 60);
+      setLiveTimeLeft(`${m > 0 ? `${m}m ` : ""}${s}s`);
+    };
+
+    updateTimer(); 
+    const timerId = setInterval(updateTimer, 1000);
+    return () => clearInterval(timerId);
+  }, [isLocked, lockoutExpiry]);
+
+  if (user && !loading) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  const handleCaptchaChange = (e) => {
+    setCaptchaAnswer(e.target.value);
+    if (captchaStatus === "error") setCaptchaStatus("idle");
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const toastId = "login-toast";
+
+    // [ENTERPRISE UX FIX] Intercept Password Manager Auto-Submits
+    if (!captchaAnswer || captchaAnswer.trim() === "") {
+        setCaptchaStatus("error");
+        toast.error("Please solve the security challenge before logging in.", { id: toastId });
+        if (captchaRef.current) {
+            captchaRef.current.focus();
+        }
+        return;
+    }
+
+    setLoading(true);
+
+    try {
+      const response = await safeFetch("/api/admin/admin_login.php", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include", 
+        body: JSON.stringify({
+          email: formData.email,
+          password: formData.password,
+          captcha_answer: captchaAnswer,
+          captcha_token: captchaToken
+        })
+      });
+      
+      const res = await response.json();
+
+      if (res && res.success) {
+        setCaptchaStatus("success");
+        setTimeout(() => {
+          if (res.data?.otp_required) {
+            toast.success(res.message, { id: toastId });
+            setUiStep("otp");
+            setCanResend(false);
+            setCountdown(60);
+            setLoading(false);
+          } else {
+            setAuthenticatedSession(res.data);
+            if (!res.data?.user?.passwordSecurity?.isExpired) {
+                toast.success(res.message, { id: toastId });
+            }
+            setLoading(false);
+          }
+        }, 600);
+      } else {
+        const errorMsg = new Error(res?.message || "Login failed");
+        errorMsg.errorCode = res?.errorCode;
+        throw errorMsg;
+      }
+    } catch (error) {
+      if (error && error.message) {
+        const captchaCodes = ['CAPTCHA_FAILED', 'CAPTCHA_INVALID', 'CAPTCHA_EXPIRED', 'CAPTCHA_INVALID_IP', 'CAPTCHA_REQUIRED'];
+        
+        // [ENTERPRISE UX FIX] Graceful Reactive Refresh
+        if (error.errorCode === 'CAPTCHA_EXPIRED') {
+          toast("For your security, the CAPTCHA was refreshed. Please re-enter it.", { id: toastId, icon: '🔄' });
+        } else {
+          toast.error(error.message, { id: toastId });
+        }
+
+        if (error.errorCode && captchaCodes.includes(error.errorCode)) {
+          setCaptchaStatus("error");
+          setCaptchaAnswer(""); 
+          setTimeout(() => {
+             if (captchaRef.current) {
+                 captchaRef.current.focus();
+             }
+          }, 50);
+        }
+
+        if (
+          error.errorCode === "IP_TEMPBANNED" ||
+          error.errorCode === "IP_PERMABANNED"
+        ) {
+          verifyLockoutStatus();
+        }
+        
+        fetchNewCaptcha();
+      } else {
+        toast.error("Could not connect to the server. Please check your network.", { id: toastId });
+      }
+      setLoading(false);
+    }
+  };
+
+  const handleVerifySubmit = async (e) => {
+    e.preventDefault();
+
+    if (otpCode.length !== 6) {
+      toast.error("Please enter a valid 6-digit OTP.", { id: "login-toast" });
+      return;
+    }
+    setLoading(true);
+    const toastId = "login-toast";
+    const minDelayPromise = new Promise((resolve) => setTimeout(resolve, 2000));
+
+    try {
+      const apiCall = safeFetch(
+        "/api/admin/verify_otp.php",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ email: formData.email, otp_code: otpCode }),
+        },
+      ).then((res) => res.json());
+
+      const [res] = await Promise.all([
+        apiCall.catch((err) => ({ error: err })),
+        minDelayPromise,
+      ]);
+
+      if (res && res.error) throw res.error;
+
+      if (res.success) {
+        setAuthenticatedSession(res.data);
+        if (!res.data?.user?.passwordSecurity?.isExpired) {
+            toast.success(res.message, { id: toastId });
+        }
+        
+        setLoading(false);
+      } else {
+        toast.error(res.message, { id: toastId });
+
+        if (
+          res.errorCode === "IP_TEMPBANNED" ||
+          res.errorCode === "IP_PERMABANNED"
+        ) {
+          verifyLockoutStatus();
+          setOtpCode("");
+        }
+        setLoading(false);
+      }
+    } catch (error) {
+      toast.error("Could not connect to the server.", { id: toastId });
+      setLoading(false);
+    }
+  };
+
+  const handleResendCode = async () => {
+    if (!canResend) return;
+    setLoading(true);
+
+    try {
+      const response = await safeFetch(
+        "/api/admin/resend_otp.php",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ email: formData.email }),
+        },
+      );
+      
+      const result = await response.json();
+      if (result.success) {
+        toast.success(result.message, { id: "login-toast" });
+        setCanResend(false);
+        setCountdown(60);
+      } else {
+        toast.error(result.message, { id: "login-toast" });
+      }
+    } catch (error) {
+      toast.error("Failed to resend code.", { id: "login-toast" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleChange = (e) => {
+    setFormData((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+  };
+
+  const handleBackToLogin = () => {
+    setUiStep("credentials");
+    setFormData({ email: "", password: "" });
+    setCaptchaAnswer("");
+    setCaptchaStatus("idle");
+    setOtpCode("");
+    fetchNewCaptcha();
+  };
+
+  const renderLockoutOverlay = () => {
+    const displayMessage = liveTimeLeft
+      ? `Too many failed login attempts.\nAccess from this IP has been temporarily blocked for ${liveTimeLeft}.\nAuthorized personnel must contact the system administrator to request access.`
+      : lockoutMessage;
+
+    return (
+      <motion.div
+        key="lockout"
+        initial={lockedOnLoadRef.current ? false : { opacity: 0, backdropFilter: "blur(0px)" }}
+        animate={{ opacity: 1, backdropFilter: "blur(12px)" }}
+        exit={{ opacity: 0, backdropFilter: "blur(0px)" }}
+        transition={{ duration: 0.5, ease: "easeInOut" }}
+        className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[#020617]/80 p-6 sm:p-10 text-center border-t border-white/10 rounded-[2.5rem]"
+      >
+        <div className="absolute inset-0 bg-red-900/10 mix-blend-overlay rounded-[2.5rem]"></div>
+ 
+        <motion.div 
+          initial={lockedOnLoadRef.current ? false : { scale: 0.9, y: 10 }}
+          animate={{ scale: 1, y: 0 }}
+          transition={{ delay: 0.1, type: "spring", stiffness: 200 }}
+          className="relative z-10 flex flex-col items-center"
+        >
+          <div className="p-4 bg-red-500/10 rounded-2xl mb-6 shadow-sm border border-red-500/20 backdrop-blur-xl">
+            <SafeIcon
+              icon={IoIcons.IoLockClosed}
+              className="w-10 h-10 text-red-500"
+            />
+          </div>
+          <h3 className="text-2xl font-bold text-white mb-3 font-montserrat tracking-tight">
+            Access Restricted
+          </h3>
+          <p className="text-sm text-slate-300 leading-relaxed font-medium whitespace-pre-line px-4 max-w-xs mx-auto">
+            {displayMessage}
+          </p>
+        </motion.div>
+      </motion.div>
+    );
+  };
+
+  const renderBackgroundOrbs = () => (
+    <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0 pointer-events-none">
+      <div className="absolute top-[-10%] left-[-10%] w-[500px] h-[500px] bg-indigo-500/10 rounded-full blur-[120px] mix-blend-screen animate-pulse-slow"></div>
+      <div className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] bg-slate-600/10 rounded-full blur-[150px] mix-blend-screen"></div>
+      <div className="absolute top-[40%] right-[20%] w-[300px] h-[300px] bg-blue-900/10 rounded-full blur-[100px] mix-blend-screen"></div>
+    </div>
+  );
+
+  if (!initialCheckDone) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen p-4 relative font-inter overflow-hidden bg-[#020617]">
+        {renderBackgroundOrbs()}
+      </div>
+    );
+  }
+
+  const activeCaptchaStatus = loading && uiStep === "credentials" ? "checking" : captchaStatus;
+
+  const captchaStyles = {
+    idle: "border-white/10 focus:border-blue-500/50 focus:ring-4 focus:ring-blue-500/10 text-white bg-white/5",
+    checking: "border-blue-500/50 text-blue-400 bg-blue-900/10 animate-pulse", 
+    error: "border-rose-500/50 focus:ring-4 focus:ring-rose-500/10 text-rose-400 bg-rose-900/10",
+    success: "border-emerald-500/50 focus:ring-4 focus:ring-emerald-500/10 text-emerald-400 bg-emerald-900/10"
+  };
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen p-4 relative font-inter overflow-hidden bg-[#020617]">
+      
+      {renderBackgroundOrbs()}
+
+      <motion.div
+        initial={{ opacity: 0, y: 40 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }} 
+        className="w-full max-w-[440px] z-10"
+      >
+        <div className="bg-[#0B1221]/80 backdrop-blur-3xl rounded-[2.5rem] shadow-[0_20px_40px_rgb(0,0,0,0.5)] border border-slate-800/60 relative overflow-hidden p-5 sm:p-7">
+          
+          <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-white/10 to-transparent"></div>
+          
+          <AnimatePresence mode="wait">
+            {uiStep === "credentials" ? (
+              <motion.div
+                key="credentials"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1, filter: "blur(0px)", scale: 1 }}
+                exit={{ opacity: 0, filter: "blur(4px)", scale: 0.98 }}
+                transition={{ duration: 0.3 }}
+              >
+                <div className="text-center mb-5 mt-1">
+                  <div className="w-14 h-14 bg-gradient-to-br from-slate-800 to-[#020617] rounded-2xl mx-auto mb-4 flex items-center justify-center shadow-[0_8px_20px_rgba(0,0,0,0.4)] ring-1 ring-slate-700/60 relative group">
+                    <div className="absolute inset-0 bg-blue-500/10 rounded-2xl transition-colors duration-300 group-hover:bg-blue-500/20"></div>
+                    <SafeIcon icon={IoIcons.IoGridOutline} className="w-7 h-7 text-blue-400 relative z-10" />
+                  </div>
+                  
+                  <h1 className="text-2xl font-bold text-white mb-2 font-montserrat tracking-tight">
+                    Administrator Login
+                  </h1>
+                  <p className="text-sm text-slate-400 mt-2 font-medium">
+                    Secure command center access.
+                  </p>
+                </div>
+
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  <fieldset
+                    disabled={isLocked || loading || captchaStatus === "success"}
+                    className="space-y-3"
+                  >
+                    <div className="space-y-2">
+                      <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-widest ml-1">
+                        Email Address
+                      </label>
+                      <div className="relative group">
+                        <SafeIcon
+                          icon={IoIcons.IoMailOutline}
+                          className="absolute left-4 top-1/2 transform -translate-y-1/2 text-slate-400 group-focus-within:text-blue-400 transition-colors w-5 h-5 z-10"
+                        />
+                        <input
+                          type="email"
+                          name="email"
+                          value={formData.email}
+                          onChange={handleChange}
+                          required
+                          className="w-full pl-12 pr-4 py-3.5 border-none rounded-2xl focus:ring-2 focus:ring-blue-500/40 bg-white/5 text-white placeholder-slate-500 transition-all outline-none text-sm shadow-[inset_0_1px_4px_rgba(0,0,0,0.3)]"
+                          placeholder="admin@calculox.com"
+                        />
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center ml-1">
+                        <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                          Password
+                        </label>
+                        <Link
+                          to="/reset-password"
+                          className="text-[11px] font-semibold text-blue-400 hover:text-blue-300 transition-colors"
+                        >
+                          Forgot password?
+                        </Link>
+                      </div>
+                      <div className="relative group">
+                        <SafeIcon
+                          icon={IoIcons.IoLockClosedOutline}
+                          className="absolute left-4 top-1/2 transform -translate-y-1/2 text-slate-400 group-focus-within:text-blue-400 transition-colors w-5 h-5 z-10"
+                        />
+                        <input
+                          type={showPassword ? "text" : "password"}
+                          name="password"
+                          value={formData.password}
+                          onChange={handleChange}
+                          required
+                          className="w-full pl-12 pr-12 py-3.5 border-none rounded-2xl focus:ring-2 focus:ring-blue-500/40 bg-white/5 text-white placeholder-slate-500 transition-all outline-none text-sm shadow-[inset_0_1px_4px_rgba(0,0,0,0.3)]"
+                          placeholder="••••••••••••"
+                        />
+                        <button
+                          type="button"
+                          disabled={!formData.password}
+                          onMouseDown={() => setShowPassword(true)}
+                          onMouseUp={() => setShowPassword(false)}
+                          onMouseLeave={() => setShowPassword(false)}
+                          onTouchStart={() => setShowPassword(true)}
+                          onTouchEnd={() => setShowPassword(false)}
+                          className={`absolute right-3.5 top-1/2 transform -translate-y-1/2 text-slate-400 focus:outline-none p-1.5 rounded-xl transition-colors ${
+                            !formData.password 
+                              ? 'opacity-40 cursor-not-allowed' 
+                              : 'hover:text-slate-300 cursor-pointer'
+                          }`}
+                        >
+                          <SafeIcon
+                            icon={
+                              showPassword ? HiIcons.HiEyeOff : HiIcons.HiEye
+                            }
+                            className="w-5 h-5"
+                          />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 mt-2 pt-4 border-t border-slate-700/50">
+                      <div className="flex justify-between items-center ml-1">
+                        <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                          <SafeIcon icon={IoIcons.IoShieldCheckmarkOutline} className="w-3.5 h-3.5 text-blue-400" />
+                          Security Verification
+                        </label>
+                        <button
+                          type="button"
+                          onClick={fetchNewCaptcha}
+                          disabled={captchaLoading || loading || captchaStatus === "success"}
+                          className="text-[11px] font-semibold text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1 focus:outline-none"
+                        >
+                          <SafeIcon icon={IoIcons.IoRefreshOutline} className={`w-3 h-3 ${captchaLoading ? 'animate-spin' : ''}`} />
+                          Refresh
+                        </button>
+                      </div>
+                      
+                      <div className="flex items-stretch gap-3 h-[60px]">
+                        {/* [ENTERPRISE UX FIX] Manual UI Refresh via onClick and hover state */}
+                        <div 
+                          className="flex-[3] bg-white/5 border border-white/5 rounded-2xl flex items-center justify-center relative overflow-hidden backdrop-blur-md shadow-[inset_0_1px_4px_rgba(0,0,0,0.02)] p-1.5 h-full cursor-pointer group hover:bg-white/10 transition-colors"
+                          onClick={!loading && !isLocked && captchaStatus !== "success" ? fetchNewCaptcha : undefined}
+                          title="Click to refresh CAPTCHA"
+                        >
+                          
+                          {captchaChallengeImg && (
+                            <img 
+                              src={captchaChallengeImg} 
+                              alt="Security Challenge" 
+                              className={`w-full h-full object-contain pointer-events-none select-none mix-blend-lighten transition-all duration-300 group-hover:scale-[1.02] ${captchaLoading ? 'opacity-20 blur-[2px] grayscale' : 'opacity-100'}`}
+                              draggable="false"
+                            />
+                          )}
+                          
+                          <AnimatePresence>
+                            {captchaLoading && (
+                              <motion.div
+                                initial={{ opacity: 0, scale: 0.8 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                exit={{ opacity: 0, scale: 0.8 }}
+                                className="absolute inset-0 flex items-center justify-center"
+                              >
+                                <span className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></span>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                        
+                        <div className="flex items-center justify-center px-1">
+                          <span className="text-slate-400/70 text-2xl font-bold font-mono select-none">=</span>
+                        </div>
+                      
+                        <div className="flex-[2] relative h-full">
+                          <motion.input
+                            ref={captchaRef}
+                            animate={activeCaptchaStatus === "error" ? { x: [-5, 5, -5, 5, 0] } : {}}
+                            transition={{ duration: 0.4 }}
+                            type="number"
+                            value={captchaAnswer}
+                            onChange={handleCaptchaChange}
+                            required
+                            disabled={loading || isLocked || captchaStatus === "success"}
+                            className={`w-full h-full px-3 text-center rounded-2xl font-mono text-base font-bold transition-all outline-none border-[1.5px] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${captchaStyles[activeCaptchaStatus]}`}
+                            placeholder="?"
+                            autoComplete="off"
+                          />
+                          
+                          <AnimatePresence>
+                            {activeCaptchaStatus === "checking" && (
+                              <motion.div
+                                initial={{ scale: 0, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                exit={{ scale: 0, opacity: 0 }}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-blue-400"
+                              >
+                                <SafeIcon icon={IoIcons.IoLockClosedOutline} className="w-4 h-4 animate-pulse" />
+                              </motion.div>
+                            )}
+                            {activeCaptchaStatus === "success" && (
+                              <motion.div 
+                                initial={{ scale: 0, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-400"
+                              >
+                                <SafeIcon icon={IoIcons.IoCheckmarkCircle} className="w-4 h-4" />
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      </div>
+                   
+                      <AnimatePresence>
+                        {activeCaptchaStatus === "error" && (
+                          <motion.p 
+                            initial={{ opacity: 0, y: -5, height: 0 }} 
+                            animate={{ opacity: 1, y: 0, height: 'auto' }} 
+                            exit={{ opacity: 0, y: -5, height: 0 }}
+                            className="text-xs text-rose-400 font-medium ml-1 mt-2 flex items-center gap-1.5"
+                          >
+                            <SafeIcon icon={IoIcons.IoWarningOutline} className="w-4 h-4" />
+                            Incorrect verification answer.
+                          </motion.p>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  </fieldset>
+
+                  <motion.button
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.99 }}
+                    type="submit"
+                    disabled={loading || isLocked || captchaStatus === "success"}
+                    className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 px-4 rounded-2xl transition-all duration-300 shadow-lg shadow-blue-900/50 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none flex items-center justify-center space-x-2 text-sm mt-3 border border-blue-500/30"
+                  >
+                    {loading ? (
+                      <>
+                        <span className="animate-spin rounded-full h-4 w-4 border-2 border-white/80 border-t-transparent"></span>
+                        <span className="tracking-wide">Authenticating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <SafeIcon icon={BiIcons.BiLogIn} className="w-5 h-5" />
+                        <span className="tracking-wide">Sign In Securely</span>
+                      </>
+                    )}
+                  </motion.button>
+                </form>
+              </motion.div>
+            ) : (
+              <motion.div
+                key="otp"
+                initial={{ opacity: 0, filter: "blur(4px)", scale: 0.98 }}
+                animate={{ opacity: 1, filter: "blur(0px)", scale: 1 }}
+                exit={{ opacity: 0, filter: "blur(4px)", scale: 0.98 }}
+                transition={{ duration: 0.3 }}
+              >
+                <div className="text-center mb-5 mt-1">
+                  <div className="w-14 h-14 bg-slate-800/50 border border-slate-700 rounded-2xl mx-auto mb-6 flex items-center justify-center shadow-sm">
+                    <SafeIcon
+                      icon={IoIcons.IoShieldCheckmarkOutline}
+                      className="w-7 h-7 text-slate-300"
+                    />
+                  </div>
+            
+                  <h1 className="text-2xl font-bold text-white mb-2 font-montserrat tracking-tight">
+                    Verify Identity
+                  </h1>
+                  <p className="text-sm text-slate-400 max-w-[260px] mx-auto leading-relaxed">
+                    We've sent a 6-digit code to <br />
+                    <span className="font-semibold text-slate-200">
+                      {formData.email}
+                    </span>
+                  </p>
+                </div>
+ 
+                <form onSubmit={handleVerifySubmit} className="space-y-8">
+                  <div>
+                    <input
+                      type="text"
+                      value={otpCode}
+                      onChange={(e) =>
+                        setOtpCode(
+                          e.target.value.replace(/\D/g, "").slice(0, 6),
+                        )
+                      }
+                      maxLength="6"
+                      className="w-full text-center tracking-[0.7em] text-3xl font-bold py-5 border-none rounded-2xl focus:ring-2 focus:ring-blue-500/40 bg-white/5 text-white outline-none transition-all shadow-[inset_0_1px_4px_rgba(0,0,0,0.3)] font-mono"
+                      placeholder="------"
+                      autoFocus
+                     />
+                  </div>
+                  <motion.button
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.99 }}
+                    type="submit"
+                    disabled={loading || otpCode.length < 6}
+                    className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-4 px-4 rounded-2xl transition-all duration-300 shadow-lg shadow-blue-900/50 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none tracking-wide border border-blue-500/30"
+                  >
+                    {loading ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <span className="animate-spin rounded-full h-4 w-4 border-2 border-white/80 border-t-transparent"></span>
+                        Verifying...
+                      </span>
+                    ) : (
+                      <span>Verify Access</span>
+                    )}
+                  </motion.button>
+
+                  <div className="text-center space-y-6">
+                    <div className="text-sm">
+                      {canResend ? (
+                        <button
+                          type="button"
+                          onClick={handleResendCode}
+                          disabled={loading}
+                          className="font-medium text-blue-400 hover:text-blue-300 transition-colors"
+                        >
+                          Resend Verification Code
+                        </button>
+                      ) : (
+                        <span className="text-slate-500 font-medium">
+                          Resend code in <span className="tabular-nums">{countdown}s</span>
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="pt-6 border-t border-slate-700/50">
+                      <button
+                        type="button"
+                        onClick={handleBackToLogin}
+                        className="text-[11px] font-bold uppercase tracking-widest text-slate-400 hover:text-slate-200 transition-colors flex items-center justify-center gap-2 mx-auto group"
+                      >
+                        <SafeIcon
+                          icon={HiIcons.HiArrowLeft}
+                          className="w-3.5 h-3.5 transition-transform duration-300 group-hover:-translate-x-1.5"
+                        />
+                        Back to login
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {isLocked && renderLockoutOverlay()}
+          </AnimatePresence>
+
+          {/* Footer Notice */}
+          <div className="mt-5 pt-4 border-t border-slate-700/40 text-center">
+            <p className="text-[10px] text-slate-500 leading-relaxed">
+               Secure gateway for authorized personnel only. All access is protected by strict protocols and continuous monitoring.
+            </p>
+            <p className="text-[10px] text-slate-600 mt-2.5">
+              &copy; {new Date().getFullYear()} {siteName} &mdash; Administrator Control Panel
+            </p>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+export default Login;

@@ -1,0 +1,1165 @@
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import Modal from "../../../components/common/Modal";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+import { authenticatedFetch } from "../../../utils/apiService";
+import LoadingSpinner from "../../../components/common/LoadingSpinner";
+import { useAdminCache } from "../../../context/AdminCacheContext";
+import MediaLibrary from "../../../components/media/MediaLibrary";
+
+const {
+  FiPlus,
+  FiGrid,
+  FiAlertCircle,
+  FiSearch,
+  FiTrash2,
+  FiAlertTriangle,
+  FiGlobe,
+  FiChevronDown,
+  FiChevronUp,
+  FiList,
+  FiImage,
+  FiX,
+  FiSettings,
+  FiRefreshCw,
+  FiChevronLeft,
+  FiChevronRight,
+  FiSave,
+  FiEdit
+} = FiIcons;
+
+// --- Premium Viewport-Aware Headless Portal Dropdown ---
+const CustomSelect = ({ value, onChange, options, className }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+  const portalRef = useRef(null);
+  const [dropdownStyles, setDropdownStyles] = useState({});
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      const clickedOutsideButton = dropdownRef.current && !dropdownRef.current.contains(event.target);
+      const clickedOutsidePortal = portalRef.current && !portalRef.current.contains(event.target);
+      
+      if (clickedOutsideButton && clickedOutsidePortal) {
+          setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    
+    const updatePosition = () => {
+        if (isOpen && dropdownRef.current) {
+            const rect = dropdownRef.current.getBoundingClientRect();
+            const spaceBelow = window.innerHeight - rect.bottom;
+            const placeAbove = spaceBelow < 250 && rect.top > spaceBelow;
+
+            setDropdownStyles({
+                top: placeAbove ? 'auto' : rect.bottom + window.scrollY + 4,
+                bottom: placeAbove ? (window.innerHeight - rect.top - window.scrollY + 4) : 'auto',
+                left: rect.left + window.scrollX,
+                width: rect.width
+            });
+        }
+    };
+    
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+    
+    return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+        window.removeEventListener('scroll', updatePosition, true);
+        window.removeEventListener('resize', updatePosition);
+    };
+  }, [isOpen]);
+
+  const handleToggle = () => {
+     if (!isOpen && dropdownRef.current) {
+         const rect = dropdownRef.current.getBoundingClientRect();
+         const spaceBelow = window.innerHeight - rect.bottom;
+         const placeAbove = spaceBelow < 250 && rect.top > spaceBelow;
+
+         setDropdownStyles({
+            top: placeAbove ? 'auto' : rect.bottom + window.scrollY + 4,
+            bottom: placeAbove ? (window.innerHeight - rect.top - window.scrollY + 4) : 'auto',
+            left: rect.left + window.scrollX,
+            width: rect.width
+         });
+     }
+     setIsOpen(!isOpen);
+  };
+
+  const selectedLabel = options.find(opt => String(opt.value) === String(value))?.label || '';
+
+  const dropdownContent = (
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            ref={portalRef}
+            initial={{ opacity: 0, y: dropdownStyles.bottom !== 'auto' ? 5 : -5 }} 
+            animate={{ opacity: 1, y: 0 }} 
+            exit={{ opacity: 0, y: dropdownStyles.bottom !== 'auto' ? 5 : -5 }} 
+            transition={{ duration: 0.15 }}
+            style={dropdownStyles}
+            className="absolute z-[99999] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl overflow-hidden py-1"
+          >
+            <div className="max-h-60 overflow-y-auto custom-scrollbar">
+                {options.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onChange(opt.value); setIsOpen(false); }}
+                    className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
+                      String(value) === String(opt.value) 
+                        ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 font-bold' 
+                        : 'text-gray-900 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+  );
+
+  return (
+    <div className={`relative ${className || ''}`} ref={dropdownRef}>
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="flex items-center justify-between w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow font-medium cursor-pointer shadow-sm"
+      >
+        <span className="truncate pr-2">{selectedLabel}</span>
+        <SafeIcon 
+            icon={FiChevronDown} 
+            className={`w-4 h-4 text-gray-500 shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} 
+        />
+      </button>
+      {createPortal(dropdownContent, document.body)}
+    </div>
+  );
+};
+
+// Helper component for consistent scrollable cells
+const ScrollableCell = ({ text, colorClass = "text-gray-600 dark:text-gray-400" }) => (
+  <div className={`text-xs ${colorClass} max-h-[60px] overflow-y-auto whitespace-normal break-words scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-gray-600 pr-1 leading-snug`}>
+    {text}
+  </div>
+);
+
+// Helper component for wrapped text cells
+const WrappedCell = ({ text, isSlug = false }) => (
+  <div className={`text-sm text-gray-900 dark:text-white whitespace-normal ${isSlug ? "break-all font-mono text-xs text-gray-500 dark:text-gray-400" : "break-words font-semibold"} max-w-[180px] leading-snug`}>
+    {text}
+  </div>
+);
+
+const limitOptions = [
+    { value: 10, label: "10 Rows" },
+    { value: 25, label: "25 Rows" },
+    { value: 50, label: "50 Rows" },
+    { value: 100, label: "100 Rows" }
+];
+
+const CalculatorCategories = () => {
+  const { getCache, setCacheData, invalidateCache, isInitialLoadComplete } = useAdminCache();
+
+  const cacheKey = "calculator_categories";
+  const cachedData = getCache(cacheKey);
+  
+  // --- Core State ---
+  const [allCategories, setAllCategories] = useState(cachedData || []);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  // UX State Architecture (FCP Setup)
+  const [initialLoading, setInitialLoading] = useState(!cachedData);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [isManualRefresh, setIsManualRefresh] = useState(false);
+
+  // Pagination & Display Settings
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSettingsSubmitting, setIsSettingsSubmitting] = useState(false);
+  const [displayLimit, setDisplayLimit] = useState(() => Number(localStorage.getItem('categories_display_limit')) || 25);
+  const [tempDisplayLimit, setTempDisplayLimit] = useState(displayLimit);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  // Modals & Forms
+  const [showModal, setShowModal] = useState(false);
+  const [isMediaModalOpen, setIsMediaModalOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showSeoFields, setShowSeoFields] = useState(false);
+
+  // --- Bulk & Delete Selection ---
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [categoryToDelete, setCategoryToDelete] = useState(null);
+  const [confirmInput, setConfirmInput] = useState("");
+  const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
+
+  const [formData, setFormData] = useState({
+    name: "",
+    slug: "",
+    description: "",
+    meta_title: "",
+    meta_description: "",
+    featured_image_id: "",
+    featured_image_url: "",
+  });
+
+  const fetchCategories = useCallback(
+    async (forceRefresh = false) => {
+      if (!forceRefresh) {
+        const cached = getCache(cacheKey);
+        if (cached) {
+          if (JSON.stringify(cached) !== JSON.stringify(allCategories)) {
+            setAllCategories(cached);
+          }
+          setInitialLoading(false);
+          return;
+        }
+      }
+
+      setIsUpdating(true);
+
+      try {
+        const result = await authenticatedFetch(
+          "/api/admin/get_calculator_categories.php"
+        );
+        if (result.success) {
+          setAllCategories(result.data);
+          setCacheData(cacheKey, result.data);
+        } else {
+          toast.error(result.message || "Failed to fetch categories.");
+        }
+      } catch (error) {
+        if (error.message !== "Unauthorized") {
+          toast.error("Could not connect to the server.");
+        }
+      } finally {
+        setIsUpdating(false);
+        setInitialLoading(false);
+      }
+    },
+    [getCache, setCacheData, cacheKey, allCategories]
+  );
+
+  useEffect(() => {
+    fetchCategories();
+  }, [fetchCategories]);
+
+  // Search Debounce Engine
+  useEffect(() => {
+    const handler = setTimeout(() => {
+        setDebouncedSearch(searchTerm);
+    }, 500);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
+
+  // Reset pagination when dataset filters change
+  useEffect(() => {
+      setCurrentPage(1);
+  }, [debouncedSearch]);
+
+  const filteredCategories = useMemo(() => {
+    if (!debouncedSearch) return allCategories;
+    return allCategories.filter(
+      (category) =>
+        category.name.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+        category.slug.toLowerCase().includes(debouncedSearch.toLowerCase())
+    );
+  }, [allCategories, debouncedSearch]);
+
+  // Custom Pagination Math
+  const totalRecords = filteredCategories.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / displayLimit));
+  
+  const paginatedCategories = useMemo(() => {
+      const start = (currentPage - 1) * displayLimit;
+      return filteredCategories.slice(start, start + displayLimit);
+  }, [filteredCategories, currentPage, displayLimit]);
+
+  // --- UX Enhancement: Manual Refresh with Labor Gap ---
+  const handleManualRefresh = async () => {
+    if (isUpdating || isManualRefresh) return;
+    setIsManualRefresh(true);
+    invalidateCache(cacheKey);
+    await fetchCategories(true);
+    setTimeout(() => setIsManualRefresh(false), 800); 
+  };
+
+  // --- UX Enhancement: Settings Manager & Dirty State ---
+  const handleOpenSettings = () => {
+      setTempDisplayLimit(displayLimit);
+      setIsSettingsOpen(true);
+  };
+
+  const handleSaveSettings = async () => {
+      setIsSettingsSubmitting(true);
+      // Professional Labor Gap
+      await new Promise(resolve => setTimeout(resolve, 800));
+      
+      setDisplayLimit(tempDisplayLimit);
+      localStorage.setItem('categories_display_limit', tempDisplayLimit);
+      setCurrentPage(1);
+      
+      setIsSettingsSubmitting(false);
+      setIsSettingsOpen(false);
+      toast.success("Display settings strictly updated.");
+  };
+
+  const isSettingsDirty = tempDisplayLimit !== displayLimit;
+
+  // --- Handlers ---
+  const handleSelectRow = (id) => {
+    setSelectedIds((prev) => prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]);
+  };
+
+  const handleSelectAll = (e) => {
+    setSelectedIds(e.target.checked ? paginatedCategories.map((c) => c.id) : []);
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedIds.length === 0) return;
+    setConfirmInput("");
+    setIsBulkDeleteModalOpen(true);
+  };
+
+  const confirmBulkDelete = async () => {
+    if (confirmInput !== "DELETE") {
+      toast.error("Please type DELETE to confirm.");
+      return;
+    }
+
+    setIsBulkDeleting(true);
+    const minDelay = new Promise((resolve) => setTimeout(resolve, 800));
+
+    try {
+      const apiCall = authenticatedFetch(
+        "/api/admin/delete_calculator_categories_bulk.php",
+        { method: "POST", body: JSON.stringify({ ids: selectedIds }) }
+      );
+      
+      const [result] = await Promise.all([apiCall, minDelay]);
+
+      if (result.success) {
+        toast.success(result.message);
+        setSelectedIds([]);
+        invalidateCache(cacheKey);
+        await fetchCategories(true);
+      } else {
+        toast.error(result.message);
+      }
+    } catch (error) {
+      toast.error("Bulk delete failed.");
+    } finally {
+      setIsBulkDeleting(false);
+      setIsBulkDeleteModalOpen(false);
+      setConfirmInput("");
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+
+    const isEditing = editingCategory !== null;
+    const url = isEditing
+      ? "/api/admin/update_calculator_category.php"
+      : "/api/admin/add_calculator_category.php";
+
+    const payload = { ...formData };
+    if (isEditing) payload.id = editingCategory.id;
+
+    const minDelay = new Promise((resolve) => setTimeout(resolve, 800));
+
+    try {
+      const apiCall = authenticatedFetch(url, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+
+      const [result] = await Promise.all([apiCall, minDelay]);
+
+      if (result.success) {
+        toast.success(result.message);
+        handleCloseModal();
+        invalidateCache(cacheKey);
+        await fetchCategories(true);
+      } else {
+        toast.error(result.message || "An unknown error occurred.");
+      }
+    } catch (error) {
+      if (error.message !== "Unauthorized") {
+        toast.error("Could not connect to the server.");
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleEdit = (category) => {
+    setEditingCategory(category);
+    setFormData({
+      name: category.name,
+      slug: category.slug,
+      description: category.description || "",
+      meta_title: category.meta_title || "",
+      meta_description: category.meta_description || "",
+      featured_image_id: category.featured_image_id || "",
+      featured_image_url: category.featured_image_url || "",
+    });
+    setShowSeoFields(!!(category.meta_title || category.meta_description));
+    setShowModal(true);
+  };
+
+  const handleDelete = (category) => {
+    setConfirmInput("");
+    setCategoryToDelete(category);
+    setIsDeleteModalOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!categoryToDelete || confirmInput !== "DELETE") {
+      toast.error("Please type DELETE to confirm.");
+      return;
+    }
+    
+    setIsUpdating(true); // Overlay spinner on table
+    const minDelay = new Promise((resolve) => setTimeout(resolve, 800));
+
+    try {
+      const apiCall = authenticatedFetch(
+        "/api/admin/delete_calculator_category.php",
+        { method: "POST", body: JSON.stringify({ id: categoryToDelete.id }) }
+      );
+      
+      const [result] = await Promise.all([apiCall, minDelay]);
+
+      if (result.success) {
+        toast.success(result.message);
+        invalidateCache(cacheKey);
+        await fetchCategories(true);
+      } else {
+        toast.error(result.message || "Failed to delete category.");
+      }
+    } catch (error) {
+      if (error.message !== "Unauthorized") {
+        toast.error("Could not connect to the server.");
+      }
+    } finally {
+      setIsDeleteModalOpen(false);
+      setCategoryToDelete(null);
+      setConfirmInput("");
+      setIsUpdating(false);
+    }
+  };
+
+  const handleCloseModal = () => {
+    setShowModal(false);
+    setEditingCategory(null);
+    setFormData({
+      name: "",
+      slug: "",
+      description: "",
+      meta_title: "",
+      meta_description: "",
+      featured_image_id: "",
+      featured_image_url: "",
+    });
+    setShowSeoFields(false);
+  };
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({
+      ...prev,
+      [name]: value,
+      ...(name === "name" && !editingCategory
+        ? {
+            slug: value
+              .toLowerCase()
+              .replace(/\s+/g, "-")
+              .replace(/[^a-z0-9-]/g, ""),
+          }
+        : {}),
+    }));
+  };
+
+  if (!isInitialLoadComplete) return null;
+
+  return (
+    <div className="space-y-6 relative">
+
+      {/* --- DISPLAY SETTINGS MODAL --- */}
+      <Modal isOpen={isSettingsOpen} onClose={() => !isSettingsSubmitting && setIsSettingsOpen(false)} title="Category Settings" size="md" disableAnimation={true}>
+        <div className="space-y-5 pt-2 pb-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
+            <div className="bg-blue-50/50 dark:bg-blue-900/10 p-5 rounded-2xl border border-blue-100 dark:border-blue-800/30 shadow-sm transition-colors">
+                <h3 className="text-sm font-extrabold text-blue-900 dark:text-blue-300 uppercase tracking-wider flex items-center gap-2 mb-2">
+                    <SafeIcon icon={FiList} className="w-4 h-4 text-blue-500" />
+                    Display Settings
+                </h3>
+                <p className="text-[11px] text-blue-800/80 dark:text-blue-200/70 mb-5 leading-relaxed font-medium">
+                    Configure your local display preferences for the Category module. This controls how many records are rendered per page.
+                </p>
+                <div>
+                    <label className="block text-[11px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+                        Pagination Limit
+                    </label>
+                    <CustomSelect 
+                        value={tempDisplayLimit} 
+                        onChange={(val) => setTempDisplayLimit(parseInt(val))} 
+                        options={limitOptions} 
+                    />
+                </div>
+            </div>
+        </div>
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800">
+            <button 
+                onClick={() => setIsSettingsOpen(false)} 
+                disabled={isSettingsSubmitting} 
+                className="px-4 py-2.5 text-sm font-bold text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors shadow-sm focus:outline-none disabled:opacity-50"
+            >
+                Cancel
+            </button>
+            <button 
+                onClick={handleSaveSettings} 
+                disabled={isSettingsSubmitting || !isSettingsDirty} 
+                className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none"
+            >
+                {isSettingsSubmitting ? (
+                    <><SafeIcon icon={FiRefreshCw} className="animate-spin w-4 h-4" /> Saving...</>
+                ) : (
+                    <><SafeIcon icon={FiSave} className="w-4 h-4" /> Save Policies</>
+                )}
+            </button>
+        </div>
+      </Modal>
+
+      {/* --- HEADER CARD --- */}
+      <motion.div 
+        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} 
+        className="flex items-start gap-4 p-5 rounded-xl bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-800/30 shadow-sm"
+      >
+        <div className="p-3 bg-indigo-100 dark:bg-indigo-800/50 rounded-xl text-indigo-600 dark:text-indigo-400 shrink-0 shadow-sm border border-indigo-200 dark:border-indigo-700/50">
+          <SafeIcon icon={FiGrid} className="w-6 h-6" />
+        </div>
+        <div className="flex-1">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h1 className="text-xl font-bold text-gray-900 dark:text-white tracking-tight">
+                Calculator Categories
+              </h1>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                Create and manage categories to dynamically organize your calculators.
+              </p>
+            </div>
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => setShowModal(true)}
+              className="flex items-center justify-center space-x-2 bg-indigo-600 text-white px-5 py-2.5 rounded-lg shadow-sm hover:bg-indigo-700 transition-colors font-bold text-sm whitespace-nowrap outline-none focus:outline-none"
+            >
+              <SafeIcon icon={FiPlus} className="w-4 h-4" />
+              <span>New Category</span>
+            </motion.button>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* TIER 3: HTML DATA TABLE & TOOLBAR (FCP Optimized) */}
+      <motion.div 
+        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+        className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden relative flex flex-col min-h-[400px]"
+      >
+        {/* Dimming overlay logic */}
+        <AnimatePresence>
+          {(initialLoading || isUpdating || isBulkDeleting) && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-white/50 dark:bg-gray-800/50 backdrop-blur-[1px] z-10 flex items-center justify-center"
+            >
+              <LoadingSpinner />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/50 flex flex-col xl:flex-row justify-between items-center gap-4 relative z-20">
+          
+          <div className="flex items-center gap-2">
+            <div className="bg-white dark:bg-gray-800 px-3 py-1.5 rounded-md border border-gray-200 dark:border-gray-600 text-xs font-bold text-gray-600 dark:text-gray-300 shadow-sm flex items-center gap-2">
+              <SafeIcon icon={FiList} className="w-3 h-3 text-indigo-500" />
+              {filteredCategories.length} Categories
+            </div>
+          </div>
+
+          {/* Right: Actions & Search */}
+          <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+            {/* Bulk Action */}
+            <AnimatePresence>
+              {selectedIds.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, x: 10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 10 }}
+                  className="flex items-center gap-2 pr-3 border-r border-gray-300 dark:border-gray-600"
+                >
+                  <span className="text-xs font-bold text-gray-500 hidden md:block">
+                    {selectedIds.length} Selected
+                  </span>
+                  <button
+                    onClick={handleBulkDelete}
+                    disabled={isBulkDeleting}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 rounded-lg text-xs font-bold transition-colors focus:outline-none shadow-sm border border-red-100 dark:border-red-800/50"
+                  >
+                    <SafeIcon
+                      icon={isBulkDeleting ? FiAlertTriangle : FiTrash2}
+                      className="w-3.5 h-3.5"
+                    />
+                    {isBulkDeleting ? "Deleting..." : "Delete"}
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Search Input */}
+            <div className="relative w-full sm:w-64">
+              <SafeIcon
+                icon={FiSearch}
+                className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4"
+              />
+              <input
+                type="text"
+                placeholder="Search categories..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 focus:border-transparent dark:bg-gray-800 dark:text-white transition-shadow outline-none shadow-sm"
+              />
+            </div>
+
+            {/* Standardized Toolbar Actions (Settings & Refresh) */}
+            <div className="flex items-center gap-1 border-l border-gray-200 dark:border-gray-700 pl-3 ml-auto shrink-0">
+                <button
+                    onClick={handleOpenSettings}
+                    className="p-2 text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors focus:outline-none"
+                    title="Display Settings"
+                >
+                    <SafeIcon icon={FiSettings} className="w-4 h-4" />
+                </button>
+                <button
+                    onClick={handleManualRefresh}
+                    disabled={isUpdating || isManualRefresh}
+                    className={`p-2 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/20 dark:text-indigo-300 dark:hover:bg-indigo-900/40 rounded-lg transition-colors border border-indigo-100 dark:border-indigo-800 focus:outline-none ${
+                        isManualRefresh || isUpdating ? "opacity-50 cursor-not-allowed" : ""
+                    }`}
+                    title="Refresh Data"
+                >
+                    <SafeIcon icon={FiRefreshCw} className={`w-4 h-4 ${isManualRefresh ? "animate-spin" : ""}`} />
+                </button>
+            </div>
+          </div>
+        </div>
+
+        <div className={`w-full overflow-x-auto flex flex-col flex-1 transition-opacity duration-200 ${(initialLoading || isUpdating || isBulkDeleting) ? "opacity-50 pointer-events-none" : ""}`}>
+          {paginatedCategories.length === 0 && !initialLoading ? (
+            <div className="flex flex-col items-center justify-center p-16 text-center flex-1">
+              <SafeIcon icon={FiGrid} className="w-12 h-12 text-gray-400 dark:text-gray-500 mb-4 opacity-50" />
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">No Categories Found</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm">No categories match the current search criteria.</p>
+            </div>
+          ) : (
+            <table className="w-full text-left border-collapse min-w-[900px]">
+              <thead>
+                <tr className="bg-gray-50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300 text-xs font-bold uppercase tracking-wider border-b border-gray-200 dark:border-gray-700">
+                  <th className="px-6 py-4 w-12 text-center">
+                      <input 
+                          type="checkbox" 
+                          className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 bg-white dark:bg-gray-900 dark:border-gray-600 transition-colors cursor-pointer" 
+                          checked={paginatedCategories.length > 0 && selectedIds.length === paginatedCategories.length} 
+                          onChange={handleSelectAll} 
+                      />
+                  </th>
+                  <th className="px-6 py-4 w-20">Image</th>
+                  <th className="px-6 py-4">Name</th>
+                  <th className="px-6 py-4">Slug</th>
+                  <th className="px-6 py-4 w-64">Description</th>
+                  <th className="px-6 py-4">Calculators</th>
+                  <th className="px-6 py-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 dark:divide-gray-700 text-sm text-gray-900 dark:text-gray-100">
+                {paginatedCategories.map((category) => {
+                  const isSelected = selectedIds.includes(category.id);
+                  return (
+                  <tr key={category.id} className={`transition-colors ${isSelected ? 'bg-indigo-50/50 dark:bg-indigo-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'}`}>
+                    <td className="px-6 py-4 text-center">
+                        <input 
+                            type="checkbox" 
+                            className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 bg-white dark:bg-gray-900 dark:border-gray-600 transition-colors cursor-pointer" 
+                            checked={isSelected} 
+                            onChange={() => handleSelectRow(category.id)} 
+                        />
+                    </td>
+                    <td className="px-6 py-4">
+                        {category.featured_image_url ? (
+                          <img
+                            src={category.featured_image_url}
+                            alt="Category"
+                            className="w-10 h-10 rounded-md object-cover border border-gray-200 dark:border-gray-700 bg-white"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-md bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 flex items-center justify-center shadow-sm">
+                            <SafeIcon icon={FiImage} className="w-4 h-4 text-gray-400" />
+                          </div>
+                        )}
+                    </td>
+                    <td className="px-6 py-4">
+                        <WrappedCell text={category.name} />
+                    </td>
+                    <td className="px-6 py-4">
+                        <WrappedCell text={category.slug} isSlug={true} />
+                    </td>
+                    <td className="px-6 py-4">
+                        {category.description ? (
+                          <ScrollableCell text={category.description} />
+                        ) : (
+                          <span className="text-gray-400 dark:text-gray-500 text-xs italic">Not Set</span>
+                        )}
+                    </td>
+                    <td className="px-6 py-4">
+                        <span className="font-mono text-sm text-gray-600 dark:text-gray-300 font-semibold bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded shadow-sm">
+                          {category.calculator_count || 0}
+                        </span>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                         <button 
+                            onClick={() => handleEdit(category)} 
+                            className="p-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 dark:text-indigo-400 rounded-lg transition-colors focus:outline-none" 
+                            title="Edit Category"
+                         >
+                            <SafeIcon icon={FiEdit} className="w-4 h-4" />
+                         </button>
+                        <button 
+                            onClick={() => handleDelete(category)} 
+                            className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors focus:outline-none" 
+                            title="Delete Category"
+                        >
+                            <SafeIcon icon={FiTrash2} className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )})}
+              </tbody>
+            </table>
+          )}
+
+          {/* CUSTOM PAGINATION ENGINE */}
+          {((totalRecords > 0) || (totalPages > 1)) && (
+              <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 flex flex-col sm:flex-row items-center justify-between gap-4 transition-all mt-auto rounded-b-xl">
+                  
+                  <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
+                      Showing
+                      <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                          {totalRecords 
+                              ? Math.min(((currentPage - 1) * displayLimit) + 1, totalRecords) 
+                              : currentPage}
+                      </span>
+                      {totalRecords ? (
+                          <>
+                              to
+                              <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                                  {Math.min((currentPage * displayLimit), totalRecords)}
+                              </span>
+                              of
+                              <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                                  {totalRecords}
+                              </span>
+                              entries
+                          </>
+                      ) : <span className="text-gray-900 dark:text-gray-100 font-medium ml-1">Page View</span>}
+                  </div>
+
+                  {(totalPages > 1) && (
+                      <div className="flex items-center p-1 bg-gray-100/80 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700/50 shadow-inner">
+                          <button
+                              onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                              disabled={currentPage === 1}
+                              className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-800 hover:text-indigo-600 dark:hover:text-indigo-400 hover:shadow-sm disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:hover:text-gray-600 transition-all focus:outline-none"
+                          >
+                              <SafeIcon icon={FiChevronLeft} className="w-4 h-4" /> Prev
+                          </button>
+
+                          <div className="flex items-center px-4 border-x border-gray-200 dark:border-gray-700/50">
+                              <span className="text-sm font-bold text-gray-900 dark:text-white">
+                                  {currentPage}
+                              </span>
+                              <span className="text-sm text-gray-400 dark:text-gray-500 mx-1.5">/</span>
+                              <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                                  {totalPages}
+                              </span>
+                          </div>
+
+                          <button
+                              onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                              disabled={currentPage === totalPages}
+                              className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-800 hover:text-indigo-600 dark:hover:text-indigo-400 hover:shadow-sm disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:hover:text-gray-600 transition-all focus:outline-none"
+                          >
+                              Next <SafeIcon icon={FiChevronRight} className="w-4 h-4" />
+                          </button>
+                      </div>
+                  )}
+              </div>
+          )}
+        </div>
+      </motion.div>
+
+      {/* --- ADD/EDIT MODAL --- */}
+      <Modal
+        isOpen={showModal}
+        onClose={handleCloseModal}
+        title={editingCategory ? "Edit Category" : "New Category"}
+        size="lg"
+        disableAnimation={true}
+      >
+        <form onSubmit={handleSubmit} className="flex flex-col h-full">
+          <div className="flex-1 overflow-y-auto max-h-[60vh] p-1 pr-2 space-y-5 custom-scrollbar">
+            
+            {/* 2-Column Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                  Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  name="name"
+                  value={formData.name}
+                  onChange={handleChange}
+                  required
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none dark:bg-gray-700 dark:text-white shadow-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                  Slug <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  name="slug"
+                  value={formData.slug}
+                  onChange={handleChange}
+                  required
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none dark:bg-gray-700 dark:text-white shadow-sm font-mono text-sm"
+                />
+              </div>
+            </div>
+
+            {/* --- Featured Image Section --- */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                Featured Image
+              </label>
+              {formData.featured_image_url ? (
+                <div className="relative w-full h-40 sm:h-48 rounded-xl border-2 border-gray-200 dark:border-gray-700 overflow-hidden group shadow-sm bg-gray-100 dark:bg-gray-800">
+                  <img
+                    src={formData.featured_image_url}
+                    alt="Featured"
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3 backdrop-blur-sm">
+                    <button
+                      type="button"
+                      onClick={() => setIsMediaModalOpen(true)}
+                      className="px-4 py-2 bg-white text-gray-900 rounded-lg text-sm font-bold shadow-md hover:bg-gray-100 transition-colors outline-none"
+                    >
+                      Change
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFormData({
+                          ...formData,
+                          featured_image_id: "",
+                          featured_image_url: "",
+                        })
+                      }
+                      className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-bold shadow-md hover:bg-red-700 transition-colors flex items-center gap-1.5 outline-none"
+                    >
+                      <SafeIcon icon={FiTrash2} className="w-4 h-4" />
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setIsMediaModalOpen(true)}
+                  className="w-full h-32 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl flex flex-col items-center justify-center text-gray-500 hover:text-indigo-600 hover:border-indigo-400 dark:hover:border-indigo-500 transition-all bg-gray-50 dark:bg-gray-800/50 hover:bg-indigo-50/50 dark:hover:bg-indigo-900/20 group outline-none"
+                >
+                  <div className="p-3 bg-white dark:bg-gray-800 rounded-full shadow-sm mb-2 group-hover:scale-110 transition-transform border border-gray-200 dark:border-gray-700">
+                    <SafeIcon
+                      icon={FiImage}
+                      className="w-6 h-6 text-gray-400 group-hover:text-indigo-500 transition-colors"
+                    />
+                  </div>
+                  <span className="text-sm font-semibold">
+                    Click to select an image
+                  </span>
+                </button>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                Visual Description (Sub-heading)
+              </label>
+              <textarea
+                name="description"
+                value={formData.description}
+                onChange={handleChange}
+                rows={2}
+                placeholder="Appears on the public category page."
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none dark:bg-gray-700 dark:text-white resize-none shadow-sm"
+              />
+            </div>
+
+            {/* --- SEO Toggle Section --- */}
+            <div className="pt-3 border-t border-gray-100 dark:border-gray-700">
+              <button
+                type="button"
+                onClick={() => setShowSeoFields(!showSeoFields)}
+                className="flex items-center gap-2 text-sm font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors w-full justify-between group outline-none"
+              >
+                <span className="flex items-center gap-2">
+                  <SafeIcon icon={FiGlobe} className="w-4 h-4" /> SEO Settings
+                  (Advanced)
+                </span>
+                <SafeIcon
+                  icon={showSeoFields ? FiChevronUp : FiChevronDown}
+                  className="w-4 h-4 text-gray-400 group-hover:text-indigo-500"
+                />
+              </button>
+              <AnimatePresence>
+                {showSeoFields && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-3 space-y-4 bg-gray-50 dark:bg-gray-700/30 p-4 rounded-lg border border-gray-200 dark:border-gray-600 shadow-inner">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-1">
+                          SEO Title (Meta Title)
+                        </label>
+                        <input
+                          type="text"
+                          name="meta_title"
+                          value={formData.meta_title}
+                          onChange={handleChange}
+                          placeholder="Overrides global template"
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-gray-700 dark:text-white text-sm shadow-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-1">
+                          SEO Description (Meta Description)
+                        </label>
+                        <textarea
+                          name="meta_description"
+                          value={formData.meta_description}
+                          onChange={handleChange}
+                          rows={2}
+                          placeholder="Specific text for Google. Defaults to Visual Description if empty."
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 outline-none dark:bg-gray-700 dark:text-white text-sm resize-none shadow-sm"
+                        />
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+
+          {/* Footer Buttons (Sticky) */}
+          <div className="pt-4 border-t border-gray-200 dark:border-gray-700 mt-2 flex justify-end gap-3 bg-white dark:bg-gray-800 z-10 shrink-0">
+            <button
+              type="button"
+              onClick={handleCloseModal}
+              disabled={isSubmitting}
+              className="px-5 py-2.5 text-sm font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors outline-none disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="px-6 py-2.5 text-sm font-bold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-60 flex items-center gap-2 shadow-sm transition-all outline-none"
+            >
+              {isSubmitting ? (
+                <>
+                  <LoadingSpinner size="xs" color="white" />
+                  <span>Saving...</span>
+                </>
+              ) : (
+                <span>
+                  {editingCategory ? "Update Category" : "Create Category"}
+                </span>
+              )}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* --- DELETE CONFIRMATION MODAL --- */}
+      <Modal
+        isOpen={isDeleteModalOpen}
+        onClose={() => !isUpdating && setIsDeleteModalOpen(false)}
+        title="Confirm Deletion"
+        type="danger"
+        size="md"
+        disableAnimation={true}
+      >
+        <div className="space-y-4">
+          <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-200 dark:border-red-800 flex items-start gap-3">
+            <SafeIcon
+              icon={FiAlertTriangle}
+              className="w-6 h-6 text-red-600 shrink-0 mt-0.5"
+            />
+            <div>
+              <h4 className="text-sm font-bold text-red-900 dark:text-red-100">
+                Permanent Action
+              </h4>
+              <p className="text-xs text-red-800 dark:text-red-200/80 mt-1">
+                You are about to permanently delete the category:{" "}
+                <strong>{categoryToDelete?.name}</strong>. This action cannot be
+                undone.
+              </p>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Type <strong>DELETE</strong> to confirm:
+            </label>
+            <input
+              type="text"
+              value={confirmInput}
+              onChange={(e) => setConfirmInput(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-red-500 outline-none dark:bg-gray-700 dark:text-white shadow-sm"
+              placeholder="DELETE"
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              onClick={() => setIsDeleteModalOpen(false)}
+              disabled={isUpdating}
+              className="px-4 py-2.5 text-sm font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors outline-none disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmDelete}
+              disabled={confirmInput !== "DELETE" || isUpdating}
+              className="px-5 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm font-bold shadow-sm outline-none flex items-center gap-2"
+            >
+              {isUpdating ? "Deleting..." : "Delete Forever"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* --- BULK DELETE CONFIRMATION MODAL --- */}
+      <Modal
+        isOpen={isBulkDeleteModalOpen}
+        onClose={() => !isBulkDeleting && setIsBulkDeleteModalOpen(false)}
+        title={`Confirm Bulk Deletion`}
+        type="danger"
+        size="md"
+        disableAnimation={true}
+      >
+        <div className="space-y-4">
+          <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-200 dark:border-red-800 flex items-start gap-3">
+            <SafeIcon
+              icon={FiAlertTriangle}
+              className="w-6 h-6 text-red-600 shrink-0 mt-0.5"
+            />
+            <div>
+              <h4 className="text-sm font-bold text-red-900 dark:text-red-100">
+                Permanent Action
+              </h4>
+              <p className="text-xs text-red-800 dark:text-red-200/80 mt-1">
+                You are about to permanently delete{" "}
+                <strong>{selectedIds.length} categories</strong>. This cannot be
+                undone. Some items may not be deleted if they are assigned to
+                content.
+              </p>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Type <strong>DELETE</strong> to confirm:
+            </label>
+            <input
+              type="text"
+              value={confirmInput}
+              onChange={(e) => setConfirmInput(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-red-500 outline-none dark:bg-gray-700 dark:text-white shadow-sm"
+              placeholder="DELETE"
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              onClick={() => setIsBulkDeleteModalOpen(false)}
+              disabled={isBulkDeleting}
+              className="px-4 py-2.5 text-sm font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors outline-none disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmBulkDelete}
+              disabled={isBulkDeleting || confirmInput !== "DELETE"}
+              className="px-5 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm font-bold shadow-sm flex items-center gap-2 outline-none"
+            >
+              {isBulkDeleting ? (
+                <>
+                  <LoadingSpinner size="xs" color="white" />
+                  <span>Deleting...</span>
+                </>
+              ) : (
+                "Delete All"
+              )}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* --- MEDIA SELECTION MODAL --- */}
+      <MediaLibrary
+        isOpen={isMediaModalOpen}
+        onClose={() => setIsMediaModalOpen(false)}
+        onSelectMedia={(media) => {
+          setFormData({
+            ...formData,
+            featured_image_id: media.id,
+            featured_image_url: media.full_url, 
+          });
+          setIsMediaModalOpen(false);
+        }}
+        initialSelectedUrl={formData.featured_image_url}
+        disableAnimation={true}
+        zIndexClass="z-[100]"
+      />
+    </div>
+  );
+};
+
+export default CalculatorCategories;

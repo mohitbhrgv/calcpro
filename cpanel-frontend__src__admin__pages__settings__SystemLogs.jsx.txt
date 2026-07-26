@@ -1,0 +1,1157 @@
+// cPanel_Frontend/src/admin/pages/settings/SystemLogs.jsx
+
+import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Link } from 'react-router-dom';
+import { authenticatedFetch } from '../../utils/apiService';
+import SafeIcon from '../../../common/SafeIcon';
+import * as FiIcons from 'react-icons/fi';
+import * as BiIcons from 'react-icons/bi';
+import { useAdminCache } from '../../context/AdminCacheContext';
+import Modal from '../../components/common/Modal';
+import LoadingSpinner from '../../components/common/LoadingSpinner';
+import toast from 'react-hot-toast';
+import SystemLogsHelpModal from '../../components/help/SystemLogsHelpModal';
+
+const BASE_URL = '/api';
+const apiService = {
+  get: (endpoint) => authenticatedFetch(`${BASE_URL}${endpoint}`),
+  post: (endpoint, data) => authenticatedFetch(`${BASE_URL}${endpoint}`, {
+    method: 'POST',
+    body: JSON.stringify(data)
+  })
+};
+
+// --- Custom Headless Dropdown ---
+const CustomDropdown = ({ value, onChange, options, defaultLabel, className, menuClassName }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [dropUp, setDropUp] = useState(false);
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectedOption = options.find(opt => String(opt.value) === String(value));
+  const displayLabel = selectedOption ? selectedOption.label : defaultLabel;
+
+  return (
+    <div className={`relative ${className || ''}`} ref={dropdownRef}>
+      <button
+        type="button"
+        onClick={() => {
+          if (!isOpen && dropdownRef.current) {
+            const rect = dropdownRef.current.getBoundingClientRect();
+            const spaceBelow = window.innerHeight - rect.bottom;
+            setDropUp(spaceBelow < 250 && rect.top > 250);
+          }
+          setIsOpen(!isOpen);
+        }}
+        className="flex items-center justify-between w-full appearance-none bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow font-medium cursor-pointer"
+      >
+        <span className="truncate">{displayLabel}</span>
+        <SafeIcon 
+          icon={FiIcons.FiChevronDown} 
+  
+          className={`w-4 h-4 text-gray-400 ml-2 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} 
+        />
+      </button>
+
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: dropUp ? 5 : -5 }}
+            animate={{ opacity: 1, y: 0 }}
+       
+            exit={{ opacity: 0, y: dropUp ? 5 : -5 }}
+            transition={{ duration: 0.15 }}
+            className={`absolute z-50 ${dropUp ? 'bottom-full mb-1' : 'mt-1 top-full'} min-w-full left-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl overflow-hidden py-1 ${menuClassName ||
+''}`}
+          >
+            <div className="max-h-60 overflow-y-auto custom-scrollbar">
+              {options.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+       
+                  onClick={() => {
+                    onChange(opt.value);
+                    setIsOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+     
+                    String(value) === String(opt.value)
+                      ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 font-bold'
+                      : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium'
+                  }`}
+           
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+
+};
+
+const SEVERITY_TABS = [
+  { id: 'all', label: 'All Logs', icon: FiIcons.FiList },
+  { id: 'critical', label: 'Critical', icon: FiIcons.FiAlertOctagon },
+  { id: 'error', label: 'Error', icon: FiIcons.FiXCircle },
+  { id: 'warning', label: 'Warning', icon: FiIcons.FiAlertTriangle },
+  { id: 'info', label: 'Info', icon: FiIcons.FiInfo }
+];
+
+const SystemLogs = () => {
+  const { getCache, refreshCache } = useAdminCache();
+  const settings = getCache("settings_general") || {};
+
+  const siteTimezone = settings.site_timezone || 'UTC';
+  const is24Hour = settings.time_format && settings.time_format.includes('H');
+
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  const [logs, setLogs] = useState([]);
+
+  const [pagination, setPagination] = useState({ current_page: 1, total_pages: 1, total_records: 0 });
+
+  const [filters, setFilters] = useState({ environment: 'all', severity: 'all', status: 'all' });
+  const [selectedLog, setSelectedLog] = useState(null);
+
+  // Settings & Help State
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [itemsPerPage, setItemsPerPage] = useState(() => Number(localStorage.getItem('system_logs_limit')) || 20);
+
+  // Settings seeded directly from Global Cache
+  const [warningFrequency, setWarningFrequency] = useState(settings.system_crash_warning_frequency || 'daily');
+
+  const [selectedLogs, setSelectedLogs] = useState([]);
+
+  const [bulkAction, setBulkAction] = useState("");
+  const [copiedState, setCopiedState] = useState(null);
+
+  const fetchLogs = async (page = 1) => {
+    setSelectedLogs([]);
+
+    try {
+      const query = new URLSearchParams({
+        page,
+        limit: itemsPerPage,
+        environment: filters.environment,
+        severity: filters.severity,
+        status: filters.status,
+      }).toString();
+
+      const response = await apiService.get(`/admin/get_system_logs.php?${query}`);
+      if (response.success) {
+        setLogs(response.data.logs);
+        setPagination(response.data.pagination);
+
+      }
+    } catch (error) {
+      console.error('Failed to fetch system logs:', error);
+
+    }
+  };
+
+  useEffect(() => {
+    const loadData = async () => {
+      if (initialLoading) {
+        await fetchLogs(1);
+        setInitialLoading(false);
+      } else {
+        setIsUpdating(true);
+        await fetchLogs(1);
+        setIsUpdating(false);
+      }
+    };
+    loadData();
+    
+  }, [filters, itemsPerPage]);
+
+  const handleManualRefresh = async () => {
+    setIsUpdating(true);
+    await fetchLogs(pagination.current_page);
+    setTimeout(() => setIsUpdating(false), 500);
+  };
+
+  const handleSaveSettings = async () => {
+    setIsSavingSettings(true);
+
+    try {
+      // Introduce a deliberate UI processing delay (800ms) for professional UX
+      await new Promise(resolve => setTimeout(resolve, 800));
+
+      // 1. Save Local Preferences
+      localStorage.setItem("system_logs_limit", itemsPerPage);
+
+      // 2. Transmit Global Database Policies
+      const response = await apiService.post('/admin/manage_system_logs.php', {
+        action: 'update_retention',
+        info_days: settings.log_retention_info || 30, // Preserve safety variables for API compatibility
+        resolved_days: settings.log_retention_resolved || 90, 
+        warning_frequency: warningFrequency
+      });
+
+      if (response && response.success) {
+        setIsSettingsOpen(false);
+        toast.success("Policies saved successfully!");
+
+        // 3. Refresh Cache safely
+        try {
+          if (typeof refreshCache === 'function') {
+            await refreshCache("settings_general");
+
+          }
+        } catch (cacheError) {
+          console.warn("Settings saved successfully, but cache refresh failed:", cacheError);
+
+        }
+      } else {
+        toast.error(response?.message || "Failed to update global retention policies.");
+
+      }
+    } catch (error) {
+      console.error("Failed to save settings:", error);
+
+      toast.error("A network or database error occurred while saving policies.");
+    } finally {
+      setIsSavingSettings(false);
+
+    }
+  };
+
+  const handleResetFilters = () => {
+    setFilters({ environment: 'all', severity: 'all', status: 'all' });
+
+    setBulkAction("");
+  };
+
+  const handleAction = async (action, id) => {
+    if (action === 'delete' && !window.confirm('Are you sure you want to delete this log permanently?')) return;
+
+    setIsUpdating(true);
+    try {
+      const response = await apiService.post('/admin/manage_system_logs.php', {
+        action: action,
+        ids: [id]
+      });
+
+      if (response.success) {
+        await fetchLogs(pagination.current_page);
+        setSelectedLog(null);
+        toast.success(`Log successfully marked as ${action}`);
+
+        // --- REAL-TIME HEADER SYNC ---
+        window.dispatchEvent(new Event('telemetry-data-update'));
+
+      }
+    } catch (error) {
+      console.error(`Failed to ${action} log:`, error);
+
+      toast.error(`Action failed: ${error.message}`);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleCopy = async (text, type, log) => {
+    if (!text) return;
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedState(type);
+      setTimeout(() => setCopiedState(null), 2000);
+
+      if (type === 'stack_trace' && log.status !== 'investigating') {
+        const response = await apiService.post('/admin/manage_system_logs.php', {
+          action: 'investigate',
+          ids: [log.id]
+        });
+
+        if (response.success) {
+          setSelectedLog(prev => ({ ...prev, status: 'investigating' }));
+
+          setLogs(currentLogs => currentLogs.map(l => l.id === log.id ? { ...l, status: 'investigating' } : l));
+
+          // --- REAL-TIME HEADER SYNC ---
+          window.dispatchEvent(new Event('telemetry-data-update'));
+
+        }
+      }
+    } catch (err) {
+      console.error('Clipboard copy failed:', err);
+
+      toast.error("Failed to copy to clipboard.");
+    }
+  };
+
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      setSelectedLogs(logs.map(log => log.id));
+
+    } else {
+      setSelectedLogs([]);
+    }
+  };
+
+  const handleSelectLog = (id) => {
+    setSelectedLogs(prev => prev.includes(id) ? prev.filter(logId => logId !== id) : [...prev, id]);
+
+  };
+
+  const handleBulkAction = async () => {
+    if (!bulkAction || selectedLogs.length === 0) return;
+
+    if (bulkAction === 'delete' && !window.confirm(`Are you sure you want to permanently delete ${selectedLogs.length} selected logs?`)) return;
+
+    setIsUpdating(true);
+
+    try {
+      const response = await apiService.post('/admin/manage_system_logs.php', {
+        action: bulkAction,
+        ids: selectedLogs
+      });
+
+      if (response.success) {
+        setBulkAction("");
+        await fetchLogs(pagination.current_page);
+        toast.success(`Bulk action '${bulkAction}' applied successfully.`);
+
+        // --- REAL-TIME HEADER SYNC ---
+        window.dispatchEvent(new Event('telemetry-data-update'));
+
+      }
+    } catch (error) {
+      toast.error(`Bulk Action Failed! Error: ${error.message}`);
+
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const formatLogDate = (dateString) => {
+    try {
+      if (!dateString) return "Unknown";
+
+      const safeDateString = dateString.trim().replace(' ', 'T') + 'Z';
+      const dateObj = new Date(safeDateString);
+
+      return dateObj.toLocaleString('en-US', {
+        timeZone: siteTimezone,
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: !is24Hour 
+      });
+
+    } catch (e) {
+      return dateString;
+    }
+  };
+
+  const getEnvLabel = (env) => {
+    if (env === 'frontend') return 'Frontend';
+
+    if (env === 'cpanel') return 'cPanel';
+    if (env === 'backend') return 'Backend';
+    return env;
+  };
+
+  const getSeverityStyle = (severity) => {
+    switch (severity) {
+      case 'critical': return 'bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800/50';
+
+      case 'error': return 'bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800/50';
+      case 'warning': return 'bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800/50';
+
+      default: return 'bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800/50';
+    }
+  };
+
+  const getStatusBadge = (status) => {
+    switch (status) {
+      case 'new': return { style: 'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800/50', icon: FiIcons.FiCircle, label: 'Open' };
+
+      case 'investigating': return { style: 'bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800/50', icon: FiIcons.FiSearch, label: 'Investigating' };
+
+      case 'resolved': return { style: 'bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800/50', icon: FiIcons.FiCheckCircle, label: 'Resolved' };
+
+      case 'ignored': return { style: 'bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700', icon: FiIcons.FiEyeOff, label: 'Ignored' };
+
+      default: return { style: 'bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700', icon: FiIcons.FiInfo, label: status };
+    }
+  };
+
+  const getActiveTabStyle = (tabId) => {
+    switch (tabId) {
+      case 'critical': return 'bg-red-600 border-red-600 text-white shadow-md shadow-red-500/20';
+
+      case 'error': return 'bg-orange-600 border-orange-600 text-white shadow-md shadow-orange-500/20';
+      case 'warning': return 'bg-yellow-500 border-yellow-500 text-white shadow-md shadow-yellow-500/20';
+
+      case 'info': return 'bg-blue-600 border-blue-600 text-white shadow-md shadow-blue-500/20';
+      default: return 'bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-500/20';
+    }
+  };
+
+  const hasActiveFilters = filters.environment !== 'all' || filters.severity !== 'all' || filters.status !== 'all';
+
+  const renderPagination = () => {
+    const { current_page, total_pages, total_records } = pagination;
+
+    if (!total_records || total_records === 0) return null;
+
+    const handlePageChange = async (page) => {
+      if (page === current_page || page < 1 || page > total_pages) return;
+
+      setIsUpdating(true);
+      await fetchLogs(page);
+      setIsUpdating(false);
+    };
+
+    return (
+      <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 flex flex-col sm:flex-row items-center justify-between gap-4 transition-all mt-auto rounded-b-xl">
+        <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
+          Showing
+          <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+            {Math.min((current_page - 1) * itemsPerPage + 1, total_records)}
+       
+          </span>
+          to
+          <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+            {Math.min(current_page * itemsPerPage, total_records)}
+          </span>
+          of
+          <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+      
+            {total_records}
+          </span>
+          entries
+        </div>
+
+        {total_pages > 1 && (
+          <div className="flex items-center p-1 bg-gray-100/80 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700/50 shadow-inner">
+            <button
+              onClick={() => handlePageChange(Math.max(1, current_page - 1))}
+   
+              disabled={current_page === 1}
+              className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-800 hover:text-indigo-600 dark:hover:text-indigo-400 hover:shadow-sm disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:hover:text-gray-600 transition-all"
+            >
+              <SafeIcon icon={FiIcons.FiChevronLeft} className="w-4 h-4" />
+              Prev
+          
+            </button>
+
+            <div className="flex items-center px-4 border-x border-gray-200 dark:border-gray-700/50">
+              <span className="text-sm font-bold text-gray-900 dark:text-white">
+                {current_page}
+              </span>
+              <span className="text-sm text-gray-400 dark:text-gray-500 mx-1.5">/</span>
+              
+              <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                {total_pages}
+              </span>
+            </div>
+
+            <button
+              onClick={() => handlePageChange(Math.min(total_pages, current_page + 1))}
+              disabled={current_page === total_pages}
+       
+              className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-800 hover:text-indigo-600 dark:hover:text-indigo-400 hover:shadow-sm disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:hover:text-gray-600 transition-all"
+            >
+              Next
+              <SafeIcon icon={FiIcons.FiChevronRight} className="w-4 h-4" />
+            </button>
+          </div>
+        
+        )}
+      </div>
+    );
+  };
+
+  if (initialLoading) {
+    return (
+      <div className="h-64 flex items-center justify-center">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+
+  }
+
+  const envOptions = [
+    { value: 'all', label: 'All Environments' },
+    { value: 'frontend', label: 'Frontend' },
+    { value: 'cpanel', label: 'cPanel' },
+    { value: 'backend', label: 'Backend' }
+  ];
+
+  const statusOptions = [
+    { value: 'all', label: 'All Statuses' },
+    { value: 'new', label: 'Open' },
+    { value: 'investigating', label: 'Investigating' },
+    { value: 'resolved', label: 'Resolved' },
+    { value: 'ignored', label: 'Ignored' }
+  ];
+
+  const bulkOptions = [
+    { value: '', label: 'Bulk Actions' },
+    { value: 'investigate', label: 'Mark Investigating' },
+    { value: 'resolve', label: 'Mark Resolved' },
+    { value: 'ignore', label: 'Mark Ignored' },
+    { value: 'delete', label: 'Delete Permanently' }
+  ];
+
+  const limitOptions = [
+    { value: 10, label: '10 Entries' },
+    { value: 20, label: '20 Entries' },
+    { value: 50, label: '50 Entries' },
+    { value: 100, label: '100 Entries' },
+    { value: 200, label: '200 Entries' }
+  ];
+
+  const warningFreqOptions = [
+    { value: 'every_login', label: 'Every Login (Per Session)' },
+    { value: 'daily', label: 'Once a Day (Recommended)' },
+    { value: 'every_3_days', label: 'Every 3 Days' },
+    { value: 'weekly', label: 'Once a Week' },
+    { value: 'off', label: 'Disabled (Not Recommended)' }
+  ];
+
+  return (
+    <div className="p-6 space-y-6">
+      
+      <SystemLogsHelpModal 
+        isOpen={isHelpOpen} 
+        onClose={() => setIsHelpOpen(false)} 
+        disableAnimation={true}
+      />
+
+      {/* --- ENTERPRISE SETTINGS MODAL --- */}
+      {isSettingsOpen && (
+        <Modal
+          isOpen={isSettingsOpen}
+        
+          onClose={() => setIsSettingsOpen(false)}
+          title="System Logs Settings"
+          size="md"
+          disableAnimation={true}
+        >
+          {/* Scrollable Container Wrapper */}
+          <div className="space-y-6 pt-2 pb-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
+            
+            {/* Zone 1: Local View Preferences */}
+            <div className="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-xl border border-gray-100 dark:border-gray-700/50">
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+                <SafeIcon icon={FiIcons.FiMonitor} className="text-indigo-500" />
+                Local View Preferences
+              </h3>
+   
+              <div>
+                <label className="block text-[11px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+                  Entries Per Page
+                </label>
+                <CustomDropdown
+             
+                  value={itemsPerPage}
+                  onChange={(val) => setItemsPerPage(Number(val))}
+                  options={limitOptions}
+                  defaultLabel="Select entries limit"
+                  className="bg-white dark:bg-gray-700"
+                />
+  
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">
+                  Controls how many records display per page.
+
+                  Saved locally to your browser.
+                </p>
+              </div>
+            </div>
+
+            {/* Zone 2: Automated Garbage Collection (Redirect to Data Retention) */}
+            <div className="bg-rose-50 dark:bg-rose-900/10 p-4 rounded-xl border border-rose-100 dark:border-rose-900/30 flex flex-col gap-3">
+              <div>
+           
+                <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1 flex items-center gap-2">
+                  <SafeIcon icon={FiIcons.FiDatabase} className="text-rose-500" />
+                  Automated Garbage Collection
+                </h3>
+                <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
+          
+                  To manage automated data retention policies for system crash logs, please proceed to the dedicated Data Retention settings.
+
+                </p>
+              </div>
+              <Link
+                to="/admin/settings/data-retention"
+                onClick={() => setIsSettingsOpen(false)}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-xs font-bold rounded-lg transition-colors shadow-sm"
+   
+                >
+                <SafeIcon icon={FiIcons.FiSettings} className="w-3.5 h-3.5" />
+                Manage Settings
+              </Link>
+            </div>
+
+            {/* Zone 3: Global Telemetry Alert Rule */}
+       
+            <div className="bg-indigo-50 dark:bg-indigo-900/10 p-4 rounded-xl border border-indigo-100 dark:border-indigo-900/30">
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+                <SafeIcon icon={FiIcons.FiBell} className="text-indigo-500" />
+                Telemetry Alert Config
+              </h3>
+              <div>
+ 
+                <label className="block text-[11px] font-bold text-gray-600 dark:text-gray-300 uppercase tracking-wide mb-2 flex justify-between">
+                    <span>Popup Trigger Rule</span>
+                    <span className="text-indigo-500">Global</span>
+                </label>
+                
+                <CustomDropdown
+                  value={warningFrequency}
+                  onChange={(val) => setWarningFrequency(val)}
+                  options={warningFreqOptions}
+                  defaultLabel="Select frequency"
+                  className="bg-white dark:bg-gray-800 border-indigo-200 dark:border-indigo-800/50"
+    
+                />
+                <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-2 leading-relaxed">
+                  Controls how often the "Critical Action Required" popup appears to administrators.
+
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Action Buttons (Fixed Bottom) */}
+          <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800">
+            <button
+              onClick={() => setIsSettingsOpen(false)}
+  
+              className="px-4 py-2.5 text-sm font-bold text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors shadow-sm focus:outline-none"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSaveSettings}
+        
+              disabled={isSavingSettings}
+              className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-all shadow-md active:scale-95 disabled:opacity-50 focus:outline-none"
+            >
+              {isSavingSettings ?
+
+                (<><SafeIcon icon={FiIcons.FiRefreshCw} className="animate-spin w-4 h-4" /> Saving...</>) : (<><SafeIcon icon={FiIcons.FiSave} className="w-4 h-4" /> Save</>)
+              }
+            </button>
+          </div>
+    
+        </Modal>
+      )}
+
+      {/* HEADER */}
+      <motion.div 
+        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} 
+        className="flex items-start gap-4 p-5 rounded-xl bg-rose-50 dark:bg-rose-900/10 border border-rose-100 dark:border-rose-800/30 shadow-sm"
+      >
+        <div className="p-3 bg-rose-100 dark:bg-rose-800/50 rounded-xl text-rose-600 dark:text-rose-400 shrink-0 shadow-sm border border-rose-200 dark:border-rose-700/50">
+          <SafeIcon icon={FiIcons.FiAlertTriangle} 
+
+            className="w-6 h-6" />
+        </div>
+        <div className="flex-1">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-bold text-gray-900 dark:text-white tracking-tight">
+               
+                  System Crash Logs
+                </h1>
+                <button
+                  onClick={() => setIsHelpOpen(true)}
+                  className="text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors p-1 rounded-full hover:bg-indigo-50 dark:hover:bg-indigo-900/30"
+                  
+                  title="Monitor Guide"
+                >
+                  <SafeIcon icon={FiIcons.FiInfo} className="w-4 h-4" />
+                </button>
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 leading-relaxed">
+            
+                Centralized telemetry vault. Monitor, debug, and resolve application failures in real-time.
+
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-xs font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30 px-3 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-800/50 shadow-sm whitespace-nowrap">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span 
+
+                  className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              Vault Connection Secure
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* TABS SYSTEM */}
+      <motion.div 
+        initial={{ opacity: 0, y: 10 
+
+          }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
+        className="flex flex-wrap items-center gap-2"
+      >
+        {SEVERITY_TABS.map((tab) => {
+          const isActive = filters.severity === tab.id;
+
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setFilters(prev => ({ ...prev, severity: tab.id }))}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold border transition-all duration-200 ${
+                isActive 
+         
+                  ? getActiveTabStyle(tab.id)
+                  : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              <SafeIcon icon={tab.icon} className={`w-4 h-4 ${isActive ? 'opacity-100' : 'opacity-70'}`} />
+             
+              {tab.label}
+            </button>
+          );
+
+        })}
+      </motion.div>
+
+      {/* FILTERS & UTILITIES */}
+      <motion.div 
+        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+        className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col xl:flex-row justify-between items-center gap-4 relative z-20"
+      >
+        <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
+          <div 
+
+            className="flex items-center gap-2 text-gray-500 dark:text-gray-400 pr-2">
+            <SafeIcon icon={FiIcons.FiFilter} className="w-5 h-5" />
+          </div>
+
+          <CustomDropdown
+            value={filters.environment}
+            onChange={(val) => setFilters(prev => ({ ...prev, environment: val }))}
+            options={envOptions}
+            defaultLabel="All Environments"
+  
+            className="min-w-[160px]"
+          />
+
+          <CustomDropdown
+            value={filters.status}
+            onChange={(val) => setFilters(prev => ({ ...prev, status: val }))}
+            options={statusOptions}
+            defaultLabel="All Statuses"
+            className="min-w-[160px]"
+ 
+          />
+
+          <button
+            onClick={handleResetFilters}
+            className={`p-2 rounded-lg transition-colors ${
+              hasActiveFilters 
+                ?
+
+                'text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30' 
+                : 'text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400'
+            }`}
+            title="Clear Filters"
+          >
+            <SafeIcon icon={FiIcons.FiXCircle} className="w-5 h-5" />
+          </button>
+        </div>
+
+        
+        <div className="flex items-center gap-3 w-full xl:w-auto">
+          <div className="flex items-center gap-3 bg-gray-50 dark:bg-gray-900/50 p-2 rounded-lg border border-gray-100 dark:border-gray-700 flex-1 xl:flex-none">
+            
+            <CustomDropdown
+              value={bulkAction}
+              onChange={(val) => setBulkAction(val)}
+              options={bulkOptions}
+     
+              defaultLabel="Bulk Actions"
+              className="bg-white dark:bg-gray-800 w-full min-w-[160px]"
+            />
+
+            <button 
+              onClick={handleBulkAction}
+              disabled={!bulkAction ||
+
+                selectedLogs.length === 0}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-md text-sm font-semibold hover:bg-indigo-700 disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700 dark:disabled:text-gray-500 transition-colors shadow-sm whitespace-nowrap"
+            >
+              Apply
+            </button>
+            {selectedLogs.length > 0 && (
+              <span className="text-xs 
+
+                font-bold text-indigo-600 dark:text-indigo-400 px-2 whitespace-nowrap">
+                {selectedLogs.length} selected
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1 border-l border-gray-200 dark:border-gray-700 pl-3 ml-auto shrink-0">
+            <button
+            
+              onClick={() => setIsSettingsOpen(true)}
+              className="p-2 text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+              title="System Settings"
+            >
+              <SafeIcon icon={FiIcons.FiSettings} className="w-4 h-4" />
+            </button>
+            <button
+      
+               onClick={handleManualRefresh}
+               className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+               title="Refresh List"
+            >
+              <SafeIcon
+                icon={FiIcons.FiRefreshCw}
+            
+                className={`w-4 h-4 ${isUpdating ? "animate-spin text-indigo-600" : ""}`}
+              />
+            </button>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* DATA TABLE */}
+      <motion.div 
+        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 
+
+          }}
+        className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 relative w-full z-10 flex flex-col"
+      >
+        <AnimatePresence>
+          {isUpdating && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+         
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-white/50 dark:bg-gray-800/50 flex items-center justify-center z-10"
+            >
+              <LoadingSpinner />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className={`w-full overflow-x-auto ${isUpdating ?
+
+          "opacity-50 pointer-events-none" : ""}`}>
+          {logs.length === 0 ?
+
+          (
+            <div className="flex flex-col items-center justify-center p-16 text-center">
+              <div className="w-24 h-24 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-500 rounded-full flex items-center justify-center mb-5 shadow-sm border border-emerald-100 dark:border-emerald-800/50">
+                <SafeIcon icon={FiIcons.FiCheckCircle} className="w-12 h-12" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">System 
+
+                is Stable</h3>
+              <p className="text-gray-500 dark:text-gray-400 max-w-sm leading-relaxed">
+                No crash logs found for the current filters. All selected environments are operating perfectly.
+              </p>
+            </div>
+          ) : (
+            <table className="w-full 
+
+              text-left border-collapse table-fixed min-w-[900px]">
+              <thead>
+                <tr className="bg-gray-50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300 text-xs font-bold uppercase tracking-wider border-b border-gray-200 dark:border-gray-700">
+                  <th className="p-4 w-12 text-center">
+                    <input 
+              
+                      type="checkbox" 
+                      className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-50 w-4 h-4 bg-white dark:bg-gray-900 dark:border-gray-600 transition-colors cursor-pointer"
+                      checked={logs.length > 0 && selectedLogs.length === logs.length}
+                      onChange={handleSelectAll}
+         
+                    />
+                  </th>
+                  <th className="p-4 w-[200px] lg:w-[240px]">Last Seen</th>
+                  <th className="p-4 w-[120px] hidden md:table-cell">Environment</th>
+                  <th className="p-4 w-[100px] hidden sm:table-cell">Severity</th>
+    
+                  <th className="p-4 w-[130px] hidden lg:table-cell">Status</th>
+                  <th className="p-4 w-[80px] text-center hidden sm:table-cell">Hits</th>
+                  <th className="p-4">Error Message</th>
+                  <th className="p-4 text-right w-[100px] sm:w-[120px]">Actions</th>
+                </tr>
+              </thead>
+          
+              <tbody className="text-sm">
+                {logs.map((log) => {
+                  const badge = getStatusBadge(log.status);
+
+                  return (
+                  <tr key={log.id} className={`border-b border-gray-100 dark:border-gray-700/50 transition-colors ${selectedLogs.includes(log.id) ? 'bg-indigo-50/50 dark:bg-indigo-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'}`}>
+                    <td className="p-4 text-center">
+                      <input 
+                        
+                        type="checkbox" 
+                        className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-50 w-4 h-4 bg-white dark:bg-gray-900 dark:border-gray-600 transition-colors cursor-pointer"
+                        checked={selectedLogs.includes(log.id)}
+                        onChange={() => handleSelectLog(log.id)}
+               
+                        />
+                    </td>
+                    <td className="p-4 text-gray-500 dark:text-gray-400 font-medium truncate">
+                      {formatLogDate(log.updated_at || log.created_at)}
+                    </td>
+     
+                    <td className="p-4 hidden md:table-cell">
+                      <div className="flex items-center gap-2 truncate">
+                        <SafeIcon icon={log.environment === 'frontend' ?
+
+                          BiIcons.BiWindow : log.environment === 'backend' ? FiIcons.FiServer : FiIcons.FiLayout} className="text-gray-400 shrink-0" />
+                        <span className="font-semibold text-gray-700 dark:text-gray-200 truncate">
+                          {getEnvLabel(log.environment)}
+                        </span>
+           
+                      </div>
+                    </td>
+                    <td className="p-4 hidden sm:table-cell">
+                      <span className={`px-2 py-1 text-[10px] font-extrabold tracking-wide uppercase rounded-md border ${getSeverityStyle(log.severity)} shadow-sm whitespace-nowrap`}>
+             
+                        {log.severity}
+                      </span>
+                    </td>
+                    <td className="p-4 hidden lg:table-cell">
+                       <div 
+
+                          className={`inline-flex items-center gap-1.5 px-2 py-1 text-[10px] font-bold uppercase rounded-md border shadow-sm whitespace-nowrap ${badge.style}`}>
+                          <SafeIcon icon={badge.icon} className="w-3 h-3" />
+                          {badge.label}
+                       </div>
+         
+                    </td>
+                    <td className="p-4 text-center hidden sm:table-cell">
+                      {log.hit_count > 1 ? (
+                        <span className="inline-flex items-center justify-center px-2.5 py-1 text-xs font-bold leading-none text-rose-100 bg-rose-600 rounded-full shadow-sm">
+                          {log.hit_count}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 font-medium text-xs">1</span>
+                      )}
+                    </td>
+                    <td className="p-4 overflow-hidden text-ellipsis whitespace-nowrap pr-6">
+                      <div className="w-full max-w-[100px] sm:max-w-[150px] lg:max-w-[200px] xl:max-w-[300px] truncate text-gray-800 dark:text-gray-300 font-mono text-xs bg-gray-50 dark:bg-gray-900 px-2 py-1.5 rounded border border-gray-100 dark:border-gray-700/50" title={log.error_message}>
+                       
+                        {log.error_message}
+                      </div>
+                    </td>
+                    <td className="p-4 text-right">
+                      <button 
+            
+                        onClick={() => setSelectedLog(log)} 
+                        className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-indigo-600 dark:hover:text-indigo-400 rounded-lg text-xs font-bold transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        title="View Log Details"
+           
+                        >
+                        <SafeIcon icon={FiIcons.FiMaximize2} className="w-3.5 h-3.5" />
+                        View
+                      </button>
+              
+                    </td>
+                  </tr>
+                )})}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* RENDER DYNAMIC PAGINATION ENGINE */}
+   
+        {renderPagination()}
+      </motion.div>
+
+      {/* DEEP DIVE MODAL */}
+      <AnimatePresence>
+        {selectedLog && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} 
+       
+              className="absolute inset-0 bg-gray-900/70 backdrop-blur-md"
+              onClick={() => setSelectedLog(null)}
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            
+              className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col relative z-10 border border-gray-200 dark:border-gray-700 overflow-hidden"
+            >
+              <div className="p-6 border-b border-gray-200 dark:border-gray-700 flex justify-between items-start bg-gray-50 dark:bg-gray-800/50">
+                <div className="w-full pr-4">
+                  <h2 className="text-xl font-extrabold text-gray-900 dark:text-white flex items-center gap-2">
+      
+                    <SafeIcon icon={FiIcons.FiTerminal} className="text-gray-500" /> 
+                    Error Inspector
+                    <span className={`ml-3 inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold uppercase rounded-md border shadow-sm ${getStatusBadge(selectedLog.status).style}`}>
+                      {getStatusBadge(selectedLog.status).label}
+      
+                    </span>
+                  </h2>
+                  <div className="flex flex-wrap items-center gap-3 mt-4">
+                    {selectedLog.hit_count > 1 && (
+                      <span className="text-xs font-bold text-rose-600 dark:text-rose-400 bg-rose-100 dark:bg-rose-900/30 px-2.5 py-1 rounded-md border border-rose-200 dark:border-rose-800/50">
+                        {selectedLog.hit_count} Hits
+                      </span>
+                    )}
+                    <div className="flex items-center bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden max-w-full">
+              
+                      <span className="text-xs font-mono font-medium text-gray-600 dark:text-gray-400 px-3 py-1.5 truncate max-w-[200px] sm:max-w-xs md:max-w-md">
+                        {selectedLog.url_endpoint ||
+
+                          'N/A'}
+                      </span>
+                      <button 
+                        onClick={() => handleCopy(selectedLog.url_endpoint, 'url', selectedLog)}
+                        className="px-2.5 py-1.5 border-l 
+
+                          border-gray-200 dark:border-gray-700 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 transition-colors focus:outline-none"
+                        title="Copy URL"
+                      >
+                        <SafeIcon icon={copiedState === 'url' ?
+
+                          FiIcons.FiCheck : FiIcons.FiCopy} className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 flex items-center gap-1" title={`First seen: ${formatLogDate(selectedLog.created_at)}`}>
+                      <SafeIcon icon={FiIcons.FiClock} className="w-3 h-3" 
+
+                        />
+                      {formatLogDate(selectedLog.updated_at || selectedLog.created_at)}
+                    </span>
+                  </div>
+                </div>
+                <button onClick={() => setSelectedLog(null)} className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 p-1.5 
+
+                  rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors shrink-0">
+                  <SafeIcon icon={FiIcons.FiX} className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto bg-white dark:bg-gray-800 flex-grow space-y-6">
+                <div>
+        
+                  <h3 className="text-xs font-extrabold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <SafeIcon icon={FiIcons.FiAlertCircle} /> Exception Message
+                  </h3>
+                  <div className="bg-red-50 dark:bg-red-900/10 text-red-800 dark:text-red-400 p-4 rounded-xl border border-red-100 dark:border-red-900/30 font-mono text-sm font-medium whitespace-pre-wrap shadow-inner">
+      
+                    {selectedLog.error_message}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+              
+                    <h3 className="text-xs font-extrabold text-gray-500 dark:text-gray-400 uppercase tracking-wider flex items-center gap-2">
+                      <SafeIcon icon={FiIcons.FiCode} /> Stack Trace
+                    </h3>
+                    <button 
+                  
+                      onClick={() => handleCopy(selectedLog.stack_trace, 'stack_trace', selectedLog)}
+                      className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 transition-colors px-2 py-1 rounded-md hover:bg-indigo-50 dark:hover:bg-indigo-900/30 border border-transparent hover:border-indigo-200 dark:hover:border-indigo-800/50"
+                    >
+                      <SafeIcon icon={copiedState === 'stack_trace' ?
+
+                        FiIcons.FiCheck : FiIcons.FiCopy} className="w-3.5 h-3.5" />
+                      {copiedState === 'stack_trace' ?
+
+                        'Copied!' : 'Copy & Investigate'}
+                    </button>
+                  </div>
+                  <div className="bg-[#0d1117] rounded-xl border border-gray-700 shadow-inner overflow-hidden">
+                    <div className="bg-[#1f2937] px-4 py-2.5 flex gap-2 border-b border-gray-700">
+       
+                        <div className="w-3 h-3 rounded-full bg-red-500 shadow-sm"></div>
+                      <div className="w-3 h-3 rounded-full bg-yellow-500 shadow-sm"></div>
+                      <div className="w-3 h-3 rounded-full bg-green-500 shadow-sm"></div>
+                    </div>
+     
+                    <div className="p-4 overflow-x-auto">
+                       <pre className="text-emerald-400 font-mono text-[13px] whitespace-pre-wrap leading-relaxed">
+                         {selectedLog.stack_trace ||
+
+                          'No stack trace available.'}
+                       </pre>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+      
+              <div className="p-5 border-t border-gray-200 dark:border-gray-700 flex flex-wrap justify-between items-center bg-gray-50 dark:bg-gray-800/50 gap-4">
+                <button 
+                  onClick={() => handleAction('delete', selectedLog.id)} 
+                  className="flex items-center gap-2 px-4 py-2.5 bg-red-100 hover:bg-red-200 dark:bg-red-900/30 dark:hover:bg-red-900/50 text-red-700 dark:text-red-400 rounded-lg font-bold transition-colors"
+           
+                  >
+                  <SafeIcon icon={FiIcons.FiTrash2} /> Delete Permanently
+                </button>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button onClick={() => setSelectedLog(null)} className="px-5 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 font-bold transition-colors shadow-sm">
+  
+                   Close
+                  </button>
+                  
+                  {selectedLog.status !== 'ignored' && selectedLog.status !== 'resolved' && (
+                    <button 
+
+                      onClick={() => handleAction('ignore', selectedLog.id)} 
+                      className="flex items-center gap-2 px-5 py-2.5 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 rounded-lg font-bold shadow-sm transition-all active:scale-95"
+                    >
+                 
+                      <SafeIcon icon={FiIcons.FiEyeOff} /> Ignore
+                    </button>
+                  )}
+
+                  {selectedLog.status !== 'resolved' && (
+                    <button 
+           
+                      onClick={() => handleAction('resolve', selectedLog.id)} 
+                      className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-md transition-all active:scale-95"
+                    >
+                      <SafeIcon icon={FiIcons.FiCheckCircle} /> Mark Resolved
+    
+                     </button>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+     
+      </AnimatePresence>
+ 
+    </div>
+  );
+};
+
+export default SystemLogs;

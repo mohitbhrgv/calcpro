@@ -1,0 +1,68 @@
+import React from "react";
+
+/**
+ * A component that renders a visual preview of a Google SERP snippet.
+ * It is now more flexible and accepts a basePath prop to construct the correct URL.
+ *
+ * @param {object} props - The component props.
+ * @param {string} props.title - The title to display in the preview.
+ * @param {string} props.slug - The URL slug to display.
+ * @param {string} props.description - The meta description to display.
+ * @param {string} props.basePath - The base path for the URL (e.g., 'blog/', 'calculator/', or '').
+ * @param {object} props.globalSettings - Global settings containing site URL and SEO separator.
+ * @param {object} props.formData - Form data for dynamic variable parsing.
+ * @returns {JSX.Element} The rendered SERP preview component.
+ */
+const SerpPreview = ({ title, slug, description, basePath = "", globalSettings = {}, formData = {} }) => {
+  const siteUrl = globalSettings?.site_url || "https://yourdomain.com";
+  const siteName = globalSettings?.site_name || "Your Site Name";
+  const sep = globalSettings?.seo_separator || "-";
+
+  // --- Utility: Parse SEO Variables ---
+  const parseVars = (text) => {
+      if (!text) return "";
+      return text
+          .replace(/%title%/g, formData.title || formData.name || "")
+          .replace(/%excerpt%/g, formData.excerpt || formData.metaDescription || "")
+          .replace(/%sitename%/g, siteName)
+          .replace(/%sep%/g, sep)
+          .replace(/%currentyear%/g, new Date().getFullYear().toString());
+  };
+
+  const parsedTitle = parseVars(title);
+  const parsedDescription = parseVars(description);
+
+  // Fallback logic to ensure the preview is never empty
+  const displayTitle = parsedTitle || "Your Page Title Will Appear Here";
+  const displaySlug = slug || "your-page-slug";
+  const displayDescription =
+    parsedDescription || "Your meta description will be displayed here. Craft a compelling summary to attract clicks.";
+
+  // The URL is now constructed dynamically using the basePath prop and global settings.
+  // The rtrim function ensures there's never a double slash if basePath is empty.
+  const displayUrl = `${siteUrl}/${basePath}${displaySlug}`
+    .replace(/\/+/g, "/")
+    .replace("http:/", "http://")
+    .replace("https:/", "https://");
+
+  return (
+    <div className="p-4 bg-gray-50 dark:bg-gray-700 rounded-lg space-y-1 font-sans">
+      {/* Title */}
+      <h3 className="text-lg text-blue-600 dark:text-blue-400 hover:underline cursor-pointer truncate">
+        {displayTitle}
+      </h3>
+
+      {/* URL/Slug */}
+      <p className="text-sm text-green-700 dark:text-green-500 truncate">
+        {displayUrl}
+      </p>
+
+      {/* Description */}
+      <p className="text-sm text-gray-600 dark:text-gray-400 line-clamp-2">
+         {displayDescription}
+      </p>
+    </div>
+  );
+};
+
+export default SerpPreview;

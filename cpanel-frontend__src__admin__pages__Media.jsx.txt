@@ -1,0 +1,887 @@
+// (Update) cPanel_Frontend/src/admin/pages/Media.jsx
+
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import SafeIcon from "../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+import LoadingSpinner from "../components/common/LoadingSpinner";
+import UploadModal from "../components/media/UploadModal";
+import MediaDetailsModal from "../components/media/MediaDetailsModal";
+import ConfirmModal from "../components/common/ConfirmModal";
+import Modal from "../components/common/Modal";
+import { authenticatedFetch } from "../utils/apiService";
+import { useAdminCache } from "../context/AdminCacheContext";
+
+const { 
+  FiPlus, FiTrash2, FiImage, FiSearch, FiCloud, 
+  FiCheckSquare, FiSquare, FiRefreshCw, FiAlertTriangle,
+  FiSettings, FiChevronLeft, FiChevronRight, FiInfo,
+  FiChevronDown, FiList, FiSave
+} = FiIcons;
+
+// --- Premium Viewport-Aware Headless Portal Dropdown ---
+const CustomSelect = ({ value, onChange, options, className }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+  const portalRef = useRef(null);
+  const [dropdownStyles, setDropdownStyles] = useState({});
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      const clickedOutsideButton = dropdownRef.current && !dropdownRef.current.contains(event.target);
+      const clickedOutsidePortal = portalRef.current && !portalRef.current.contains(event.target);
+      
+      if (clickedOutsideButton && clickedOutsidePortal) {
+          setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    
+    const updatePosition = () => {
+        if (isOpen && dropdownRef.current) {
+            const rect = dropdownRef.current.getBoundingClientRect();
+            const spaceBelow = window.innerHeight - rect.bottom;
+            const placeAbove = spaceBelow < 250 && rect.top > spaceBelow;
+
+            setDropdownStyles({
+                top: placeAbove ? 'auto' : rect.bottom + window.scrollY + 4,
+                bottom: placeAbove ? (window.innerHeight - rect.top - window.scrollY + 4) : 'auto',
+                left: rect.left + window.scrollX,
+                width: rect.width
+            });
+        }
+    };
+    
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+
+    return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+        window.removeEventListener('scroll', updatePosition, true);
+        window.removeEventListener('resize', updatePosition);
+    };
+  }, [isOpen]);
+
+  const handleToggle = () => {
+     if (!isOpen && dropdownRef.current) {
+         const rect = dropdownRef.current.getBoundingClientRect();
+         const spaceBelow = window.innerHeight - rect.bottom;
+         const placeAbove = spaceBelow < 250 && rect.top > spaceBelow;
+
+         setDropdownStyles({
+            top: placeAbove ? 'auto' : rect.bottom + window.scrollY + 4,
+            bottom: placeAbove ? (window.innerHeight - rect.top - window.scrollY + 4) : 'auto',
+            left: rect.left + window.scrollX,
+            width: rect.width
+         });
+     }
+     setIsOpen(!isOpen);
+  };
+
+  const selectedLabel = options.find(opt => String(opt.value) === String(value))?.label || '';
+
+  const dropdownContent = (
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            ref={portalRef}
+            initial={{ opacity: 0, y: dropdownStyles.bottom !== 'auto' ? 5 : -5 }} 
+            animate={{ opacity: 1, y: 0 }} 
+            exit={{ opacity: 0, y: dropdownStyles.bottom !== 'auto' ? 5 : -5 }} 
+            transition={{ duration: 0.15 }}
+            style={dropdownStyles}
+            className="absolute z-[99999] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl overflow-hidden py-1"
+          >
+            <div className="max-h-60 overflow-y-auto custom-scrollbar">
+                {options.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onChange(opt.value); setIsOpen(false); }}
+                    className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
+                      String(value) === String(opt.value) 
+                        ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 font-bold' 
+                        : 'text-gray-900 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+  );
+
+  return (
+    <div className={`relative ${className || ''}`} ref={dropdownRef}>
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="flex items-center justify-between w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow font-medium cursor-pointer shadow-sm"
+      >
+        <span className="truncate pr-2">{selectedLabel}</span>
+        <SafeIcon 
+            icon={FiChevronDown} 
+            className={`w-4 h-4 text-gray-500 shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} 
+        />
+      </button>
+      {createPortal(dropdownContent, document.body)}
+    </div>
+  );
+};
+
+// --- INTERNAL COMPONENT: Settings Modal (Transparent Grid Optimization) ---
+const MediaSettingsModal = ({ isOpen, onClose, currentLimit, onSave, disableAnimation = false }) => {
+  const [limit, setLimit] = useState(currentLimit);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setLimit(currentLimit);
+    }
+  }, [currentLimit, isOpen]);
+
+  const limitOptions = [
+    { value: 50, label: "50 Images / Page" },
+    { value: 100, label: "100 Images / Page" },
+    { value: 200, label: "200 Images / Page" },
+    { value: 500, label: "500 Images / Page" },
+    { value: 1000, label: "1000 Images / Page" }
+  ];
+
+  const isDirty = currentLimit !== limit;
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!isDirty) return;
+    setIsSubmitting(true);
+    await new Promise(resolve => setTimeout(resolve, 400)); // Premium UX Delay
+    onSave(limit);
+    setIsSubmitting(false);
+    onClose();
+    toast.success("Preferences saved successfully.");
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Media Library Configuration" size="md" disableAnimation={disableAnimation}>
+      <form onSubmit={handleSave} className="flex flex-col">
+        <div className="space-y-5 max-h-[65vh] overflow-y-auto pr-2 pb-4 pt-1 custom-scrollbar">
+
+            {/* ZONE 1: BLUE (Display Settings) */}
+            <div className="bg-blue-50/50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-800/30 p-5 rounded-2xl space-y-4">
+                <h4 className="text-sm font-extrabold text-blue-900 dark:text-blue-300 uppercase tracking-wider flex items-center gap-2">
+                    <SafeIcon icon={FiList} className="w-4 h-4 text-blue-500" /> Display Settings
+                </h4>
+                <div>
+                    <label className="block text-[11px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+                        Target Items Per Page
+                    </label>
+                    <CustomSelect 
+                        value={limit} 
+                        onChange={(val) => setLimit(parseInt(val))} 
+                        options={limitOptions} 
+                    />
+                </div>
+            </div>
+
+            {/* ZONE 2: INDIGO (Optimization Info) */}
+            <div className="bg-indigo-50/50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-800/30 p-5 rounded-2xl flex gap-3">
+                <SafeIcon icon={FiInfo} className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
+                <p className="text-[12px] font-medium text-indigo-800 dark:text-indigo-200/90 leading-relaxed">
+                    <span className="font-bold">Layout Optimization:</span> To maintain a perfect, gap-free grid on large displays, the system will automatically round this number down to the nearest multiple of 8 (e.g., 50 is optimized to 48).
+                    If you need to search the entire library instantly, increase this limit.
+                </p>
+            </div>
+
+        </div>
+
+        {/* Fixed Footer Buttons */}
+        <div className="flex justify-end items-center pt-5 mt-3 border-t border-gray-200 dark:border-gray-700 shrink-0 bg-white dark:bg-gray-800">
+            <div className="flex items-center gap-3">
+                <button
+                    type="button"
+                    onClick={onClose}
+                    disabled={isSubmitting}
+                    className="px-5 py-2.5 text-[14px] font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition-colors focus:outline-none disabled:opacity-50"
+                >
+                    Cancel
+                </button>
+                <button
+                    type="submit"
+                    disabled={isSubmitting || !isDirty}
+                    className="flex items-center justify-center min-w-[140px] gap-2 px-6 py-2.5 bg-indigo-600 text-white text-[14px] font-bold rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg shadow-indigo-500/30 hover:-translate-y-0.5 focus:outline-none"
+                >
+                    {isSubmitting ? (
+                        <><SafeIcon icon={FiRefreshCw} className="w-4 h-4 animate-spin" /> Saving...</>
+                    ) : (
+                        <><SafeIcon icon={FiSave} className="w-4 h-4" /> Save</>
+                    )}
+                </button>
+            </div>
+        </div>
+      </form>
+    </Modal>
+  );
+};
+
+// --- INTERNAL COMPONENT: Progressive Grid Image ---
+const GridImage = ({ src, alt }) => {
+  const [isLoaded, setIsLoaded] = useState(false);
+  return (
+    <div className="w-full h-full relative bg-gray-100 dark:bg-gray-800 flex items-center justify-center overflow-hidden">
+      <div 
+        className={`absolute inset-0 flex items-center justify-center transition-opacity duration-500 pointer-events-none z-0 ${
+          isLoaded ? "opacity-0" : "opacity-100"
+        }`}
+      >
+         <SafeIcon icon={FiImage} className="w-6 h-6 text-gray-300 dark:text-gray-600 animate-pulse" />
+      </div>
+      <img
+        src={src}
+        alt={alt}
+        loading="lazy"
+        onLoad={() => setIsLoaded(true)}
+        className={`w-full h-full object-cover transition-opacity duration-700 ease-in-out relative z-10 ${
+          isLoaded ? "opacity-100" : "opacity-0"
+        }`}
+      />
+    </div>
+  );
+};
+
+const MediaPage = () => {
+  const { invalidateCache, isInitialLoadComplete } = useAdminCache();
+
+  // --- State ---
+  const [filterStatus, setFilterStatus] = useState('active'); // 'active' | 'trash'
+  const [mediaItems, setMediaItems] = useState([]);
+  const [isUpdating, setIsUpdating] = useState(true); 
+  const [searchTerm, setSearchTerm] = useState("");
+  // Replaced debounced search with pure instant state
+
+  // Pagination & Display Settings
+  const [pagination, setPagination] = useState({ currentPage: 1, totalPages: 1, totalRecords: 0 });
+  const [displayLimit, setDisplayLimit] = useState(() => {
+    const stored = parseInt(localStorage.getItem("media_display_limit"));
+    const validOptions = [50, 100, 200, 500, 1000];
+    return validOptions.includes(stored) ? stored : 50;
+  });
+
+  // Mathematically optimize the selected limit for the 8-column grid
+  const effectiveLimit = Math.floor(displayLimit / 8) * 8;
+
+  // Selection State
+  const [selectedIds, setSelectedIds] = useState([]);
+
+  // Processing overlay state (for bulk actions: trash / restore / delete)
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingStatus, setProcessingStatus] = useState("");
+
+  // Modals
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [selectedMediaItem, setSelectedMediaItem] = useState(null);
+
+  // --- Confirmation Modal State ---
+  const [confirmDialog, setConfirmDialog] = useState({
+    isOpen: false,
+    title: "",
+    message: "",
+    confirmText: "",
+    type: "danger",
+    onConfirm: () => {}
+  });
+
+  // --- Lock background scroll when Upload modal is open ---
+  useEffect(() => {
+    if (isUploadModalOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [isUploadModalOpen]);
+
+  const ACTION_TOAST_ID = "media-action-toast";
+
+  // --- PREMIUM INSTANT CLIENT-SIDE FILTERING (Mirrors Posts.jsx) ---
+  const filteredMediaItems = useMemo(() => {
+    if (!searchTerm) return mediaItems;
+    const lowerSearch = searchTerm.toLowerCase();
+    
+    return mediaItems.filter(item => 
+        item.file_name?.toLowerCase().includes(lowerSearch) ||
+        item.original_name?.toLowerCase().includes(lowerSearch) ||
+        item.alt_text?.toLowerCase().includes(lowerSearch)
+    );
+  }, [mediaItems, searchTerm]);
+
+  // --- Fetch Logic (Backend API Call - Stripped of Search to prevent reloading) ---
+  const fetchMedia = useCallback(
+    async (page = 1, isSilent = false) => {
+      if (!isSilent) {
+          setIsUpdating(true);
+          await new Promise(resolve => setTimeout(resolve, 600)); // Professional Transition Delay
+      }
+      
+      setSelectedIds([]);
+
+      try {
+        const result = await authenticatedFetch(
+          `/api/admin/get_media.php?status=${filterStatus}&page=${page}&limit=${effectiveLimit}`
+        );
+        
+        if (result.success) {
+          setMediaItems(result.data.media);
+          setPagination(result.data.pagination);
+        } else if (!isSilent) {
+          toast.error(result.message || "Failed to load media.");
+        }
+      } catch (error) {
+        if (error.message !== "Unauthorized" && !isSilent) {
+          toast.error("Could not connect to the server.");
+        }
+      } finally {
+        if (!isSilent) setIsUpdating(false);
+      }
+    },
+    [filterStatus, effectiveLimit]
+  );
+
+  // Trigger fetch strictly on status or page change ONLY.
+  useEffect(() => {
+    fetchMedia(pagination.currentPage);
+  }, [pagination.currentPage, filterStatus, fetchMedia]);
+
+  const handleUploadComplete = () => {
+    setIsUploadModalOpen(false);
+    invalidateCache("media_active");
+    setPagination(prev => ({ ...prev, currentPage: 1 }));
+    fetchMedia(1);
+  };
+
+  const handleOpenDetails = async (item) => {
+    if (filterStatus === 'trash') return; 
+    
+    setIsUpdating(true);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    setIsUpdating(false);
+
+    setSelectedMediaItem(item);
+    setIsDetailsModalOpen(true);
+  };
+
+  const handleMediaUpdate = (updatedItem) => {
+    if (updatedItem.needs_refresh) {
+      invalidateCache("media_active");
+      fetchMedia(pagination.currentPage, true);
+      // Silent fetch to prevent UI flash
+    } else {
+      setMediaItems(prev => prev.map((item) => (item.id === updatedItem.id ? updatedItem : item)));
+    }
+  };
+
+  const handleSaveSettings = (newLimit) => {
+    localStorage.setItem("media_display_limit", newLimit);
+    setDisplayLimit(newLimit);
+    setPagination(prev => ({ ...prev, currentPage: 1 }));
+  };
+
+  // --- PREMIUM SINGLE TRASH FLOW ---
+  const requestSingleTrash = (id) => {
+    setConfirmDialog({
+        isOpen: true,
+        title: "Move to Trash",
+        message: "Are you sure you want to move this item to the Trash? You can restore it later.",
+        confirmText: "Move to Trash",
+        type: "danger",
+        onConfirm: () => executeSingleTrash(id)
+    });
+  };
+
+  const executeSingleTrash = async (id) => {
+    setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+    setIsDetailsModalOpen(false);
+    
+    setProcessingStatus("Moving item to Trash…");
+    setIsProcessing(true);
+
+    try {
+      const [result] = await Promise.all([
+          authenticatedFetch(
+            "/api/admin/manage_media_bulk.php",
+            {
+              method: "POST",
+              body: JSON.stringify({ ids: [id], action: 'trash' }),
+            }
+          ),
+          new Promise(resolve => setTimeout(resolve, 800))
+      ]);
+
+      if (result.success) {
+        setProcessingStatus("Item moved to Trash.");
+        await new Promise(resolve => setTimeout(resolve, 400));
+        
+        toast.success("Item successfully moved to Trash.", { id: ACTION_TOAST_ID });
+        invalidateCache("media_active");
+        invalidateCache("media_trash");
+        
+        setIsProcessing(false);
+        setMediaItems(prev => prev.filter(i => i.id !== id));
+        fetchMedia(pagination.currentPage, true); // Silent Sync
+
+      } else {
+        toast.error(result.message, { id: ACTION_TOAST_ID });
+        setIsProcessing(false);
+      }
+    } catch (error) {
+      toast.error("Action failed.", { id: ACTION_TOAST_ID });
+      setIsProcessing(false);
+    }
+  };
+
+  const toggleSelect = (id, e) => {
+    e.stopPropagation();
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    // SECURITY: Select all MUST only select the visually filtered items to prevent accidental hidden deletions
+    if (selectedIds.length === filteredMediaItems.length && filteredMediaItems.length > 0) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filteredMediaItems.map(item => item.id));
+    }
+  };
+
+  // --- PREMIUM BULK ACTION FLOW ---
+  const requestBulkAction = (action) => {
+    if (selectedIds.length === 0) return;
+
+    let title = "";
+    let message = "";
+    let confirmText = "";
+    let type = "danger";
+
+    if (action === 'trash') {
+        title = "Move to Trash";
+        message = `Are you sure you want to move ${selectedIds.length} item(s) to the Trash?`;
+        confirmText = "Move to Trash";
+    } else if (action === 'restore') {
+        title = "Restore Items";
+        message = `Are you sure you want to restore ${selectedIds.length} item(s) to the Library?`;
+        confirmText = "Restore Items";
+        type = "primary";
+    } else if (action === 'delete_permanent') {
+        title = "Permanently Delete";
+        message = `Are you sure you want to permanently delete ${selectedIds.length} item(s)? This action cannot be undone.`;
+        confirmText = "Delete Forever";
+    }
+
+    setConfirmDialog({
+        isOpen: true,
+        title,
+        message,
+        confirmText,
+        type,
+        onConfirm: () => executeBulkAction(action)
+    });
+  };
+
+  const executeBulkAction = async (action) => {
+    const idsToProcess = [...selectedIds];
+    const processCount = idsToProcess.length;
+
+    setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+    setSelectedIds([]);
+
+    let statusMessage = "";
+    if (action === 'trash') statusMessage = `Moving ${processCount} item(s) to Trash…`;
+    else if (action === 'restore') statusMessage = `Restoring ${processCount} item(s) to Library…`;
+    else if (action === 'delete_permanent') statusMessage = `Permanently deleting ${processCount} item(s)…`;
+
+    setProcessingStatus(statusMessage);
+    setIsProcessing(true);
+
+    try {
+      const [result] = await Promise.all([
+          authenticatedFetch(
+            "/api/admin/manage_media_bulk.php",
+            {
+              method: "POST",
+              body: JSON.stringify({ ids: idsToProcess, action }),
+            }
+          ),
+          new Promise(resolve => setTimeout(resolve, 900))
+      ]);
+
+      if (result.success) {
+        let successMessage = "";
+        if (action === 'trash') successMessage = `Successfully moved ${processCount} item(s) to Trash.`;
+        else if (action === 'restore') successMessage = `Successfully restored ${processCount} item(s).`;
+        else successMessage = `Permanently deleted ${processCount} item(s).`;
+
+        setProcessingStatus(successMessage);
+        await new Promise(resolve => setTimeout(resolve, 400));
+        
+        toast.success(successMessage, { id: ACTION_TOAST_ID });
+        invalidateCache("media_active");
+        invalidateCache("media_trash");
+        
+        setIsProcessing(false);
+        setMediaItems(prev => prev.filter(item => !idsToProcess.includes(item.id)));
+        fetchMedia(pagination.currentPage, true); // Silent Sync
+
+      } else {
+        toast.error(result.message, { id: ACTION_TOAST_ID });
+        setIsProcessing(false);
+      }
+    } catch (error) {
+      toast.error("Action failed.", { id: ACTION_TOAST_ID });
+      setIsProcessing(false);
+    }
+  };
+
+  if (!isInitialLoadComplete) return null;
+
+  return (
+    <div className="space-y-6">
+      
+      <ConfirmModal
+        isOpen={confirmDialog.isOpen}
+        onClose={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={confirmDialog.onConfirm}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        confirmText={confirmDialog.confirmText}
+        type={confirmDialog.type}
+      />
+      
+      <MediaSettingsModal 
+        isOpen={isSettingsOpen} 
+        onClose={() => setIsSettingsOpen(false)} 
+        currentLimit={displayLimit}
+        onSave={handleSaveSettings}
+        disableAnimation={true}
+      />
+
+      <UploadModal
+        isOpen={isUploadModalOpen}
+        onClose={() => setIsUploadModalOpen(false)}
+        onUploadComplete={handleUploadComplete}
+        disableAnimation={true}
+      />
+     
+      <MediaDetailsModal
+        isOpen={isDetailsModalOpen}
+        onClose={() => setIsDetailsModalOpen(false)}
+        mediaItem={selectedMediaItem}
+        onUpdate={handleMediaUpdate}
+        onDelete={requestSingleTrash}
+        disableAnimation={true}
+      />
+
+      {/* --- TIER 1: HEADER BLOCK --- */}
+      <motion.div 
+        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} 
+        className="flex items-start gap-4 p-5 rounded-xl bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-800/30 shadow-sm"
+      >
+        <div className="p-3 bg-indigo-100 dark:bg-indigo-800/50 rounded-xl text-indigo-600 dark:text-indigo-400 shrink-0 shadow-sm border border-indigo-200 dark:border-indigo-700/50">
+          <SafeIcon icon={FiImage} className="w-6 h-6" />
+        </div>
+        <div className="flex-1">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+                <div className="flex items-center gap-2">
+                    <h1 className="text-xl font-bold text-gray-900 dark:text-white tracking-tight">Media Library</h1>
+                </div>
+                <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                  Manage your digital assets. Images are automatically compressed, secured, and optimized upon upload to guarantee maximum delivery speed.
+                </p>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* --- TIER 3: FILTERS & UTILITIES --- */}
+      <motion.div 
+        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
+        className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col xl:flex-row justify-between items-center gap-4 relative z-20"
+      >
+        <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
+            {/* Search Bar (Now Instant Client-Side) */}
+            <div className="relative w-full sm:w-64 flex items-center">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-500 dark:text-gray-400">
+                    <SafeIcon icon={FiSearch} className="w-4 h-4" />
+                </div>
+                <input
+                    type="text"
+                    placeholder="Search visible images..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow"
+                />
+            </div>
+            
+            {/* Library / Trash Toggle */}
+            <div className="flex bg-gray-100 dark:bg-gray-900/50 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
+                <button
+                    onClick={() => {
+                        setFilterStatus('active');
+                        setSearchTerm("");
+                    }}
+                    className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${filterStatus === 'active' ? 'bg-white dark:bg-gray-700 text-indigo-600 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
+                >
+                    Library
+                </button>
+                <button
+                    onClick={() => {
+                        setFilterStatus('trash');
+                        setSearchTerm("");
+                    }}
+                    className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${filterStatus === 'trash' ? 'bg-white dark:bg-gray-700 text-red-600 dark:text-red-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
+                >
+                    Trash
+                </button>
+            </div>
+        </div>
+
+        <div className="flex items-center gap-3 w-full xl:w-auto">
+            <div className="flex items-center gap-3 bg-gray-50 dark:bg-gray-900/50 p-2 rounded-lg border border-gray-100 dark:border-gray-700 flex-1 xl:flex-none">
+                {filterStatus === 'active' ? (
+                    <button
+                        onClick={() => requestBulkAction('trash')}
+                        disabled={selectedIds.length === 0 || isProcessing}
+                        className="px-4 py-2 bg-red-600 text-white rounded-md text-sm font-semibold hover:bg-red-700 disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700 dark:disabled:text-gray-500 transition-colors shadow-sm whitespace-nowrap flex items-center gap-2"
+                    >
+                        <SafeIcon icon={FiTrash2} className="w-4 h-4" /> Move to Trash
+                    </button>
+                ) : (
+                    <>
+                        <button
+                            onClick={() => requestBulkAction('restore')}
+                            disabled={selectedIds.length === 0 || isProcessing}
+                            className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm font-semibold hover:bg-blue-700 disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700 dark:disabled:text-gray-500 transition-colors shadow-sm whitespace-nowrap flex items-center gap-2"
+                        >
+                            <SafeIcon icon={FiRefreshCw} className="w-4 h-4" /> Restore
+                        </button>
+                        <button
+                            onClick={() => requestBulkAction('delete_permanent')}
+                            disabled={selectedIds.length === 0 || isProcessing}
+                            className="px-4 py-2 bg-red-600 text-white rounded-md text-sm font-semibold hover:bg-red-700 disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700 dark:disabled:text-gray-500 transition-colors shadow-sm whitespace-nowrap flex items-center gap-2"
+                        >
+                            <SafeIcon icon={FiAlertTriangle} className="w-4 h-4" /> Delete Forever
+                        </button>
+                    </>
+                )}
+                {selectedIds.length > 0 && (
+                  <span className="text-xs font-bold text-gray-600 dark:text-gray-400 px-2 whitespace-nowrap">
+                    {selectedIds.length} selected
+                  </span>
+                )}
+            </div>
+
+            <div className="flex items-center gap-1 border-l border-gray-200 dark:border-gray-700 pl-3 ml-auto shrink-0">
+                <button
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="p-2 text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+                    title="Grid Settings"
+                >
+                    <SafeIcon icon={FiSettings} className="w-4 h-4" />
+                </button>
+                <button
+                    onClick={() => fetchMedia(pagination.currentPage)}
+                    disabled={isUpdating}
+                    className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors disabled:opacity-50"
+                    title="Refresh List"
+                >
+                    <SafeIcon icon={FiRefreshCw} className={`w-4 h-4 ${isUpdating ? "animate-spin text-indigo-600" : ""}`} />
+                </button>
+                <div className="ml-2">
+                    <button
+                        onClick={() => setIsUploadModalOpen(true)}
+                        disabled={isUpdating}
+                        className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold rounded-lg shadow-sm transition-colors whitespace-nowrap disabled:opacity-50"
+                    >
+                        <SafeIcon icon={FiPlus} className="w-4 h-4" /> Upload
+                    </button>
+                </div>
+            </div>
+        </div>
+      </motion.div>
+
+      {/* --- TIER 4: DATA WRAPPER & PAGINATION --- */}
+      <motion.div 
+        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+        className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden relative flex flex-col h-[calc(100vh-22rem)] min-h-[500px]"
+      >
+        <AnimatePresence>
+            {isUpdating && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-white/60 dark:bg-gray-900/60 backdrop-blur-[1px] z-30 flex items-center justify-center">
+                    <LoadingSpinner size="lg" />
+                </motion.div>
+            )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+            {isProcessing && (
+                <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="absolute inset-0 bg-white/75 dark:bg-gray-900/75 backdrop-blur-sm z-40 flex flex-col items-center justify-center gap-4 rounded-xl"
+                >
+                    <div className="flex flex-col items-center gap-3 bg-white dark:bg-gray-800 px-8 py-6 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700">
+                        <LoadingSpinner size="lg" />
+                        <p className="text-sm font-semibold text-gray-700 dark:text-gray-200 text-center max-w-xs leading-snug">
+                            {processingStatus}
+                        </p>
+                        <p className="text-xs text-gray-400 dark:text-gray-500">Please wait…</p>
+                    </div>
+                </motion.div>
+            )}
+        </AnimatePresence>
+
+        {/* Dynamic Selection Header - Using Filtered Items Length */}
+        {filteredMediaItems.length > 0 && !isUpdating && (
+            <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/30 flex items-center z-10 sticky top-0 backdrop-blur-md">
+                 <button 
+                    onClick={toggleSelectAll} 
+                    className="flex items-center gap-2 text-[13px] font-bold text-gray-600 dark:text-gray-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors focus:outline-none"
+                >
+                     <SafeIcon icon={selectedIds.length === filteredMediaItems.length ? FiCheckSquare : FiSquare} className="w-4 h-4" />
+                     {selectedIds.length === filteredMediaItems.length ? 'Deselect All Visible Images' : 'Select All Visible Images'}
+                 </button>
+            </div>
+        )}
+
+        {/* Grid Container */}
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-5 relative">
+            {filteredMediaItems.length === 0 && !isUpdating ? (
+                 <div className="flex flex-col items-center justify-center py-24 text-center opacity-60 h-full">
+                    <SafeIcon icon={searchTerm ? FiSearch : FiCloud} className="h-12 w-12 text-gray-400 mb-3" />
+                    <h3 className="text-lg font-medium text-gray-900 dark:text-white">No items found</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                        {searchTerm ? "No images match your search on this page." : (filterStatus === 'trash' ? "Trash is empty." : "Upload images to get started.")}
+                    </p>
+                </div>
+            ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3 pb-4">
+                    {filteredMediaItems.map((item) => (
+                        <div
+                            key={`media-item-${item.id}`}
+                            onClick={() => handleOpenDetails(item)}
+                            className={`group relative aspect-square rounded-xl border overflow-hidden cursor-pointer transition-shadow ${
+                                selectedIds.includes(item.id)
+                                    ? "border-indigo-500 ring-2 ring-indigo-500/50 shadow-md"
+                                    : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:shadow-lg hover:border-gray-300 dark:hover:border-gray-500"
+                            }`}
+                        >
+                            <div 
+                                onClick={(e) => toggleSelect(item.id, e)}
+                                className="absolute top-3 left-3 z-20 p-1.5 bg-white/95 dark:bg-gray-900/95 rounded-md shadow-sm hover:bg-white dark:hover:bg-black cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+                                style={{ opacity: selectedIds.includes(item.id) ? 1 : undefined }}
+                            >
+                                <SafeIcon 
+                                    icon={selectedIds.includes(item.id) ? FiCheckSquare : FiSquare} 
+                                    className={`w-4 h-4 ${selectedIds.includes(item.id) ? "text-indigo-600 dark:text-indigo-400" : "text-gray-400 dark:text-gray-500"}`} 
+                                />
+                            </div>
+
+                            <GridImage src={item.full_url} alt={item.alt_text} />
+
+                            <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/80 to-transparent pointer-events-none z-10">
+                                <p className="text-white text-xs truncate font-medium drop-shadow-md">{item.file_name}</p>
+                            </div>
+                            
+                            {filterStatus === 'active' && !selectedIds.includes(item.id) && (
+                                <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none z-20">
+                                    <div className="bg-black/70 backdrop-blur-sm text-white text-xs font-semibold px-4 py-2 rounded-full border border-white/10 shadow-lg transform translate-y-2 group-hover:translate-y-0 transition-transform">
+                                        View Details
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+
+        {/* PAGINATION ENGINE (Intelligently adapts to Search Context) */}
+        {pagination.totalRecords > 0 && (
+          <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 flex flex-col sm:flex-row items-center justify-between gap-4 transition-all mt-auto rounded-b-xl shrink-0">
+            
+            {searchTerm ? (
+              <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
+                Found
+                <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                   {filteredMediaItems.length}
+                </span>
+                instant matches on this page
+              </div>
+            ) : (
+              <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
+                Showing
+                <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                   {Math.min((pagination.currentPage - 1) * effectiveLimit + 1, pagination.totalRecords)}
+                </span>
+                to
+                <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                  {Math.min(pagination.currentPage * effectiveLimit, pagination.totalRecords)}
+                </span>
+                of
+                <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                  {pagination.totalRecords}
+                </span>
+                entries
+              </div>
+            )}
+
+            {pagination.totalPages > 1 && !searchTerm && (
+              <div className="flex items-center p-1 bg-gray-100/80 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700/50 shadow-inner">
+                <button
+                  onClick={() => fetchMedia(Math.max(1, pagination.currentPage - 1))}
+                  disabled={pagination.currentPage === 1 || isUpdating}
+                  className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-800 hover:text-indigo-600 dark:hover:text-indigo-400 hover:shadow-sm disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:hover:text-gray-600 transition-all"
+                >
+                  <SafeIcon icon={FiChevronLeft} className="w-4 h-4" />
+                  Prev
+                </button>
+
+                <div className="flex items-center px-4 border-x border-gray-200 dark:border-gray-700/50">
+                  <span className="text-sm font-bold text-gray-900 dark:text-white">
+                    {pagination.currentPage}
+                  </span>
+                  <span className="text-sm text-gray-400 dark:text-gray-500 mx-1.5">/</span>
+                  <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                    {pagination.totalPages}
+                  </span>
+                </div>
+
+                <button
+                  onClick={() => fetchMedia(Math.min(pagination.totalPages, pagination.currentPage + 1))}
+                  disabled={pagination.currentPage === pagination.totalPages || isUpdating}
+                  className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-800 hover:text-indigo-600 dark:hover:text-indigo-400 hover:shadow-sm disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:hover:text-gray-600 transition-all"
+                >
+                  Next
+                  <SafeIcon icon={FiChevronRight} className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </motion.div>
+    </div>
+  );
+};
+
+export default MediaPage;

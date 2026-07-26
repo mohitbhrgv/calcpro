@@ -1,0 +1,571 @@
+// cPanel_Frontend/src/admin/pages/seo/Seo404Monitor.jsx
+
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import SafeIcon from "../../../common/SafeIcon";
+import Modal from "../../components/common/Modal";
+import * as FiIcons from "react-icons/fi";
+import toast from "react-hot-toast";
+import { authenticatedFetch } from "../../utils/apiService";
+import LoadingSpinner from "../../components/common/LoadingSpinner";
+import { useAdminCache } from "../../context/AdminCacheContext";
+import Monitor404SettingsModal from "../../components/seo/Monitor404SettingsModal";
+import Monitor404HelpModal from "../../components/help/404MonitorHelpModal";
+import { formatDateTime } from "../../utils/dateUtils";
+
+const { 
+  FiActivity, 
+  FiTrash2, 
+  FiTrash, 
+  FiCornerUpRight, 
+  FiSearch, 
+  FiSettings,
+  FiInfo,
+  FiRefreshCw,
+  FiChevronLeft,
+  FiChevronRight
+} = FiIcons;
+
+// SECURITY & ARCHITECTURE FIX: Use relative root to prevent double base URL injection with apiService.js
+const BASE_URL = '/api';
+
+const Seo404Monitor = () => {
+  const navigate = useNavigate();
+  const { getCache } = useAdminCache();
+
+  const [logs, setLogs] = useState([]);
+  const [pagination, setPagination] = useState({ currentPage: 1, totalPages: 1, totalRecords: 0 });
+  
+  // UX State Architecture (FCP Setup)
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [isManualRefresh, setIsManualRefresh] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [confirmModal, setConfirmModal] = useState({ isOpen: false, type: null, data: null });
+
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+
+  const ACTION_TOAST_ID = "404-monitor-action";
+
+  const settings = getCache("settings_general") || {};
+  const isAdvancedMode = settings.seo_404_monitor_mode === "advanced";
+  const displayLimit = parseInt(settings.seo_404_monitor_logs_per_page) || 25;
+
+  const fetchLogs = useCallback(async (page = 1, search = "") => {
+    setIsUpdating(true);
+    setSelectedIds([]); 
+    
+    try {
+      const result = await authenticatedFetch(
+        `${BASE_URL}/admin/get_404_logs.php?page=${page}&search=${search}&limit=${displayLimit}`
+      );
+      if (result.success) {
+        setLogs(result.data.logs);
+        setPagination(result.data.pagination);
+      }
+    } catch (error) {
+      toast.error("Failed to load 404 logs.");
+    } finally {
+      setIsUpdating(false);
+      setInitialLoading(false); // Instantly releases skeleton load on first pass
+    }
+  }, [displayLimit]);
+
+  // Pagination bounds safety check on search
+  useEffect(() => {
+    const handler = setTimeout(() => {
+        if (debouncedSearch !== searchTerm) {
+            setPagination(prev => ({ ...prev, currentPage: 1 }));
+            setDebouncedSearch(searchTerm);
+        }
+    }, 500);
+    return () => clearTimeout(handler);
+  }, [searchTerm, debouncedSearch]);
+
+  // Primary Fetch Trigger
+  useEffect(() => {
+    fetchLogs(pagination.currentPage, debouncedSearch);
+  }, [pagination.currentPage, debouncedSearch, fetchLogs]);
+
+  const handleManualRefresh = async () => {
+    if (isUpdating || isManualRefresh) return;
+    setIsManualRefresh(true);
+    await fetchLogs(pagination.currentPage, debouncedSearch);
+    setTimeout(() => setIsManualRefresh(false), 500);
+  };
+
+  const executeDelete = async (ids) => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+
+    const isBulk = Array.isArray(ids);
+    const deletedCount = isBulk ? ids.length : 1;
+    const endpoint = isBulk ? "delete_404_logs_bulk.php" : "delete_404_log.php";
+    const body = isBulk ? { ids } : { id: ids };
+
+    toast.loading(isBulk ? "Deleting selected entries..." : "Deleting log entry...", { id: ACTION_TOAST_ID });
+
+    // Enterprise "Labor Gap" execution
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    try {
+      const result = await authenticatedFetch(
+        `${BASE_URL}/admin/${endpoint}`,
+        { method: "POST", body: JSON.stringify(body) }
+      );
+
+      if (result.success) {
+        toast.success(result.message, { id: ACTION_TOAST_ID });
+        if (isBulk) setSelectedIds([]);
+        setConfirmModal({ isOpen: false, type: null, data: null });
+
+        const remainingOnPage = logs.length - deletedCount;
+        const shouldGoBack = pagination.currentPage > 1 && remainingOnPage <= 0;
+        const nextPage = shouldGoBack ? pagination.currentPage - 1 : pagination.currentPage;
+        
+        fetchLogs(nextPage, debouncedSearch);
+      } else {
+        toast.error(result.message || "Deletion failed.", { id: ACTION_TOAST_ID });
+      }
+    } catch (error) {
+      toast.error("An error occurred during deletion.", { id: ACTION_TOAST_ID });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleClearLog = async () => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+
+    toast.loading("Clearing all logs...", { id: ACTION_TOAST_ID });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    try {
+      const result = await authenticatedFetch(
+        `${BASE_URL}/admin/clear_404_logs.php`,
+        { method: "POST" }
+      );
+
+      if (result.success) {
+        toast.success(result.message, { id: ACTION_TOAST_ID });
+        setSelectedIds([]);
+        setConfirmModal({ isOpen: false, type: null, data: null });
+        fetchLogs(1, "");
+      } else {
+        toast.error(result.message || "Failed to clear logs.", { id: ACTION_TOAST_ID });
+      }
+    } catch (error) {
+      toast.error("An error occurred.", { id: ACTION_TOAST_ID });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const executeRedirect = (uri) => {
+    setConfirmModal({ isOpen: false, type: null, data: null });
+    navigate("/seo/redirects", { state: { sourcePath: uri } });
+  };
+
+  const handleSelectRow = (id) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      setSelectedIds(logs.map((log) => log.id));
+    } else {
+      setSelectedIds([]);
+    }
+  };
+
+  const columns = useMemo(() => {
+    const cols = [
+      {
+        key: "uri",
+        label: "URI (Path)",
+        render: (val) => (
+          <span className="font-mono text-sm font-medium text-indigo-600 dark:text-indigo-400 break-all">
+            {val}
+          </span>
+        ),
+      },
+      {
+        key: "hits",
+        label: "Hits",
+        render: (val) => (
+          <span className="font-bold text-gray-900 dark:text-white bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded shadow-sm">
+            {val}
+          </span>
+        ),
+      }
+    ];
+
+    if (isAdvancedMode) {
+      cols.push({
+        key: "referer",
+        label: "Referer",
+        render: (val) => (
+          <span className="text-xs text-gray-500 dark:text-gray-400 break-all">
+            {val || "Direct / Internal"}
+          </span>
+        ),
+      });
+    }
+
+    cols.push({
+      key: "updated_at",
+      label: "Last Access",
+      render: (val) => (
+        <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">
+          {formatDateTime(val, settings, true)}
+        </span>
+      ),
+    });
+
+    return cols;
+  }, [isAdvancedMode, settings]);
+
+  if (!getCache("settings_general") && initialLoading) {
+    return (
+        <div className="h-64 flex items-center justify-center">
+            <LoadingSpinner size="lg" />
+        </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      
+      <Monitor404HelpModal 
+        isOpen={isHelpOpen} 
+        onClose={() => setIsHelpOpen(false)} 
+        disableAnimation={true}
+      />
+
+      <Monitor404SettingsModal 
+        isOpen={isSettingsOpen} 
+        onClose={() => {
+            setIsSettingsOpen(false);
+            // Re-sync on close in case settings modified DB logic
+            if (!isSubmitting) fetchLogs(1, debouncedSearch);
+        }} 
+        disableAnimation={true}
+      />
+
+      {/* UNIVERSAL CONFIRMATION MODAL */}
+      <Modal
+        isOpen={confirmModal.isOpen}
+        onClose={() => !isSubmitting && setConfirmModal({ isOpen: false, type: null, data: null })}
+        title={
+            confirmModal.type === "clear" ? "Clear All Logs?" : 
+            confirmModal.type === "bulk_delete" ? `Delete ${selectedIds.length} Logs?` :
+            confirmModal.type === "redirect" ? "Proceed to Mitigation?" : 
+            "Delete Log Entry?"
+        }
+        type={confirmModal.type === "redirect" ? "info" : "danger"}
+        size="sm"
+        disableAnimation={true}
+      >
+        <div className="space-y-4">
+          <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700/50 text-sm text-gray-600 dark:text-gray-300">
+            {confirmModal.type === "clear" && "This will permanently remove all recorded 404 errors. This action cannot be undone."}
+            {confirmModal.type === "bulk_delete" && `You are about to delete ${selectedIds.length} selected entries. This action cannot be undone.`}
+            {confirmModal.type === "delete" && "Are you sure you want to permanently remove this specific log entry?"}
+            {confirmModal.type === "redirect" && (
+                <>
+                  <p className="mb-3">You will be securely routed to the Redirection Manager to patch this missing endpoint:</p>
+                  <div className="font-mono text-xs p-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg text-indigo-600 dark:text-indigo-400 truncate shadow-sm">
+                      {confirmModal.data}
+                  </div>
+                </>
+            )}
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={() => setConfirmModal({ isOpen: false, type: null, data: null })}
+              className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50 focus:outline-none"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={isSubmitting}
+              onClick={() => {
+                if (confirmModal.type === "clear") handleClearLog();
+                else if (confirmModal.type === "bulk_delete") executeDelete(selectedIds);
+                else if (confirmModal.type === "delete") executeDelete(confirmModal.data);
+                else if (confirmModal.type === "redirect") executeRedirect(confirmModal.data);
+              }}
+              className={`flex items-center gap-2 px-5 py-2 text-sm font-bold text-white rounded-lg transition-colors shadow-sm disabled:opacity-50 focus:outline-none active:scale-95 ${
+                confirmModal.type === "redirect" ? "bg-indigo-600 hover:bg-indigo-700" : "bg-red-600 hover:bg-red-700"
+              }`}
+            >
+              {isSubmitting ? "Processing..." : (confirmModal.type === "redirect" ? "Secure Endpoint" : "Confirm Deletion")}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* TIER 1: HEADER */}
+      <motion.div 
+        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} 
+        className="flex items-start gap-4 p-5 rounded-xl bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-800/30 shadow-sm"
+      >
+        <div className="p-3 bg-indigo-100 dark:bg-indigo-800/50 rounded-xl text-indigo-600 dark:text-indigo-400 shrink-0 shadow-sm border border-indigo-200 dark:border-indigo-700/50">
+          <SafeIcon icon={FiActivity} className="w-6 h-6" />
+        </div>
+        <div className="flex-1">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+                <div className="flex items-center gap-2">
+                    <h1 className="text-xl font-bold text-gray-900 dark:text-white tracking-tight">404 Monitor</h1>
+                    <button
+                        onClick={() => setIsHelpOpen(true)}
+                        className="text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors p-1 rounded-full hover:bg-indigo-50 dark:hover:bg-indigo-900/30 focus:outline-none"
+                        title="Monitor Guide"
+                    >
+                        <SafeIcon icon={FiInfo} className="w-4 h-4" />
+                    </button>
+                </div>
+                <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                    Track broken links and missing pages. Convert them into redirects to preserve your SEO ranking.
+                </p>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* TIER 2: TOOLBAR */}
+      <motion.div 
+        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+        className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col xl:flex-row justify-between items-center gap-4 relative z-20"
+      >
+        <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
+            <div className="relative w-full sm:w-64 flex items-center">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-500 dark:text-gray-400">
+                    <SafeIcon icon={FiSearch} className="w-4 h-4" />
+                </div>
+                <input
+                    type="text"
+                    placeholder="Search missing URLs..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm bg-gray-50 text-gray-900 dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-indigo-50 outline-none transition-shadow"
+                />
+            </div>
+        </div>
+
+        <div className="flex items-center gap-3 w-full xl:w-auto">
+            <div className="flex items-center gap-3 bg-gray-50 dark:bg-gray-900/50 p-2 rounded-lg border border-gray-100 dark:border-gray-700 flex-1 xl:flex-none">
+                <button
+                    onClick={() => setConfirmModal({ isOpen: true, type: "bulk_delete" })}
+                    disabled={selectedIds.length === 0}
+                    className="px-4 py-2 bg-red-600 text-white rounded-md text-sm font-semibold hover:bg-red-700 disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700 dark:disabled:text-gray-500 transition-colors shadow-sm whitespace-nowrap flex items-center gap-2 focus:outline-none"
+                >
+                    <SafeIcon icon={FiTrash2} className="w-4 h-4" />
+                    Apply Delete
+                </button>
+                {selectedIds.length > 0 && (
+                  <span className="text-xs font-bold text-red-600 dark:text-red-400 px-2 whitespace-nowrap">
+                    {selectedIds.length} selected
+                  </span>
+                )}
+            </div>
+
+            <div className="flex items-center gap-1 border-l border-gray-200 dark:border-gray-700 pl-3 ml-auto shrink-0">
+                <button
+                    onClick={() => setConfirmModal({ isOpen: true, type: "clear" })}
+                    className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors focus:outline-none"
+                    title="Clear Entire Log"
+                >
+                    <SafeIcon icon={FiTrash} className="w-4 h-4" />
+                </button>
+                <button
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="p-2 text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors focus:outline-none"
+                    title="Monitor Configuration"
+                >
+                    <SafeIcon icon={FiSettings} className="w-4 h-4" />
+                </button>
+                <button
+                    onClick={handleManualRefresh}
+                    disabled={isUpdating || isManualRefresh}
+                    className={`p-2 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/20 dark:text-indigo-300 dark:hover:bg-indigo-900/40 rounded-lg transition-colors border border-indigo-100 dark:border-indigo-800 focus:outline-none ${
+                        isManualRefresh || isUpdating ? "opacity-50 cursor-not-allowed" : ""
+                    }`}
+                    title="Refresh Data"
+                >
+                    <SafeIcon icon={FiRefreshCw} className={`w-4 h-4 ${isManualRefresh ? "animate-spin" : ""}`} />
+                </button>
+            </div>
+        </div>
+      </motion.div>
+
+      {/* TIER 3: HTML DATA TABLE (FCP Optimized) */}
+      <motion.div 
+        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}
+        className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden relative flex flex-col min-h-[400px]"
+      >
+        <AnimatePresence>
+            {/* The dimming overlay logic used in SystemLogs and BruteForce */}
+            {(initialLoading || isUpdating || isSubmitting) && (
+                <motion.div 
+                    initial={{ opacity: 0 }} 
+                    animate={{ opacity: 1 }} 
+                    exit={{ opacity: 0 }} 
+                    className="absolute inset-0 bg-white/50 dark:bg-gray-800/50 backdrop-blur-[1px] flex items-center justify-center z-10"
+                >
+                    <LoadingSpinner />
+                </motion.div>
+            )}
+        </AnimatePresence>
+
+        <div className={`w-full overflow-x-auto flex flex-col flex-1 transition-opacity duration-200 ${(initialLoading || isUpdating || isSubmitting) ? "opacity-50 pointer-events-none" : ""}`}>
+          {logs.length === 0 && !initialLoading ? (
+            <div className="flex flex-col items-center justify-center p-16 text-center flex-1">
+              <div className="w-24 h-24 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-500 rounded-full flex items-center justify-center mb-5 shadow-sm border border-indigo-100 dark:border-indigo-800/50">
+                 <SafeIcon icon={FiActivity} className="w-12 h-12 opacity-80" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">No Errors Logged</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm font-medium">No 404 records match your criteria, or the system has not detected any broken links.</p>
+            </div>
+          ) : (
+            <>
+            <table className="w-full text-left border-collapse min-w-[900px]">
+              <thead>
+                <tr className="bg-gray-50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300 text-xs font-bold uppercase tracking-wider border-b border-gray-200 dark:border-gray-700">
+                  <th className="px-6 py-4 w-12 text-center">
+                      <input 
+                          type="checkbox" 
+                          className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 bg-white dark:bg-gray-900 dark:border-gray-600 transition-colors cursor-pointer" 
+                          checked={logs.length > 0 && selectedIds.length === logs.length} 
+                          onChange={handleSelectAll} 
+                      />
+                  </th>
+                  {columns.map((col) => (
+                      <th key={col.key} className="px-6 py-4">{col.label}</th>
+                  ))}
+                  <th className="px-6 py-4 text-right w-[160px]">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 dark:divide-gray-700 text-sm text-gray-900 dark:text-gray-100">
+                {logs.map((item) => {
+                  const isSelected = selectedIds.includes(item.id);
+                  return (
+                  <tr key={item.id} className={`transition-colors ${isSelected ? 'bg-indigo-50/50 dark:bg-indigo-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'}`}>
+                    <td className="px-6 py-4 text-center">
+                        <input 
+                            type="checkbox" 
+                            className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 bg-white dark:bg-gray-900 dark:border-gray-600 transition-colors cursor-pointer" 
+                            checked={isSelected} 
+                            onChange={() => handleSelectRow(item.id)} 
+                        />
+                    </td>
+                    
+                    {columns.map((col) => (
+                        <td key={col.key} className="px-6 py-4">
+                            {col.render ? col.render(item[col.key], item) : item[col.key]}
+                        </td>
+                    ))}
+
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                         <button 
+                            onClick={() => setConfirmModal({ isOpen: true, type: "redirect", data: item.uri })} 
+                            className="p-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 dark:text-indigo-400 rounded-lg transition-colors focus:outline-none" 
+                            title="Create Redirect"
+                         >
+                            <SafeIcon icon={FiCornerUpRight} className="w-4 h-4" />
+                         </button>
+                         <button 
+                            onClick={() => setConfirmModal({ isOpen: true, type: "delete", data: item.id })} 
+                            className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors focus:outline-none" 
+                            title="Delete Record"
+                         >
+                            <SafeIcon icon={FiTrash2} className="w-4 h-4" />
+                         </button>
+                      </div>
+                    </td>
+                  </tr>
+                )})}
+              </tbody>
+            </table>
+
+            {/* ADVANCED PAGINATION ENGINE */}
+            {((pagination.totalRecords > 0) || (pagination.totalPages > 1)) && (
+                <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 flex flex-col sm:flex-row items-center justify-between gap-4 transition-all mt-auto rounded-b-xl">
+                    
+                    <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
+                        Showing
+                        <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                            {pagination.totalRecords 
+                                ? Math.min(((pagination.currentPage - 1) * displayLimit) + 1, pagination.totalRecords) 
+                                : pagination.currentPage}
+                        </span>
+                        {pagination.totalRecords ? (
+                            <>
+                                to
+                                <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                                    {Math.min((pagination.currentPage * displayLimit), pagination.totalRecords)}
+                                </span>
+                                of
+                                <span className="mx-1.5 px-2 py-0.5 rounded-md bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 font-semibold text-gray-900 dark:text-white shadow-sm">
+                                    {pagination.totalRecords}
+                                </span>
+                                entries
+                            </>
+                        ) : <span className="text-gray-900 dark:text-gray-100 font-medium ml-1">Page View</span>}
+                    </div>
+
+                    {(pagination.totalPages > 1) && (
+                        <div className="flex items-center p-1 bg-gray-100/80 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700/50 shadow-inner">
+                            <button
+                                onClick={() => fetchLogs(Math.max(1, pagination.currentPage - 1), debouncedSearch)}
+                                disabled={pagination.currentPage === 1}
+                                className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-800 hover:text-indigo-600 dark:hover:text-indigo-400 hover:shadow-sm disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:hover:text-gray-600 transition-all focus:outline-none"
+                            >
+                                <SafeIcon icon={FiChevronLeft} className="w-4 h-4" /> Prev
+                            </button>
+
+                            <div className="flex items-center px-4 border-x border-gray-200 dark:border-gray-700/50">
+                                <span className="text-sm font-bold text-gray-900 dark:text-white">
+                                    {pagination.currentPage}
+                                </span>
+                                <span className="text-sm text-gray-400 dark:text-gray-500 mx-1.5">/</span>
+                                <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                                    {pagination.totalPages}
+                                </span>
+                            </div>
+
+                            <button
+                                onClick={() => fetchLogs(Math.min(pagination.totalPages, pagination.currentPage + 1), debouncedSearch)}
+                                disabled={pagination.currentPage === pagination.totalPages}
+                                className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-800 hover:text-indigo-600 dark:hover:text-indigo-400 hover:shadow-sm disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:shadow-none disabled:hover:text-gray-600 transition-all focus:outline-none"
+                            >
+                                Next <SafeIcon icon={FiChevronRight} className="w-4 h-4" />
+                            </button>
+                        </div>
+                    )}
+                </div>
+            )}
+            </>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+export default Seo404Monitor;

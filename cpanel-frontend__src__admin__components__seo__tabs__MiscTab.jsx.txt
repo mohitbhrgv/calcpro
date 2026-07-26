@@ -1,0 +1,116 @@
+import React from "react";
+import SmartInput from "../common/SmartInput";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiAlertCircle, FiArchive, FiUser } = FiIcons;
+
+const MiscTab = ({ settings, handleCustomChange }) => {
+  // Global variables
+  const vars = [
+    { label: "Title", value: "%title%" },
+    { label: "Separator", value: "%sep%" },
+    { label: "Site Name", value: "%sitename%" },
+    { label: "Current Year", value: "%currentyear%" },
+  ];
+
+  // Specific variables for Author Pages
+  const authorVars = [
+    { label: "Author Name", value: "%author_name%" },
+    { label: "Expertise", value: "%expertise%" }, // --- NEW VARIABLE ---
+    ...vars
+  ];
+
+  return (
+    <div className="animate-fade-in">
+        {/* --- Standardized Header Card --- */}
+        <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+            <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+                <SafeIcon icon={FiArchive} className="w-5 h-5" />
+            </div>
+            <div>
+                <h4 className="font-bold text-gray-900 dark:text-white">Miscellaneous & System Pages</h4>
+                <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                    Control SEO settings for system-generated utility pages and author archives, ensuring maximum crawl efficiency.
+                </p>
+            </div>
+        </div>
+
+      {/* --- Author Profile Pages --- */}
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2 flex items-center gap-2">
+        <SafeIcon icon={FiUser} className="w-5 h-5 text-gray-500" />
+        Author Profile Pages
+      </h3>
+
+      <div className="space-y-6 mb-10">
+        <SmartInput
+            label="Author Page Title Template"
+            value={settings.seo_author_title}
+            onChange={(e) => handleCustomChange("seo_author_title", e.target.value)}
+            helpText="The browser tab title for your author profiles."
+            variables={authorVars}
+            placeholder="%author_name% %sep% %sitename%"
+            siteName={settings.siteName}
+        />
+
+        <SmartInput
+            label="Author Page Meta Description"
+            value={settings.seo_author_description}
+            onChange={(e) => handleCustomChange("seo_author_description", e.target.value)}
+            helpText="The meta description snippet for social sharing and UX."
+            variables={authorVars}
+            
+            /* --- UPDATED DYNAMIC PLACEHOLDER --- */
+            placeholder="Read %expertise% and articles written by %author_name% on %sitename%."
+            siteName={settings.siteName}
+        />
+
+        <div className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 text-sm rounded border border-amber-100 dark:border-amber-800">
+            <div className="flex items-center gap-2 mb-1">
+                <SafeIcon icon={FiAlertCircle} className="w-4 h-4" />
+                <strong>Strict SEO Enforcement: Noindex Applied</strong>
+            </div>
+            <p>To prevent thin-content penalties and duplicate content issues (common on enterprise sites), Author Profile pages are strictly forced to <code>noindex, follow</code> at the server level. The Title and Description above are utilized strictly for user experience (Browser Tabs) and Social Media OpenGraph cards.</p>
+        </div>
+      </div>
+
+      {/* --- System Pages --- */}
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+        System Pages
+      </h3>
+
+      <div className="space-y-6">
+        <SmartInput
+            label="404 Error Page Title"
+            value={settings.seo_special_404_title}
+            onChange={(e) => handleCustomChange("seo_special_404_title", e.target.value)}
+            helpText="The browser tab title for your 'Page Not Found' error screen."
+            variables={vars}
+            placeholder="Page Not Found %sep% %sitename%"
+            siteName={settings.siteName}
+        />
+
+        <SmartInput
+            label="XML Sitemap Index Title"
+            value={settings.seo_special_sitemap_title}
+            onChange={(e) => handleCustomChange("seo_special_sitemap_title", e.target.value)}
+            helpText="The visual title displayed when humans view your main sitemap.xml file."
+            variables={vars}
+            placeholder="XML Sitemap %sep% %sitename%"
+            siteName={settings.siteName}
+        />
+      </div>
+      
+      <div className="p-4 my-6 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200 text-sm rounded border border-amber-100 dark:border-amber-800">
+        <div className="flex items-center gap-2 mb-1">
+            <SafeIcon icon={FiAlertCircle} className="w-4 h-4" />
+            <strong>Strict SEO Enforcement</strong>
+        </div>
+        <p>404 Error pages and client-side modal overlays do not generate indexable URLs in your architecture. 404 pages are strictly forced to <code>noindex</code> at the server level to protect your crawl budget.</p>
+      </div>
+
+    </div>
+  );
+};
+
+export default MiscTab;

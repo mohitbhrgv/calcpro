@@ -1,0 +1,283 @@
+// (Update) cPanel_Frontend/src/admin/components/seo/tabs/AuthPagesTab.jsx
+
+import React, { useState, useEffect } from "react";
+import SmartInput from "../common/SmartInput";
+import RobotsRow from "../common/RobotsRow";
+import AdvancedRobotsRow from "../common/AdvancedRobotsRow";
+import InheritanceControl from "../common/InheritanceControl";
+import SafeIcon from "../../../../common/SafeIcon";
+import * as FiIcons from "react-icons/fi";
+
+const { FiLock, FiAlertCircle, FiAlertTriangle } = FiIcons;
+
+// Extracted globally so it doesn't re-allocate memory on every render
+const vars = [
+  { label: "Site Name", value: "%sitename%" },
+  { label: "Separator", value: "%sep%" },
+  { label: "Current Year", value: "%currentyear%" },
+];
+
+const AuthSection = ({ 
+  label, 
+  placeholderText, 
+  prefix, 
+  titleHelpText, 
+  descHelpText, 
+  settings, 
+  handleChange, 
+  handleCustomChange,
+  isVaultUnlocked
+}) => {
+  const isCustomEnabled = settings[`${prefix}robots_custom_enabled`] === true;
+  const isNoIndex = settings[`${prefix}robots_noindex`] === true || settings[`${prefix}robots_noindex`] === 'true';
+
+  const handleToggleInheritance = (shouldEnable) => {
+    const customEnabledKey = `${prefix}robots_custom_enabled`;
+    handleCustomChange(customEnabledKey, shouldEnable);
+
+    if (shouldEnable) {
+      const keysToCopy = [
+        'index', 'noindex', 'nofollow', 'noarchive', 'noimageindex', 'nosnippet',
+        'max_snippet', 'max_video_preview', 'max_image_preview'
+      ];
+
+      keysToCopy.forEach(key => {
+        const globalValue = settings[`seo_robots_global_${key}`];
+        handleCustomChange(`${prefix}robots_${key}`, globalValue);
+      });
+    }
+  };
+
+  return (
+    <div className="mb-8 last:mb-0">
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+        {label}
+      </h3>
+      
+      <SmartInput
+        label={`${label} SEO Title (Meta Title)`}
+        value={settings[`${prefix}title`]}
+        onChange={(e) => handleCustomChange(`${prefix}title`, e.target.value)}
+        helpText={titleHelpText}
+        placeholder={`${placeholderText} %sep% %sitename%`}
+        variables={vars}
+        siteName={settings.siteName}
+      />
+
+      <SmartInput
+        label={`${label} SEO Description (Meta Description)`}
+        value={settings[`${prefix}description`]}
+        onChange={(e) => handleCustomChange(`${prefix}description`, e.target.value)}
+        helpText={descHelpText}
+        placeholder={`Enter the meta description for the ${label.toLowerCase()}...`}
+        variables={vars}
+        siteName={settings.siteName}
+      />
+
+      <div className="py-4">
+        <hr className="border-gray-100 dark:border-gray-700" />
+      </div>
+
+      {/* --- PHYSICAL GLASS-BLUR LOCK OVERLAY --- */}
+      <div className="relative">
+        {!isVaultUnlocked && (
+            <div className="absolute inset-0 z-10 bg-white/40 dark:bg-gray-900/40 backdrop-blur-[1px] rounded-lg cursor-not-allowed"></div>
+        )}
+
+        <InheritanceControl 
+          isCustom={isCustomEnabled} 
+          onToggle={handleToggleInheritance} 
+          label={`${label} Robots`} 
+        />
+
+        <RobotsRow
+          label={`${label} Robots Meta`}
+          prefix={`${prefix}robots_`}
+          settings={settings}
+          onChange={handleChange}
+          disabled={!isCustomEnabled}
+        />
+
+        <AdvancedRobotsRow
+          prefix={`${prefix}robots_`}
+          settings={settings}
+          onChange={handleChange}
+          disabled={!isCustomEnabled || isNoIndex}
+        />
+      </div>
+    </div>
+  );
+};
+
+const AuthPagesTab = ({ settings, handleChange, handleCustomChange }) => {
+  const [isVaultUnlocked, setIsVaultUnlocked] = useState(false);
+  const [showVaultModal, setShowVaultModal] = useState(false);
+  const [vaultConfirmText, setVaultConfirmText] = useState("");
+
+  // --- STRICT AUTO-HEAL: Force No Index & No Follow for Auth Pages on Load ---
+  useEffect(() => {
+    const prefixes = ["seo_auth_login_", "seo_auth_register_", "seo_auth_reset_"];
+    let needsHealing = false;
+
+    prefixes.forEach(prefix => {
+        // If it is allowed to Index, OR if No-Index is missing, OR if No-Follow is missing -> Trigger Heal
+        if (
+            settings[`${prefix}robots_index`] === true || 
+            settings[`${prefix}robots_noindex`] !== true ||
+            settings[`${prefix}robots_nofollow`] !== true
+        ) {
+            needsHealing = true;
+        }
+    });
+
+    if (needsHealing) {
+        prefixes.forEach(prefix => {
+            handleCustomChange(`${prefix}robots_index`, false);
+            handleCustomChange(`${prefix}robots_noindex`, true);
+            handleCustomChange(`${prefix}robots_nofollow`, true); // Added No-Follow Enforcement
+            handleCustomChange(`${prefix}robots_noarchive`, true);
+            handleCustomChange(`${prefix}robots_noimageindex`, true);
+            handleCustomChange(`${prefix}robots_nosnippet`, true);
+        });
+    }
+     
+  }, []);
+
+  const handleUnlockConfirm = () => {
+    if (vaultConfirmText === "INDEX AUTH") {
+        setIsVaultUnlocked(true);
+        setShowVaultModal(false);
+        setVaultConfirmText("");
+    }
+  };
+
+  return (
+    <div className="animate-fade-in">
+      {/* --- Standardized Header Card --- */}
+      <div className="flex items-start gap-4 p-4 mb-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800/50">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-800 rounded-lg text-indigo-600 dark:text-indigo-300 shrink-0">
+          <SafeIcon icon={FiLock} className="w-5 h-5" />
+        </div>
+        <div>
+          <h4 className="font-bold text-gray-900 dark:text-white">Authentication Pages</h4>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+            Manage browser titles and indexing rules for your secure access points like Login, Register, and Password Reset pages.
+          </p>
+        </div>
+      </div>
+      
+      {/* --- ENTERPRISE VAULT WARNING BANNER --- */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-200 dark:border-red-800/50 mb-6">
+        <div>
+          <h4 className="font-bold text-red-700 dark:text-red-400 flex items-center gap-2">
+            <SafeIcon icon={FiLock} className="w-4 h-4" />
+            Strict SEO Lock: Authentication Pages
+          </h4>
+          <p className="text-xs text-red-600/80 dark:text-red-400/80 mt-1 max-w-2xl leading-relaxed">
+            Indexing Authentication Pages is highly discouraged as it creates thin content penalties. Following links on these pages wastes your crawl budget on secure endpoints. These settings are permanently locked to "No Index, No Follow" to protect your SEO score.
+          </p>
+        </div>
+        {!isVaultUnlocked && (
+          <button
+            onClick={() => setShowVaultModal(true)}
+            className="mt-4 md:mt-0 px-4 py-2 bg-white dark:bg-gray-800 text-red-600 dark:text-red-400 text-xs font-bold rounded shadow-sm border border-red-200 dark:border-red-800 hover:bg-red-50 transition-colors shrink-0"
+          >
+            Override Lock
+          </button>
+        )}
+      </div>
+
+      <AuthSection 
+        label="Login Page" 
+        placeholderText="Login"
+        prefix="seo_auth_login_" 
+        titleHelpText="The Google Meta Title for the Sign In page."
+        descHelpText="The Google Meta Description shown in search results if the login page is indexed."
+        settings={settings}
+        handleChange={handleChange}
+        handleCustomChange={handleCustomChange}
+        isVaultUnlocked={isVaultUnlocked}
+      />
+
+      <AuthSection 
+        label="Register Page" 
+        placeholderText="Register"
+        prefix="seo_auth_register_" 
+        titleHelpText="The Google Meta Title for the Registration page."
+        descHelpText="The Google Meta Description shown in search results if the registration page is indexed."
+        settings={settings}
+        handleChange={handleChange}
+        handleCustomChange={handleCustomChange}
+        isVaultUnlocked={isVaultUnlocked}
+      />
+
+      <AuthSection 
+        label="Password Reset" 
+        placeholderText="Reset Password"
+        prefix="seo_auth_reset_" 
+        titleHelpText="The Google Meta Title for the Password Reset flow."
+        descHelpText="The Google Meta Description shown in search results if the reset page is indexed."
+        settings={settings}
+        handleChange={handleChange}
+        handleCustomChange={handleCustomChange}
+        isVaultUnlocked={isVaultUnlocked}
+      />
+
+      {/* --- WARNING CONFIRMATION MODAL --- */}
+      {showVaultModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in p-4">
+            <div className="bg-white dark:bg-gray-800 w-full max-w-md rounded-xl shadow-2xl overflow-hidden border border-red-500/30">
+                <div className="p-6">
+                    <div className="w-12 h-12 bg-red-100 dark:bg-red-900/50 rounded-full flex items-center justify-center mb-4 text-red-600 dark:text-red-400">
+                        <SafeIcon icon={FiAlertTriangle} className="w-6 h-6" />
+                    </div>
+                    <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">
+                        Dangerous SEO Action
+                    </h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-300 mb-6 leading-relaxed">
+                        Allowing search engines to index or follow Authentication Pages often results in <strong>Thin Content Penalties</strong> and <strong>Crawl Budget Waste</strong> by trapping bots in secure form loops.
+                        <br/><br/>
+                        Are you absolutely sure you want to override this safeguard?
+                    </p>
+
+                    <div className="mb-6">
+                        <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-2">
+                            Type <span className="text-red-500 font-mono select-all">INDEX AUTH</span> to confirm
+                        </label>
+                        <input
+                            type="text"
+                            value={vaultConfirmText}
+                            onChange={(e) => setVaultConfirmText(e.target.value)}
+                            className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white focus:ring-2 focus:ring-red-500 focus:border-red-500 transition-shadow outline-none font-mono"
+                            placeholder="INDEX AUTH"
+                        />
+                    </div>
+
+                    <div className="flex justify-end gap-3">
+                        <button
+                            onClick={() => {
+                                setShowVaultModal(false);
+                                setVaultConfirmText("");
+                            }}
+                            className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                        >
+                            Cancel, Keep Locked
+                        </button>
+                        <button
+                            onClick={handleUnlockConfirm}
+                            disabled={vaultConfirmText !== "INDEX AUTH"}
+                            className="px-4 py-2 text-sm font-bold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+                        >
+                            Unlock Settings
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
+
+    </div>
+  );
+};
+
+export default AuthPagesTab;

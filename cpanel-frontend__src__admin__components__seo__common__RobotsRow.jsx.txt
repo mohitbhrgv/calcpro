@@ -1,0 +1,112 @@
+import React from "react";
+
+/**
+ * RobotsRow
+ * * Handles the display and toggling of standard Robots Meta tags (Index, Follow, etc.).
+ * Supports "Inheritance Mode":
+ * - If disabled=true: Displays values from "seo_robots_global_" keys (Read-Only).
+ * - If disabled=false: Displays and updates values from the specific `prefix` keys (e.g., "seo_post_robots_").
+ */
+const RobotsRow = ({ label, settings, prefix, onChange, disabled = false }) => {
+  
+  // 1. Determine Read Source
+  const readPrefix = disabled ? "seo_robots_global_" : prefix;
+
+  const toggle = (key) => {
+    if (disabled) return; // Prevent changes in locked mode
+
+    const name = `${prefix}${key}`;
+    const currentVal = settings[name];
+
+    // Mutually exclusive & cascading logic for Index/NoIndex
+    if (key === 'index') {
+       onChange({ target: { name: `${prefix}index`, value: true, type: 'checkbox', checked: true } });
+       onChange({ target: { name: `${prefix}noindex`, value: false, type: 'checkbox', checked: false } });
+       
+       // STRICT UI REVERSION: Cleanly uncheck dependent constraints when reverting to Index
+       onChange({ target: { name: `${prefix}nosnippet`, value: false, type: 'checkbox', checked: false } });
+       onChange({ target: { name: `${prefix}noarchive`, value: false, type: 'checkbox', checked: false } });
+       onChange({ target: { name: `${prefix}noimageindex`, value: false, type: 'checkbox', checked: false } });
+    } else if (key === 'noindex') {
+       onChange({ target: { name: `${prefix}noindex`, value: true, type: 'checkbox', checked: true } });
+       onChange({ target: { name: `${prefix}index`, value: false, type: 'checkbox', checked: false } });
+       
+       // STRICT UI FAILSAFE: Auto-check and force dependent constraints
+       onChange({ target: { name: `${prefix}nosnippet`, value: true, type: 'checkbox', checked: true } });
+       onChange({ target: { name: `${prefix}noarchive`, value: true, type: 'checkbox', checked: true } });
+       onChange({ target: { name: `${prefix}noimageindex`, value: true, type: 'checkbox', checked: true } });
+    } else {
+        // Standard toggle for other fields
+        onChange({ target: { name, value: !currentVal, type: 'checkbox', checked: !currentVal } });
+    }
+  };
+
+  // 2. Read Values based on the determined prefix
+  const isNoIndex = settings[`${readPrefix}noindex`] === true;
+
+  // Helper to render a checkbox item with dynamic locking
+  const renderCheckbox = (key, labelText) => {
+    // If No Index is active, everything except "Follow/No Follow" is forced
+    const isForcedByNoIndex = isNoIndex && key !== 'index' && key !== 'noindex' && key !== 'nofollow';
+    const isDisabled = disabled || isForcedByNoIndex;
+    
+    // Determine the checked state dynamically
+    let checkedState;
+    
+    if (key === 'index') {
+        checkedState = !isNoIndex;
+    } else if (key === 'noindex') {
+        checkedState = isNoIndex;
+    } else {
+        checkedState = isForcedByNoIndex ? true : (settings[`${readPrefix}${key}`] || false);
+    }
+
+    return (
+        <label className={`flex items-center space-x-2 ${isDisabled ? "cursor-not-allowed opacity-60 grayscale" : "cursor-pointer hover:opacity-80"}`}>
+            <input 
+                type="checkbox" 
+                checked={checkedState} 
+                onChange={() => toggle(key)} 
+                disabled={isDisabled}
+                className={`rounded border-gray-300 dark:border-gray-500 w-4 h-4 ${
+                  isDisabled ? "bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed" : "bg-white dark:bg-gray-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                }`} 
+            />
+            <span className={`text-sm font-medium ${isDisabled && !disabled ? "text-gray-500 dark:text-gray-400" : "text-gray-700 dark:text-gray-300"}`}>
+                {labelText}
+                {isForcedByNoIndex && !disabled && (
+                    <span className="text-[10px] text-amber-600 dark:text-amber-500 font-normal italic ml-1.5">(Forced)</span>
+                )}
+            </span>
+        </label>
+    );
+  };
+
+  return (
+    <div className={`flex flex-col md:flex-row md:gap-8 py-6 border-b border-gray-100 dark:border-gray-700 transition-opacity duration-300 ${disabled ? "opacity-60 grayscale" : ""}`}>
+      <div className="w-full md:w-1/4 pt-1">
+        <label className="block text-sm font-semibold text-gray-800 dark:text-gray-200">
+          {label}
+        </label>
+        <p className="text-xs text-gray-500 mt-1">
+          {disabled ? "Inheriting from Global Settings." : "Custom settings applied."}
+        </p>
+      </div>
+      <div className="w-full md:w-3/4">
+        <div className="grid grid-cols-2 gap-4">
+            {/* Index / NoIndex Group */}
+            {renderCheckbox('index', 'Index')}
+            {renderCheckbox('noindex', 'No Index')}
+
+            {/* Other Directives */}
+            {renderCheckbox('nofollow', 'No Follow')}
+            {renderCheckbox('noarchive', 'No Archive')}
+            {renderCheckbox('noimageindex', 'No Image Index')}
+            {renderCheckbox('nosnippet', 'No Snippet')}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default RobotsRow;

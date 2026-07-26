@@ -1,0 +1,82 @@
+<?php
+// File: calcpro-api/scripts/cleanup_tokens.php
+
+// Core configuration
+require_once dirname(__DIR__) . '/core/config.php';
+
+// Ensure this script can only be run via CLI or with a specific secure cron token
+if (php_sapi_name() !== 'cli' && (!isset($_GET['token']) || $_GET['token'] !== $_ENV['CRON_SECRET'])) {
+    http_response_code(403);
+    die("Forbidden: Scheduled tasks must be executed via CLI or valid token.\n");
+}
+
+function getSetting($conn, $key, $default) {
+    $stmt = $conn->prepare("SELECT setting_value FROM settings WHERE setting_key = :key");
+    $stmt->execute([':key' => $key]);
+    if ($row = $stmt->fetch()) {
+        return (int)$row['setting_value'];
+    }
+    return $default;
+}
+
+try {
+    echo "--- Starting Calculox High-Frequency Garbage Collection ---\n";
+    $conn->beginTransaction();
+
+    // ========================================================================
+    // TOKEN 1: JWT BLACKLIST (Table: jwt_blacklist) - ENTERPRISE MICRO-BATCH
+    // ========================================================================
+    // Extracts the new 'minutes' based retention limit (Defaults to 15m safety buffer)
+    // Deletes only records that have been officially expired for longer than the buffer time.
+    $jwt_retention_minutes = getSetting($conn, 'jwt_blacklist_retention_minutes', 15);
+    $stmt_jwt = $conn->prepare("DELETE FROM jwt_blacklist WHERE expires_at < NOW() - INTERVAL :minutes MINUTE");
+    $stmt_jwt->bindValue(':minutes', $jwt_retention_minutes, PDO::PARAM_INT);
+    $stmt_jwt->execute();
+    $affected_jwt = $stmt_jwt->rowCount();
+
+    // ========================================================================
+    // TOKEN 2: MFA OTP CODES (Table: admin_otp_verifications)
+    // ========================================================================
+    $otp_retention = getSetting($conn, 'otp_retention_hours', 1);
+    $stmt_otp = $conn->prepare("DELETE FROM admin_otp_verifications WHERE created_at < NOW() - INTERVAL :hours HOUR");
+    $stmt_otp->bindValue(':hours', $otp_retention, PDO::PARAM_INT);
+    $stmt_otp->execute();
+    $affected_otp = $stmt_otp->rowCount();
+
+    // ========================================================================
+    // TOKEN 3: UNBLOCK RECOVERY LINKS (Table: admin_unblock_tokens)
+    // ========================================================================
+    $unblock_retention = getSetting($conn, 'unblock_token_retention_hours', 24);
+    $stmt_unblock = $conn->prepare("DELETE FROM admin_unblock_tokens WHERE created_at < NOW() - INTERVAL :hours HOUR");
+    $stmt_unblock->bindValue(':hours', $unblock_retention, PDO::PARAM_INT);
+    $stmt_unblock->execute();
+    $affected_unblock = $stmt_unblock->rowCount();
+
+    // ========================================================================
+    // TOKEN 4: PASSWORD RESETS (Table: admin_password_resets)
+    // ========================================================================
+    $pw_retention = getSetting($conn, 'password_reset_retention_hours', 24);
+    $stmt_pw = $conn->prepare("DELETE FROM admin_password_resets WHERE last_request_at < NOW() - INTERVAL :hours HOUR");
+    $stmt_pw->bindValue(':hours', $pw_retention, PDO::PARAM_INT);
+    $stmt_pw->execute();
+    $affected_pw = $stmt_pw->rowCount();
+
+    echo "Report:\n";
+    echo "- JWT Blacklist Tokens Deleted: $affected_jwt\n";
+    echo "- Ignored OTPs Deleted: $affected_otp\n";
+    echo "- Ignored Unblock Emails Deleted: $affected_unblock\n";
+    echo "- Ignored Password Resets Deleted: $affected_pw\n";
+
+    $conn->commit();
+    echo "--- Garbage Collection Complete ---\n";
+
+} catch (Exception $e) {
+    // Fail-safe: Revert database to prior state if any single deletion fails
+    if ($conn && $conn->inTransaction()) {
+        $conn->rollBack();
+    }
+    error_log("CRON Error (cleanup_tokens): " . $e->getMessage());
+    echo "Error: " . $e->getMessage() . "\n";
+}
+$conn = null;
+?>

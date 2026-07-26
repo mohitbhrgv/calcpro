@@ -1,0 +1,8 @@
+# calculox-api-main/nixpacks.toml
+providers = ["php"]
+
+[phases.setup]
+# The "..." tells Nixpacks to keep all default PHP packages (PHP, Composer)
+# "mariadb" is the native Nix package that includes the mysqldump utility.
+# Because it is a Nix package, it is guaranteed to be injected into the PHP $PATH.
+nixPkgs = ["...", "mariadb"]

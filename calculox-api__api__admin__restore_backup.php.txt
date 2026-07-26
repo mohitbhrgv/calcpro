@@ -1,0 +1,360 @@
+<?php
+// calcpro-api/api/admin/restore_backup.php
+
+require_once __DIR__ . '/../../core/config.php';
+require_once __DIR__ . '/../../core/response.php';
+require_once __DIR__ . '/../../core/auth.php';
+
+$admin = verifyAdminToken();
+if (!$admin) {
+    sendResponse(false, null, 'Unauthorized access.', 401);
+}
+
+$adminData = (array)$admin;
+if (!isset($adminData['adminRole']) || $adminData['adminRole'] !== 'super_admin') {
+    sendResponse(false, null, 'Forbidden: Insufficient privileges. Only Super Admins can perform this action.', 403);
+}
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    sendResponse(false, null, 'Method not allowed', 405);
+}
+
+$rawInput = file_get_contents('php://input');
+$data = json_decode($rawInput, true);
+
+$file = $data['file'] ?? '';
+$restoreDb = $data['restore_db'] ?? false;
+$restoreMedia = $data['restore_media'] ?? false;
+
+if (empty($file)) sendResponse(false, null, 'No backup file specified.', 400);
+if (!$restoreDb && (!$restoreMedia)) sendResponse(false, null, 'No restoration components selected.', 400);
+
+$safeFile = basename($file);
+$backupDir = __DIR__ . '/../../storage/backups/';
+$uploadDir = __DIR__ . '/../../uploads/';
+$sigDir = __DIR__ . '/../../storage/signatures/';
+$tempExtractDir = $backupDir . 'temp_restore/';
+
+$dbHost = getenv('DB_HOST') !== false ? getenv('DB_HOST') : ($_ENV['DB_HOST'] ?? null);
+$dbUser = getenv('DB_USER') !== false ? getenv('DB_USER') : ($_ENV['DB_USER'] ?? null);
+$dbPass = getenv('DB_PASS') !== false ? getenv('DB_PASS') : ($_ENV['DB_PASS'] ?? null);
+$dbName = getenv('DB_NAME') !== false ? getenv('DB_NAME') : ($_ENV['DB_NAME'] ?? null);
+
+if ($dbHost === null || $dbUser === null || $dbPass === null || $dbName === null) {
+    sendResponse(false, null, 'SECURITY ALERT: Database credentials are missing from the secure environment configuration. Fallback credentials are disabled.', 500);
+}
+
+set_time_limit(0);
+ini_set('memory_limit', '1024M');
+
+$restoreLog = [];
+$manifestData = []; 
+
+// ENTERPRISE FIX: Protected files array to prevent deleting security shields during wipe
+$protectedUploadFiles = ['.htaccess', 'index.html', '.gitignore'];
+
+// ==========================================================
+// ROUTE A: CLOUD RESTORATION ROUTING
+// ==========================================================
+if (strpos($safeFile, '_auto_') !== false && pathinfo($safeFile, PATHINFO_EXTENSION) === 'sql') {
+    $autoloader = __DIR__ . '/../../vendor/autoload.php';
+    if (!file_exists($autoloader)) sendResponse(false, null, 'CRITICAL: AWS SDK missing.', 500);
+    require_once $autoloader;
+
+    $s3Bucket = getenv('S3_BUCKET') ?: $_ENV['S3_BUCKET'] ?? '';
+    if (empty($s3Bucket)) sendResponse(false, null, 'Cloud storage credentials not configured.', 500);
+
+    $s3 = new \Aws\S3\S3Client([
+        'version' => 'latest',
+        'region'  => getenv('S3_REGION') ?: $_ENV['S3_REGION'] ?? 'auto',
+        'credentials' => [
+            'key'    => getenv('S3_ACCESS_KEY') ?: $_ENV['S3_ACCESS_KEY'],
+            'secret' => getenv('S3_SECRET_KEY') ?: $_ENV['S3_SECRET_KEY'],
+        ],
+        'endpoint' => getenv('S3_ENDPOINT') ?: $_ENV['S3_ENDPOINT'] ?? null,
+        'use_path_style_endpoint' => !empty(getenv('S3_ENDPOINT') ?: $_ENV['S3_ENDPOINT'] ?? '')
+    ]);
+
+    try {
+        if ($restoreDb) {
+            $localSqlPath = $backupDir . 'cloud_temp_' . time() . '.sql';
+            $s3->getObject(['Bucket' => $s3Bucket, 'Key' => "database/" . $safeFile, 'SaveAs' => $localSqlPath]);
+            
+            $cnfFile = tempnam(sys_get_temp_dir(), 'calcpro_cnf_');
+            $cnfContent = "[client]\nuser=\"{$dbUser}\"\npassword=\"{$dbPass}\"\nhost=\"{$dbHost}\"\n";
+            file_put_contents($cnfFile, $cnfContent);
+            chmod($cnfFile, 0600);
+            
+            try {
+                $mysqlCmd = sprintf(
+                    'mysql --defaults-extra-file=%s %s < %s',
+                    escapeshellarg($cnfFile), escapeshellarg($dbName), escapeshellarg($localSqlPath)
+                );
+                exec($mysqlCmd, $output, $returnVar);
+            } finally { @unlink($cnfFile); }
+            @unlink($localSqlPath);
+
+            if ($returnVar !== 0) sendResponse(false, null, 'Database overwrite failed during cloud execution.', 500);
+            $restoreLog[] = "Cloud Database core successfully restored.";
+        }
+
+        if ($restoreMedia) {
+            $manifestSqlName = str_replace('calculox_db_auto_', 'calculox_media_auto_', $safeFile);
+            $manifestJsonName = str_replace('.sql', '.json', $manifestSqlName);
+            $localManifestPath = $backupDir . 'cloud_manifest_' . time() . '.json';
+
+            try {
+                $s3->getObject([
+                    'Bucket' => $s3Bucket,
+                    'Key'    => "database/" . $manifestJsonName,
+                    'SaveAs' => $localManifestPath
+                ]);
+                if (file_exists($localManifestPath)) {
+                    $manifestData = json_decode(file_get_contents($localManifestPath), true) ?: [];
+                    @unlink($localManifestPath);
+                }
+            } catch (\Exception $e) { /* Ignore if no manifest exists for older backups */ }
+
+            if (is_dir($uploadDir)) {
+                $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($uploadDir, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+                foreach ($files as $fileinfo) { 
+                    // ENTERPRISE FIX: Preserve .htaccess and index.html
+                    if (in_array($fileinfo->getFilename(), $protectedUploadFiles)) continue;
+                    $todo = ($fileinfo->isDir() ? 'rmdir' : 'unlink'); 
+                    @$todo($fileinfo->getRealPath()); 
+                }
+            } else { @mkdir($uploadDir, 0755, true); }
+
+            try {
+                $manager = new \Aws\S3\Transfer($s3, "s3://{$s3Bucket}/media", $uploadDir, ['concurrency' => 5]);
+                $manager->transfer();
+                $restoreLog[] = "Cloud Media matrix synchronized perfectly.";
+            } catch (\Exception $mediaEx) {
+                error_log("CLOUD MEDIA TRANSFER EXCEPTION: " . $mediaEx->getMessage());
+                $restoreLog[] = "Warning: Media matrix sync encountered an error.";
+            }
+        }
+    } catch (Exception $e) {
+        error_log("CLOUD RESTORE ERROR: " . $e->getMessage());
+        sendResponse(false, null, 'Cloud disaster recovery execution failed.', 500);
+    }
+} 
+
+// ==========================================================
+// ROUTE B: LOCAL RESTORATION ROUTING (Manual .zip files)
+// ==========================================================
+else {
+    $filePath = $backupDir . $safeFile;
+    if (!file_exists($filePath)) sendResponse(false, null, 'Local backup artifact not found.', 404);
+    
+    $sigFile = $sigDir . $safeFile . '.hmac';
+    $hmacSecret = getenv('BACKUP_HMAC_SECRET') ?: $_ENV['BACKUP_HMAC_SECRET'] ?? 'FALLBACK_PLEASE_UPDATE_ENV';
+    
+    if (!file_exists($sigFile)) sendResponse(false, null, 'SECURITY ALERT: Digital signature missing. Restoration aborted.', 403);
+    
+    $storedHmac = file_get_contents($sigFile);
+    $computedHmac = hash_hmac_file('sha256', $filePath, $hmacSecret);
+    
+    if ($computedHmac === false) {
+        sendResponse(false, null, 'CRITICAL: Failed to read backup file for integrity verification.', 500);
+    }
+    
+    if (!hash_equals(trim($storedHmac), trim($computedHmac))) {
+        sendResponse(false, null, 'CRITICAL SECURITY FAULT: Backup integrity check failed. Restoration blocked to prevent system compromise.', 403);
+    }
+
+    if (!is_dir($tempExtractDir)) @mkdir($tempExtractDir, 0755, true);
+
+    $osUnzipSuccessful = false;
+    if (function_exists('exec')) {
+        $unzipCmd = sprintf('unzip -q -o %s -d %s 2>&1', escapeshellarg($filePath), escapeshellarg($tempExtractDir));
+        exec($unzipCmd, $cmdOutput, $cmdCode);
+        if ($cmdCode === 0) $osUnzipSuccessful = true;
+    }
+
+    if (!$osUnzipSuccessful) {
+        $zip = new ZipArchive;
+        if ($zip->open($filePath) === TRUE) {
+            $zip->extractTo($tempExtractDir);
+            $zip->close();
+        } else {
+            sendResponse(false, null, 'Failed to extract local encrypted archive. Memory or IO restriction.', 500);
+        }
+    }
+
+    if (file_exists($tempExtractDir . 'media_manifest.json')) {
+        $manifestData = json_decode(file_get_contents($tempExtractDir . 'media_manifest.json'), true) ?: [];
+    }
+
+    $sqlFiles = glob($tempExtractDir . 'database/*.sql');
+    if (empty($sqlFiles)) $sqlFiles = glob($tempExtractDir . '*.sql');
+
+    if ($restoreDb && !empty($sqlFiles)) {
+        $sqlFile = $sqlFiles[0];
+        
+        $cnfFile = tempnam(sys_get_temp_dir(), 'calcpro_cnf_');
+        $cnfContent = "[client]\nuser=\"{$dbUser}\"\npassword=\"{$dbPass}\"\nhost=\"{$dbHost}\"\n";
+        file_put_contents($cnfFile, $cnfContent);
+        chmod($cnfFile, 0600);
+        
+        try {
+            $mysqlCmd = sprintf(
+                'mysql --defaults-extra-file=%s %s < %s',
+                escapeshellarg($cnfFile), escapeshellarg($dbName), escapeshellarg($sqlFile)
+            );
+            exec($mysqlCmd, $output, $returnVar);
+        } finally { @unlink($cnfFile); }
+        
+        if ($returnVar !== 0) {
+            $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($tempExtractDir, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+            foreach ($iterator as $f) { $f->isDir() ? @rmdir($f->getRealPath()) : @unlink($f->getRealPath()); }
+            @rmdir($tempExtractDir);
+            sendResponse(false, null, 'Local Database overwrite failed.', 500);
+        }
+        $restoreLog[] = "Local Database snapshot restored.";
+    }
+
+    $mediaExtractDir = $tempExtractDir . 'media/';
+    if ($restoreMedia && is_dir($mediaExtractDir)) {
+        if (is_dir($uploadDir)) {
+            $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($uploadDir, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+            foreach ($files as $fileinfo) { 
+                // ENTERPRISE FIX: Preserve .htaccess and index.html
+                if (in_array($fileinfo->getFilename(), $protectedUploadFiles)) continue;
+                $todo = ($fileinfo->isDir() ? 'rmdir' : 'unlink'); 
+                @$todo($fileinfo->getRealPath()); 
+            }
+        } else { @mkdir($uploadDir, 0755, true); }
+
+        $sourceFiles = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($mediaExtractDir, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::SELF_FIRST);
+        foreach ($sourceFiles as $fileinfo) {
+            $targetPath = $uploadDir . $sourceFiles->getSubPathname();
+            if ($fileinfo->isDir()) { @mkdir($targetPath, 0755, true); } else { copy($fileinfo->getRealPath(), $targetPath); }
+        }
+        $restoreLog[] = "Local Media restored recursively.";
+    }
+
+    $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($tempExtractDir, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+    foreach ($iterator as $f) { if ($f->isDir()) @rmdir($f->getRealPath()); else @unlink($f->getRealPath()); }
+    @rmdir($tempExtractDir);
+}
+
+// ==============================================================================
+// ENTERPRISE BI-DIRECTIONAL GC & ORPHAN SYNC WITH HISTORICAL MANIFEST RECONCILIATION
+// ==============================================================================
+if ($restoreMedia) {
+    try {
+        $pdo = new PDO("mysql:host=$dbHost;dbname=$dbName;charset=utf8mb4", $dbUser, $dbPass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $adminId = $adminData['adminId'] ?? $adminData['id'] ?? 1;
+        
+        // Build an extremely fast O(1) map of the manifest by filename
+        $manifestMap = [];
+        if (!empty($manifestData)) {
+            foreach ($manifestData as $item) {
+                $manifestMap[$item['file_name']] = $item;
+            }
+        }
+
+        // --- STEP 1: LOCAL GARBAGE COLLECTION (Fixes Cloud Additive Spillage) ---
+        $localGcCount = 0;
+        if (!empty($manifestMap) && is_dir($uploadDir)) {
+            $gcFiles = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($uploadDir, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::LEAVES_ONLY
+            );
+
+            foreach ($gcFiles as $fileinfo) {
+                if ($fileinfo->isFile()) {
+                    $fileName = $fileinfo->getFilename();
+                    if (strpos($fileName, '.') === 0 || $fileName === 'index.html' || strpos($fileName, 'media_manifest') !== false) continue;
+                    
+                    // If physical file isn't in the historical ledger, purge it.
+                    if (!isset($manifestMap[$fileName])) {
+                        @unlink($fileinfo->getRealPath());
+                        $localGcCount++;
+                    }
+                }
+            }
+            if ($localGcCount > 0) $restoreLog[] = "Local GC purged $localGcCount additive physical file(s).";
+        }
+
+        // --- STEP 2: DATABASE ORPHAN SYNC (Adds missing records into DB) ---
+        $stmtCheck = $pdo->prepare("SELECT id FROM media WHERE file_name = :file_name LIMIT 1");
+        $stmtInsert = $pdo->prepare("
+            INSERT INTO media (admin_id, original_name, file_name, file_type, file_size, dimensions, alt_text, upload_path, status, created_at, updated_at)
+            VALUES (:admin_id, :original_name, :file_name, :file_type, :file_size, :dimensions, :alt_text, :upload_path, 'active', :created_at, :updated_at)
+        ");
+
+        $syncCount = 0;
+        if (is_dir($uploadDir)) {
+            $mediaFiles = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($uploadDir, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::LEAVES_ONLY);
+            foreach ($mediaFiles as $fileinfo) {
+                if ($fileinfo->isFile()) {
+                    $fileName = $fileinfo->getFilename();
+                    if (strpos($fileName, '.') === 0 || $fileName === 'index.html' || strpos($fileName, 'media_manifest') !== false) continue;
+
+                    $stmtCheck->execute([':file_name' => $fileName]);
+                    if (!$stmtCheck->fetchColumn()) {
+                        $filePath = $fileinfo->getRealPath();
+                        $originalName = $fileName;
+                        $fileSize = $fileinfo->getSize();
+                        $fileType = @mime_content_type($filePath) ?: 'application/octet-stream';
+                        $dimensions = null;
+
+                        if (strpos($fileType, 'image/') === 0) {
+                            $imgSize = @getimagesize($filePath);
+                            if ($imgSize) $dimensions = $imgSize[0] . 'x' . $imgSize[1];
+                        }
+                        $altText = ucwords(str_replace(['-', '_'], ' ', pathinfo($fileName, PATHINFO_FILENAME)));
+                        $createdAt = date('Y-m-d H:i:s');
+                        $updatedAt = date('Y-m-d H:i:s');
+                        
+                        if (isset($manifestMap[$fileName])) {
+                            $hist = $manifestMap[$fileName];
+                            $originalName = $hist['original_name'] ?? $originalName;
+                            $fileType = $hist['file_type'] ?? $fileType;
+                            $fileSize = $hist['file_size'] ?? $fileSize;
+                            $dimensions = $hist['dimensions'] ?? $dimensions;
+                            $altText = $hist['alt_text'] ?? $altText;
+                            $createdAt = $hist['created_at'] ?? $createdAt;
+                            $updatedAt = $hist['updated_at'] ?? $updatedAt;
+                        }
+
+                        $relativePath = substr($filePath, strlen(realpath($uploadDir)) + 1);
+                        $relativePath = str_replace('\\', '/', $relativePath);
+                        $uploadPath = 'uploads/' . $relativePath;
+
+                        $stmtInsert->execute([
+                            ':admin_id' => $adminId, ':original_name' => $originalName, ':file_name' => $fileName,
+                            ':file_type' => $fileType, ':file_size' => $fileSize, ':dimensions' => $dimensions,
+                            ':alt_text' => $altText, ':upload_path' => $uploadPath, ':created_at' => $createdAt, ':updated_at' => $updatedAt
+                        ]);
+                        $syncCount++;
+                    }
+                }
+            }
+        }
+        if ($syncCount > 0) $restoreLog[] = "System restored $syncCount orphaned media record(s) via Historical Manifest.";
+
+        // --- STEP 3: DATABASE GARBAGE COLLECTION (Fixes Ghost UI Images) ---
+        $stmtAllMedia = $pdo->query("SELECT id, upload_path FROM media");
+        $dbGcCount = 0;
+        while ($row = $stmtAllMedia->fetch(PDO::FETCH_ASSOC)) {
+            $uploadPath = ltrim($row['upload_path'], '/');
+            $fullPath = realpath(__DIR__ . '/../../') . '/' . $uploadPath;
+            
+            if (!file_exists($fullPath)) {
+                $pdo->exec("DELETE FROM media WHERE id = " . (int)$row['id']);
+                $dbGcCount++;
+            }
+        }
+        if ($dbGcCount > 0) $restoreLog[] = "Database GC purged $dbGcCount ghost record(s).";
+
+    } catch (Exception $e) {
+        error_log("Bi-Directional Sync Error during Restore: " . $e->getMessage());
+    }
+}
+
+if (empty($restoreLog)) sendResponse(false, null, 'Selected components were missing in the archive.', 400);
+sendResponse(true, null, implode(" ", $restoreLog));
+?>

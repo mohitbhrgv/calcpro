@@ -1,0 +1,97 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php'; 
+
+// --- Security Check ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->id) || !is_numeric($data->id)) {
+        sendResponse(false, null, 'A valid Category ID is required.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->name) || empty(trim($data->name))) {
+        sendResponse(false, null, 'Category name cannot be empty.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->slug) || empty(trim($data->slug))) {
+        sendResponse(false, null, 'Category slug cannot be empty.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize and Prepare Data ---
+    $id = (int)$data->id;
+    $name = trim($data->name);
+    $slug = trim($data->slug);
+    $description = isset($data->description) ? trim($data->description) : null;
+    
+    // --- NEW SEO AND IMAGE FIELDS ---
+    $meta_title = isset($data->meta_title) ? trim($data->meta_title) : null;
+    $meta_description = isset($data->meta_description) ? trim($data->meta_description) : null;
+    $featured_image_id = (isset($data->featured_image_id) && $data->featured_image_id !== '') ? (int)$data->featured_image_id : null;
+
+    // --- 4. Check for Duplicates ---
+    $sql_check = "SELECT id FROM calculator_categories WHERE (name = :name OR slug = :slug) AND id != :id";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->execute([':name' => $name, ':slug' => $slug, ':id' => $id]);
+    
+    if ($stmt_check->fetch(PDO::FETCH_ASSOC)) {
+        sendResponse(false, null, 'Another category with this name or slug already exists.', 409, 'DUPLICATE_ENTRY');
+    }
+
+    // --- 5. The SQL UPDATE Query ---
+    $sql_update = "UPDATE calculator_categories SET name = :name, slug = :slug, description = :description, meta_title = :meta_title, meta_description = :meta_description, featured_image_id = :featured_image_id WHERE id = :id";
+    $stmt_update = $conn->prepare($sql_update);
+    
+    if ($stmt_update->execute([
+        ':name' => $name,
+        ':slug' => $slug,
+        ':description' => $description,
+        ':meta_title' => $meta_title,
+        ':meta_description' => $meta_description,
+        ':featured_image_id' => $featured_image_id,
+        ':id' => $id
+    ])) {
+        // Fetch updated data
+        $sql_fetch = "
+            SELECT c.id, c.name, c.slug, c.description, c.meta_title, c.meta_description, c.featured_image_id, m.upload_path AS featured_image_url
+            FROM calculator_categories c
+            LEFT JOIN media m ON c.featured_image_id = m.id
+            WHERE c.id = :id
+        ";
+        
+        $stmt_fetch = $conn->prepare($sql_fetch);
+        $stmt_fetch->execute([':id' => $id]);
+        $updated_cat = $stmt_fetch->fetch(PDO::FETCH_ASSOC);
+
+        // Get base URL for media paths (Strict Environment Extraction)
+        $api_base_url = $_ENV['API_PUBLIC_URL'] ?? '';
+
+        if ($updated_cat) {
+            $updated_cat['calculator_count'] = 0;
+            $updated_cat['id'] = (int)$updated_cat['id'];
+            $updated_cat['featured_image_id'] = $updated_cat['featured_image_id'] ? (int)$updated_cat['featured_image_id'] : null;
+
+            // Format URL
+            if ($updated_cat['featured_image_url']) {
+                $updated_cat['featured_image_url'] = rtrim($api_base_url, '/') . '/' . ltrim($updated_cat['featured_image_url'], '/');
+            }
+        }
+
+        sendResponse(true, $updated_cat, 'Category updated successfully!', 200);
+    } else {
+        $errorInfo = $stmt_update->errorInfo();
+        throw new Exception("Database update failed: " . $errorInfo[2]);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in update_calculator_category.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

@@ -1,0 +1,227 @@
+<?php
+// File: calcpro-api/api/admin/replace_media.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK & RBAC ---
+$admin_data = verifyAdminToken();
+
+// STRICT RBAC: Only Super Admins can replace existing media
+$adminArray = (array)$admin_data;
+if (!isset($adminArray['adminRole']) || $adminArray['adminRole'] !== 'super_admin') {
+    sendResponse(false, null, 'Insufficient permissions. Only Super Admins can replace media.', 403, 'FORBIDDEN');
+}
+
+// --- Configuration ---
+define('UPLOAD_DIR', PROJECT_ROOT . '/uploads/');
+define('MAX_FILE_SIZE', 10 * 1024 * 1024);
+$allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+/**
+ * OWASP FIX: Strip Polyglot Data by forcing a GD Re-encode.
+ */
+function sanitizeImageUpload($sourcePath, $destinationPath, $mimeType) {
+    switch ($mimeType) {
+        case 'image/jpeg':
+            $img = @imagecreatefromjpeg($sourcePath);
+            if ($img !== false) { imagejpeg($img, $destinationPath, 90); imagedestroy($img); return true; }
+            break;
+        case 'image/png':
+            $img = @imagecreatefrompng($sourcePath);
+            if ($img !== false) {
+                imagealphablending($img, true);
+                imagesavealpha($img, true);
+                imagepng($img, $destinationPath, 8);
+                imagedestroy($img);
+                return true;
+            }
+            break;
+        case 'image/webp':
+            $img = @imagecreatefromwebp($sourcePath);
+            if ($img !== false) {
+                imagealphablending($img, true);
+                imagesavealpha($img, true);
+                imagewebp($img, $destinationPath, 90);
+                imagedestroy($img);
+                return true;
+            }
+            break;
+        case 'image/gif':
+            $img = @imagecreatefromgif($sourcePath);
+            if ($img !== false) { imagegif($img, $destinationPath); imagedestroy($img); return true; }
+            break;
+    }
+    return false;
+}
+
+try {
+    // --- 1. Validation of POST data ---
+    if (!isset($_POST['media_id']) || !is_numeric($_POST['media_id'])) {
+        throw new Exception('A valid Media ID is required.', 400);
+    }
+    if (!isset($_POST['replacement_type']) || !in_array($_POST['replacement_type'], ['replace_only', 'replace_and_update_links'])) {
+        throw new Exception('A valid replacement type is required.', 400);
+    }
+    if (!isset($_POST['alt_text'])) {
+        throw new Exception('Alt text is required.', 400);
+    }
+    if (!isset($_POST['date_option']) || !in_array($_POST['date_option'], ['keep', 'replace'])) {
+        throw new Exception('A valid date option is required.', 400);
+    }
+    if (!isset($_FILES['newMediaFile'])) {
+        throw new Exception('No replacement file was uploaded.', 400);
+    }
+
+    $mediaId = (int)$_POST['media_id'];
+    $replacementType = $_POST['replacement_type'];
+    $altText = trim($_POST['alt_text']);
+    $dateOption = $_POST['date_option'];
+    $file = $_FILES['newMediaFile'];
+
+    // --- 2. File Upload Validation ---
+    if ($file['error'] !== UPLOAD_ERR_OK) throw new Exception('File upload error occurred.', 400);
+    if ($file['size'] > MAX_FILE_SIZE) throw new Exception('File is too large.', 413);
+    
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mimeType = $finfo->file($file['tmp_name']);
+
+    if (!in_array($mimeType, $allowedMimeTypes)) throw new Exception('Invalid file type.', 415);
+    
+    $conn->beginTransaction();
+
+    // --- 3. Fetch Original Media Record FIRST ---
+    $sql_fetch = "SELECT * FROM media WHERE id = :id";
+    $stmt_fetch = $conn->prepare($sql_fetch);
+    $stmt_fetch->execute([':id' => $mediaId]);
+    $originalMedia = $stmt_fetch->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$originalMedia) throw new Exception('Original media item not found.', 404);
+
+    $originalFilePath = PROJECT_ROOT . '/' . $originalMedia['upload_path'];
+
+    // --- LOGIC FOR REPLACEMENT ---
+    if ($replacementType === 'replace_only') {
+        if ($file['name'] !== $originalMedia['original_name']) {
+            throw new Exception("To 'Just replace the file', the new file must have the exact same name as the original ('" . htmlspecialchars($originalMedia['original_name']) . "').", 400);
+        }
+
+        if (!sanitizeImageUpload($file['tmp_name'], $originalFilePath, $mimeType)) {
+            throw new Exception('Image validation failed. Check file integrity.', 415);
+        }
+
+        $imageSizeInfo = @getimagesize($originalFilePath);
+        $dimensions = ($imageSizeInfo !== false) ? "{$imageSizeInfo[0]}x{$imageSizeInfo[1]}" : null;
+
+        $dateSql = ($dateOption === 'replace') ? ", created_at = NOW()" : "";
+        $updateSql = "UPDATE media SET file_size = :size, dimensions = :dim, file_type = :type, alt_text = :alt {$dateSql} WHERE id = :id";
+
+        $updateStmt = $conn->prepare($updateSql);
+        if (!$updateStmt->execute([
+            ':size' => filesize($originalFilePath),
+            ':dim' => $dimensions,
+            ':type' => $mimeType,
+            ':alt' => $altText,
+            ':id' => $mediaId
+        ])) {
+            throw new Exception('Failed to update media metadata.');
+        }
+
+    } else { 
+        // 'replace_and_update_links'
+        if ($file['name'] === $originalMedia['original_name']) {
+            throw new Exception("The new file cannot have the same name as the original when updating links. Use the 'Just replace the file' option instead.", 400);
+        }
+        
+        $fileInfo = pathinfo($file['name']);
+        $baseName = preg_replace('/[^a-z0-9_-]/', '-', strtolower($fileInfo['filename']));
+        
+        $mimeToExtensionMap = [
+            'image/jpeg' => 'jpg',
+            'image/png'  => 'png',
+            'image/gif'  => 'gif',
+            'image/webp' => 'webp'
+        ];
+
+        $extension = $mimeToExtensionMap[$mimeType];
+        $newFileName = $baseName . '.' . $extension;
+
+        // --- NEW ENFORCEMENT: STRICT DUPLICATE CHECK ---
+        // Verify against Database
+        $checkSql = "SELECT id FROM media WHERE file_name = :file_name";
+        $stmtCheck = $conn->prepare($checkSql);
+        $stmtCheck->execute([':file_name' => $newFileName]);
+        
+        // Block if it exists in DB OR physically in the folder to prevent overwrites/orphans
+        if ($stmtCheck->fetch(PDO::FETCH_ASSOC) || file_exists(UPLOAD_DIR . $newFileName)) {
+            throw new Exception("An image named '{$newFileName}' already exists in the Media Library. Please choose a different file or rename it to prevent duplicates.", 409);
+        }
+        
+        $newRelativePath = 'uploads/' . $newFileName;
+        $newFilePath = UPLOAD_DIR . $newFileName;
+
+        // Re-encode and save new file safely
+        if (!sanitizeImageUpload($file['tmp_name'], $newFilePath, $mimeType)) {
+            throw new Exception('Failed to validate and write new uploaded file. Check integrity.', 415);
+        }
+
+        $imageSizeInfo = @getimagesize($newFilePath);
+        $dimensions = ($imageSizeInfo !== false) ? "{$imageSizeInfo[0]}x{$imageSizeInfo[1]}" : null;
+
+        $updateSql = "UPDATE media SET original_name = :orig, file_name = :fname, file_type = :type, file_size = :size, dimensions = :dim, upload_path = :path, alt_text = :alt, created_at = NOW() WHERE id = :id";
+        
+        $updateStmt = $conn->prepare($updateSql);
+        
+        if (!$updateStmt->execute([
+            ':orig' => $file['name'],
+            ':fname' => $newFileName,
+            ':type' => $mimeType,
+            ':size' => filesize($newFilePath),
+            ':dim' => $dimensions,
+            ':path' => $newRelativePath,
+            ':alt' => $altText,
+            ':id' => $mediaId
+        ])) {
+            throw new Exception('Failed to update media record with new file info.');
+        }
+
+        // --- COMPREHENSIVE LINK UPDATE ---
+        $oldUrl = rtrim($_ENV['API_PUBLIC_URL'], '/') . '/' . $originalMedia['upload_path'];
+        $newUrl = rtrim($_ENV['API_PUBLIC_URL'], '/') . '/' . $newRelativePath;
+        
+        $oldUrlEsc = str_replace('/', '\\/', $oldUrl);
+        $newUrlEsc = str_replace('/', '\\/', $newUrl);
+
+        $stmtPosts = $conn->prepare("UPDATE posts SET content = REPLACE(content, :old, :new), og_image = REPLACE(og_image, :old2, :new2)");
+        $stmtPosts->execute([':old' => $oldUrl, ':new' => $newUrl, ':old2' => $oldUrl, ':new2' => $newUrl]);
+
+        $stmtCalcs = $conn->prepare("UPDATE calculators SET content = REPLACE(content, :old, :new), og_image = REPLACE(og_image, :old2, :new2)");
+        $stmtCalcs->execute([':old' => $oldUrl, ':new' => $newUrl, ':old2' => $oldUrl, ':new2' => $newUrl]);
+
+        $stmtPages = $conn->prepare("UPDATE pages SET content_json = REPLACE(REPLACE(content_json, :old, :new), :old_esc, :new_esc), og_image = REPLACE(og_image, :old2, :new2)");
+        $stmtPages->execute([':old' => $oldUrl, ':new' => $newUrl, ':old_esc' => $oldUrlEsc, ':new_esc' => $newUrlEsc, ':old2' => $oldUrl, ':new2' => $newUrl]);
+
+        $stmtSettings = $conn->prepare("UPDATE settings SET setting_value = REPLACE(setting_value, :old, :new)");
+        $stmtSettings->execute([':old' => $oldUrl, ':new' => $newUrl]);
+
+        if (file_exists($originalFilePath)) {
+            unlink($originalFilePath);
+        }
+    }
+
+    $conn->commit();
+    sendResponse(true, null, 'Image replaced successfully and all references updated.');
+
+} catch (Exception $e) {
+    if (isset($conn) && $conn->inTransaction()) {
+        $conn->rollBack();
+    }
+    $code = is_numeric($e->getCode()) && $e->getCode() > 0 ? $e->getCode() : 500;
+    error_log("Error in replace_media.php: " . $e->getMessage());
+    sendResponse(false, null, $e->getMessage(), $code, 'REPLACE_FAILED');
+}
+
+$conn = null;
+?>

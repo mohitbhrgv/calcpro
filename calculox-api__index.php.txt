@@ -1,0 +1,33 @@
+<?php
+/**
+ * Application: Calculox API
+ * Purpose: Secure Root Index Gateway & Health Check
+ * Description: Intercepts root-level web requests to provide a clean, non-revealing API status response.
+ * Compliance: OWASP Information Leakage Protection, SOC 2 Type 2 Auditability.
+ */
+
+// --- Strict Defensive Security Headers ---
+// Prevent MIME-type sniffing attacks by forcing browsers to respect the declared content-type
+header('X-Content-Type-Options: nosniff');
+
+// Prevent downstream proxies, browsers, and edge layers from caching dynamic status payloads
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+
+// Explicitly define a secure content delivery context
+header('Content-Type: application/json; charset=utf-8');
+
+// --- Infrastructure Liveness Compliance ---
+// Return 200 OK to allow Traefik, Coolify, or Cloudflare health monitors to verify container viability
+http_response_code(200);
+
+// --- Sanitized Application Telemetry Output ---
+echo json_encode([
+    "status"    => "online",
+    "service"   => "Calculox API Gateway",
+    "timestamp" => gmdate('Y-m-d\TH:i:s\Z'), // ISO 8601 UTC Compliant Zulu Time
+    "message"   => "Access restricted. Please route traffic through defined API endpoints."
+], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+
+// Absolute execution termination to eliminate risk of trailing byte injection or appended garbage data
+exit;

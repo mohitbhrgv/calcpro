@@ -1,0 +1,26 @@
+# calcpro-api/uploads/.htaccess
+# OWASP Defense-in-Depth: Enterprise Media Security
+
+# 1. Disable directory browsing completely
+Options -Indexes -ExecCGI
+
+# 2. Prevent access to the .htaccess file itself (Apache 2.4+ Syntax)
+<Files ".htaccess">
+    Require all denied
+</Files>
+
+# 3. Deny access to dangerous script and executable extensions entirely
+<FilesMatch "(?i)\.(php[0-9]?|phtml|pht|phar|phps|sh|cgi|pl|py|jsp|asp|aspx|exe|msi|vbs|bat|cmd|com)$">
+    Require all denied
+</FilesMatch>
+
+# 4. OWASP: Prevent MIME-Sniffing (Polyglot HTML-in-Image attacks)
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    
+    # Optional but recommended: Force download for non-image files to prevent inline HTML/SVG execution (XSS)
+    <FilesMatch "(?i)\.(html|htm|svg|xml)$">
+        Header set Content-Disposition "attachment"
+        Header set Content-Security-Policy "default-src 'none'; script-src 'none';"
+    </FilesMatch>
+</IfModule>

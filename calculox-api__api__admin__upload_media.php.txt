@@ -1,0 +1,215 @@
+<?php
+// File: calcpro-api/api/admin/upload_media.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// --- Configuration ---
+define('UPLOAD_DIR', PROJECT_ROOT . '/uploads/');
+define('MAX_FILE_SIZE', 10 * 1024 * 1024);
+$allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+// SECURITY FIX: Explicit MIME to Extension mapping
+$mimeToExtensionMap = [
+    'image/jpeg' => 'jpg',
+    'image/png'  => 'png',
+    'image/gif'  => 'gif',
+    'image/webp' => 'webp'
+];
+
+/**
+ * OWASP FIX: Strip Polyglot Data by forcing a GD Re-encode.
+ * This ensures no malicious scripts are hidden in EXIF headers.
+ */
+function sanitizeImageUpload($sourcePath, $destinationPath, $mimeType) {
+    if (!extension_loaded('gd')) {
+        throw new Exception("Server Configuration Error: The PHP GD image processing extension is missing.", 500);
+    }
+
+    switch ($mimeType) {
+        case 'image/jpeg':
+            $img = @imagecreatefromjpeg($sourcePath);
+            if ($img !== false) { imagejpeg($img, $destinationPath, 90); imagedestroy($img); return true; }
+            break;
+        case 'image/png':
+            $img = @imagecreatefrompng($sourcePath);
+            if ($img !== false) {
+                imagealphablending($img, true);
+                imagesavealpha($img, true);
+                imagepng($img, $destinationPath, 8);
+                imagedestroy($img);
+                return true;
+            }
+            break;
+        case 'image/webp':
+            $img = @imagecreatefromwebp($sourcePath);
+            if ($img !== false) {
+                imagealphablending($img, true);
+                imagesavealpha($img, true);
+                imagewebp($img, $destinationPath, 90);
+                imagedestroy($img);
+                return true;
+            }
+            break;
+        case 'image/gif':
+            // Basic safety check for GIF.
+            // Re-encoding breaks animation, so we validate it parses successfully via GD.
+            $img = @imagecreatefromgif($sourcePath);
+            if ($img !== false) { imagegif($img, $destinationPath); imagedestroy($img); return true; }
+            break;
+    }
+    return false;
+}
+
+try {
+    $adminUserId = $admin_data->adminId;
+    
+    // --- 1. System Readiness & Storage Checks ---
+    if (!is_dir(UPLOAD_DIR)) {
+        @mkdir(UPLOAD_DIR, 0775, true);
+    }
+    if (!is_writable(UPLOAD_DIR)) {
+        throw new Exception('Storage Error: The uploads directory is not writable. Please verify the Coolify persistent volume is owned by the www-data user.', 500);
+    }
+
+    if (!isset($_FILES['mediaFile'])) {
+        throw new Exception('No file was uploaded.', 400);
+    }
+    
+    $file = $_FILES['mediaFile'];
+
+    // --- 2. File Upload Error Handling ---
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        $uploadErrors = [
+            UPLOAD_ERR_INI_SIZE   => 'File exceeds the server\'s maximum upload size.',
+            UPLOAD_ERR_FORM_SIZE  => 'File exceeds the form\'s maximum size limit.',
+            UPLOAD_ERR_PARTIAL    => 'The file was only partially uploaded.',
+            UPLOAD_ERR_NO_FILE    => 'No file was uploaded.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Missing a temporary folder on the server.',
+            UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk.',
+            UPLOAD_ERR_EXTENSION  => 'A PHP extension stopped the file upload.',
+        ];
+        $errorMessage = $uploadErrors[$file['error']] ?? 'Unknown upload error.';
+        throw new Exception($errorMessage, 400);
+    }
+
+    // --- 3. Cryptographic File Validation ---
+    if ($file['size'] > MAX_FILE_SIZE) {
+        throw new Exception('File is too large. Maximum allowed size is 10MB.', 413);
+    }
+    
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mimeType = $finfo->file($file['tmp_name']);
+
+    if (!in_array($mimeType, $allowedMimeTypes)) {
+        throw new Exception('Invalid file type. Only JPG, PNG, GIF, and WEBP are allowed.', 415);
+    }
+
+    // --- 4. Filename Strict Validation & Extension Forcing ---
+    $originalName = $file['name'];
+
+    // STRICT VALIDATION: Reject any filename containing spaces or invalid characters
+    // Allowed: A-Z, a-z, 0-9, -, _, and .
+    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $originalName)) {
+        throw new Exception('Invalid filename. Please rename your file using only English letters, numbers, dashes (-), or underscores (_) without spaces before uploading.', 400);
+    }
+
+    $fileInfo = pathinfo($originalName);
+    $baseName = $fileInfo['filename'];
+
+    // Clean up any accidental leading/trailing dashes or underscores
+    $sanitizedBaseName = trim($baseName, '-_');
+    
+    // Force extension based on actual verified binary content.
+    $safeExtension = $mimeToExtensionMap[$mimeType];
+    $fileName = $sanitizedBaseName . '.' . $safeExtension;
+
+    // --- 5. STRICT DUPLICATE CHECK ---
+    $checkSql = "SELECT id FROM media WHERE file_name = :file_name";
+    $stmtCheck = $conn->prepare($checkSql);
+    $stmtCheck->execute([':file_name' => $fileName]);
+    
+    if ($stmtCheck->fetch(PDO::FETCH_ASSOC)) {
+        throw new Exception("A file named '{$fileName}' already exists. Please rename your file before uploading.", 409);
+    }
+
+    // --- 6. Get Image Dimensions ---
+    $dimensions = null;
+    $imageSizeInfo = @getimagesize($file['tmp_name']);
+
+    if ($imageSizeInfo !== false) {
+        $width = $imageSizeInfo[0];
+        $height = $imageSizeInfo[1];
+        $dimensions = "{$width}x{$height}";
+    } else {
+        throw new Exception('Invalid image payload detected.', 415);
+    }
+
+    // --- 7. Move the File safely with PRE-FLIGHT Path Traversal Protection ---
+    $targetPath = UPLOAD_DIR . $fileName;
+    $relativePath = 'uploads/' . $fileName;
+    
+    $realUploadDir = realpath(UPLOAD_DIR);
+    $targetDir = dirname($targetPath);
+    $realTargetDir = realpath($targetDir);
+
+    // Enterprise Standard TOCTOU Fix: Verify directory bounds BEFORE writing the file.
+    if ($realTargetDir === false || strpos($realTargetDir, $realUploadDir) !== 0) {
+        throw new Exception('Security Violation: Path traversal attempt blocked before write.', 403);
+    }
+
+    // OWASP: Re-encode image instead of just moving it
+    if (!sanitizeImageUpload($file['tmp_name'], $targetPath, $mimeType)) {
+        throw new Exception('Image validation failed. The file may be corrupt or contain malicious data.', 415);
+    }
+
+    // --- 8. Save to Database ---
+    // Generate a human-readable alt text from the validated base name
+    $altText = ucwords(str_replace(['-', '_'], ' ', $baseName));
+    
+    $sql = "INSERT INTO media (admin_id, original_name, file_name, file_type, file_size, dimensions, upload_path, alt_text) VALUES (:admin_id, :original_name, :file_name, :file_type, :file_size, :dimensions, :upload_path, :alt_text)";
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt->execute([
+        ':admin_id' => $adminUserId,
+        ':original_name' => $originalName,
+        ':file_name' => $fileName,
+        ':file_type' => $mimeType,
+        ':file_size' => filesize($targetPath), // Update size post re-encoding
+        ':dimensions' => $dimensions,
+        ':upload_path' => $relativePath,
+        ':alt_text' => $altText
+    ])) {
+        $newMediaId = $conn->lastInsertId();
+
+        $fetchSql = "SELECT * FROM media WHERE id = :id";
+        $fetchStmt = $conn->prepare($fetchSql);
+        $fetchStmt->execute([':id' => $newMediaId]);
+        $newMediaRecord = $fetchStmt->fetch(PDO::FETCH_ASSOC);
+
+        $api_base_url = $_ENV['API_PUBLIC_URL'];
+        $newMediaRecord['full_url'] = rtrim($api_base_url, '/') . '/' . $newMediaRecord['upload_path'];
+
+        sendResponse(true, $newMediaRecord, 'File uploaded successfully!', 201);
+    } else {
+        if (file_exists($targetPath)) {
+            unlink($targetPath);
+        }
+        $errorInfo = $stmt->errorInfo();
+        throw new Exception('Failed to save file metadata: ' . $errorInfo[2], 500);
+    }
+
+// CHANGED TO Throwable to catch TypeErrors and missing extension Errors safely
+} catch (Throwable $e) { 
+    $code = is_numeric($e->getCode()) && $e->getCode() > 0 ? $e->getCode() : 500;
+    error_log("Error in upload_media.php: " . $e->getMessage());
+    sendResponse(false, null, $e->getMessage(), $code, 'UPLOAD_FAILED');
+}
+
+$conn = null;
+?>

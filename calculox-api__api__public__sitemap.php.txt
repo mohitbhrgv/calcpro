@@ -1,0 +1,320 @@
+<?php
+// File: calcpro-api/api/public/sitemap.php
+// (Update)
+
+/**
+ * Advanced Dynamic Sitemap Engine v5.0
+ * Features: Pagination, Granular Categories, Deep Image Parsing.
+ * Tags and dynamic permalinks removed for strict SEO flat routing.
+ * Bug Fix: Implements Taxonomy Global SEO Settings for No-Index exclusion.
+ * Upgraded: Fully Migrated to secure PDO architecture.
+ */
+
+// 1. Load Configuration
+require_once dirname(__DIR__, 2) . '/core/config.php';
+
+// 2. Debugging & Headers
+$debugMode = isset($_GET['debug']) && $_GET['debug'] == '1';
+if (!$debugMode) {
+    header("Content-Type: application/xml; charset=utf-8");
+    header("X-Robots-Tag: noindex");
+    header("X-Content-Type-Options: nosniff");
+    
+    // --- ENTERPRISE FIX: SURGICAL CSP OVERRIDE ---
+    // The browser evaluates XSLT stylesheets as "scripts". We must explicitly allow the 
+    // parent XML file to execute its own self-hosted XSLT stylesheet to render the UI.
+    header("Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self';");
+} else {
+    header("Content-Type: text/plain; charset=utf-8");
+}
+
+// 3. Base URLs
+$apiBaseUrl = isset($_ENV['API_PUBLIC_URL']) ? rtrim($_ENV['API_PUBLIC_URL'], '/') : '';
+$baseUrl = isset($_ENV['PUBLIC_FRONTEND_URL']) ? rtrim($_ENV['PUBLIC_FRONTEND_URL'], '/') : '';
+
+// 4. Output Declaration
+if (ob_get_length()) ob_clean();
+if (!$debugMode) {
+    echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+    echo '<?xml-stylesheet type="text/xsl" href="/main-sitemap.xsl"?>' . "\n";
+}
+
+try {
+    // --- A. FETCH SETTINGS ---
+    $settings = [];
+    $res = $conn->query("SELECT setting_key, setting_value FROM settings");
+    if ($res) {
+        while($row = $res->fetch(PDO::FETCH_ASSOC)) {
+            $settings[$row['setting_key']] = $row['setting_value'];
+        }
+    }
+
+    // Robust Boolean Helper (Original - defaults to true)
+    function isSettingEnabled($key) {
+        global $settings;
+        $val = $settings[$key] ?? 'true'; 
+        return ($val === true || $val === 1 || $val === '1' || strtolower((string)$val) === 'true');
+    }
+
+    // Strict Boolean Helper for Global SEO Settings (Defaults to false)
+    function getSettingBool($key, $default = false) {
+        global $settings;
+        if (!array_key_exists($key, $settings)) return $default;
+        $val = $settings[$key];
+        return ($val === true || $val === 1 || $val === '1' || strtolower((string)$val) === 'true');
+    }
+
+    // Evaluate Global SEO Defaults for specific Post Types & Taxonomies
+    function isTypeNoIndex($prefix) {
+        // If custom robots meta is enabled for this type, check its specific noindex setting
+        if (getSettingBool("seo_{$prefix}_robots_custom_enabled", false)) {
+            return getSettingBool("seo_{$prefix}_robots_noindex", false);
+        }
+        // Otherwise, fallback to the global site-wide noindex setting
+        return getSettingBool("seo_robots_global_noindex", false);
+    }
+
+    // --- MASTER SEO VISIBILITY TOGGLE ENFORCEMENT ---
+    $globalVisibility = getSettingBool('seo_global_search_visibility', false);
+
+    if (!$globalVisibility) {
+        // Forcefully strip all dynamic routes if site indexing is strictly disabled
+        $incPosts     = false;
+        $incPages     = false;
+        $incCalcs     = false;
+        $incBlogCats  = false;
+        $incCalcCats  = false;
+    } else {
+        // Configuration
+        $incPosts     = isSettingEnabled('seo_sitemap_inc_posts');
+        $incPages     = isSettingEnabled('seo_sitemap_inc_pages');
+        $incCalcs     = isSettingEnabled('seo_sitemap_inc_calcs');
+
+        // Taxonomies do not have a row-level 'no_index' column in the database.
+        // They are completely governed by the Global & Custom Taxonomy settings.
+        $incBlogCats  = isSettingEnabled('seo_sitemap_inc_blog_cats') && !isTypeNoIndex('tax_blog_category');
+        $incCalcCats  = isSettingEnabled('seo_sitemap_inc_calc_cats') && !isTypeNoIndex('tax_calc_category');
+    }
+
+    // Build Dynamic SQL Conditions Based on Global SEO Settings
+    $condPage      = isTypeNoIndex('page') ? "no_index = 0" : "(no_index IS NULL OR no_index = 0)";
+    $condPostCount = isTypeNoIndex('post') ? "no_index = 0" : "(no_index IS NULL OR no_index = 0)";
+    $condPost      = isTypeNoIndex('post') ? "p.no_index = 0" : "(p.no_index IS NULL OR p.no_index = 0)";
+    $condCalc      = isTypeNoIndex('calc') ? "no_index = 0" : "(no_index IS NULL OR no_index = 0)";
+
+    // Pagination Limit
+    $limit = isset($settings['seo_sitemap_pagination_limit']) ? (int)$settings['seo_sitemap_pagination_limit'] : 1000;
+    if ($limit < 50) $limit = 50;
+    if ($limit > 50000) $limit = 50000; 
+
+    // Current Page
+    $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+    $offset = ($page - 1) * $limit;
+
+    // Base paths
+    $calcBase = 'calculators';
+    $type = isset($_GET['type']) ? $_GET['type'] : 'index';
+
+    // --- Helpers ---
+    function extractImagesFromContent($content, $fallbackImg = null) {
+        $images = [];
+        if (!empty($fallbackImg)) $images[] = $fallbackImg;
+        if (!empty($content)) {
+            $stringToScan = is_array($content) || is_object($content) ? json_encode($content) : $content;
+            preg_match_all('/<img[^>]+src=["\']([^"\']+)["\']/i', $stringToScan, $matches);
+            if (!empty($matches[1])) {
+                foreach ($matches[1] as $src) $images[] = $src;
+            }
+        }
+        return array_unique(array_filter($images));
+    }
+
+    function formatSitemapDate($dateStr) {
+        if (empty($dateStr)) return date('c');
+       
+        try {
+            if (preg_match('/[T\+Z]/', $dateStr)) {
+                $dt = new DateTime($dateStr);
+            } else {
+                $dt = new DateTime($dateStr, new DateTimeZone('UTC'));
+                $dt->setTimezone(new DateTimeZone(date_default_timezone_get()));
+            }
+            return $dt->format('c');
+        } catch (Exception $e) {
+            return date('c');
+        }
+    }
+
+    function addSitemap($filename, $lastMod = null) {
+        global $baseUrl;
+        $fullUrl = htmlspecialchars("$baseUrl/$filename", ENT_XML1);
+        $date = formatSitemapDate($lastMod);
+        echo "    <sitemap>\n        <loc>$fullUrl</loc>\n        <lastmod>$date</lastmod>\n    </sitemap>\n";
+    }
+
+    function addUrl($loc, $lastMod = null, $images = []) {
+        global $baseUrl;
+        $loc = ltrim($loc, '/');
+        $fullUrl = htmlspecialchars($baseUrl . ($loc ? '/' . $loc : ''), ENT_XML1);
+        $date = formatSitemapDate($lastMod);
+        echo "    <url>\n        <loc>$fullUrl</loc>\n        <lastmod>$date</lastmod>\n";
+        foreach ($images as $imgUrl) {
+            echo "        <image:image>\n            <image:loc>" . htmlspecialchars($imgUrl, ENT_XML1) . "</image:loc>\n        </image:image>\n";
+        }
+        echo "    </url>\n";
+    }
+
+    function getPaginationCount($conn, $table, $where = "1=1") {
+        global $limit;
+        $res = $conn->query("SELECT COUNT(*) as total FROM `$table` WHERE $where");
+        if ($res) {
+            $row = $res->fetch(PDO::FETCH_ASSOC);
+            $total = $row ? (int)$row['total'] : 0;
+            return ($total > 0) ? ceil($total / $limit) : 0;
+        }
+        return 0;
+    }
+
+    // --- B. LOGIC ROUTER ---
+
+    // 1. SITEMAP INDEX
+    if ($type === 'index') {
+        echo '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
+
+        // --- Static Pages ---
+        if ($incPages) {
+            $lastModRes = $conn->query("SELECT updated_at FROM pages WHERE status='published' AND $condPage ORDER BY updated_at DESC LIMIT 1");
+            $lastMod = ($lastModRes && $row = $lastModRes->fetch(PDO::FETCH_ASSOC)) ? $row['updated_at'] : null;
+            $pageCount = getPaginationCount($conn, 'pages', "status='published' AND $condPage");
+            for ($i = 1; $i <= $pageCount; $i++) {
+                $suffix = ($i > 1) ? "?page=$i" : "";
+                addSitemap("page-sitemap.xml$suffix", $lastMod);
+            }
+        }
+
+        // --- Blog Posts ---
+        if ($incPosts) {
+            $lastModRes = $conn->query("SELECT updated_at FROM posts WHERE status='published' AND $condPostCount ORDER BY updated_at DESC LIMIT 1");
+            $lastMod = ($lastModRes && $row = $lastModRes->fetch(PDO::FETCH_ASSOC)) ? $row['updated_at'] : null;
+            $postCount = getPaginationCount($conn, 'posts', "status='published' AND $condPostCount");
+            for ($i = 1; $i <= $postCount; $i++) {
+                $suffix = ($i > 1) ? "?page=$i" : "";
+                addSitemap("post-sitemap.xml$suffix", $lastMod);
+            }
+        }
+
+        // --- Calculators ---
+        if ($incCalcs) {
+            $lastModRes = $conn->query("SELECT updated_at FROM calculators WHERE status='published' AND $condCalc ORDER BY updated_at DESC LIMIT 1");
+            $lastMod = ($lastModRes && $row = $lastModRes->fetch(PDO::FETCH_ASSOC)) ? $row['updated_at'] : null;
+            $calcCount = getPaginationCount($conn, 'calculators', "status='published' AND $condCalc");
+            for ($i = 1; $i <= $calcCount; $i++) {
+                $suffix = ($i > 1) ? "?page=$i" : "";
+                addSitemap("calculator-sitemap.xml$suffix", $lastMod);
+            }
+        }
+        
+        // --- Taxonomies ---
+        if ($incBlogCats) {
+            $catCount = getPaginationCount($conn, 'categories');
+            for ($i = 1; $i <= $catCount; $i++) {
+                $suffix = ($i > 1) ? "?page=$i" : "";
+                addSitemap("blog-category-sitemap.xml$suffix", null);
+            }
+        }
+        
+        if ($incCalcCats) {
+            $catCount = getPaginationCount($conn, 'calculator_categories');
+            for ($i = 1; $i <= $catCount; $i++) {
+                $suffix = ($i > 1) ? "?page=$i" : "";
+                addSitemap("calculator-category-sitemap.xml$suffix", null);
+            }
+        }
+
+        echo '</sitemapindex>';
+    } 
+    else {
+        // 2. URL SETS (Paginated)
+        echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">' . "\n";
+
+        // --- Pages ---
+        if ($type === 'page' && $incPages) {
+            $stmt = $conn->prepare("SELECT slug, updated_at, og_image, content_json FROM pages WHERE status='published' AND $condPage LIMIT :limit OFFSET :offset");
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+            $stmt->execute();
+            
+            while($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $images = extractImagesFromContent($row['content_json'], $row['og_image']);
+                $path = ($row['slug'] === 'home') ? '' : $row['slug'];
+                addUrl($path, $row['updated_at'], $images);
+            }
+            $stmt = null;
+        }
+
+        // --- Posts ---
+        elseif ($type === 'post' && $incPosts) {
+            $stmt = $conn->prepare("SELECT p.slug, p.content, p.created_at, p.updated_at, m.upload_path FROM posts p LEFT JOIN media m ON p.featured_image_id = m.id WHERE p.status='published' AND $condPost LIMIT :limit OFFSET :offset");
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+            $stmt->execute();
+            
+            while($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $path = "blog/" . $row['slug'];
+                $featImg = !empty($row['upload_path']) ? rtrim($apiBaseUrl, '/') . '/' . $row['upload_path'] : null;
+                $images = extractImagesFromContent($row['content'], $featImg);
+                addUrl($path, $row['updated_at'], $images);
+            }
+            $stmt = null;
+        }
+
+        // --- Calculators ---
+        elseif ($type === 'calculator' && $incCalcs) {
+            $stmt = $conn->prepare("SELECT slug, content, updated_at, og_image FROM calculators WHERE status='published' AND $condCalc LIMIT :limit OFFSET :offset");
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+            $stmt->execute();
+            
+            while($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $images = extractImagesFromContent($row['content'], $row['og_image']);
+                addUrl("$calcBase/" . $row['slug'], $row['updated_at'], $images);
+            }
+            $stmt = null;
+        }
+
+        // --- Blog Categories ---
+        elseif ($type === 'blog-category' && $incBlogCats) {
+            $stmt = $conn->prepare("SELECT slug FROM categories LIMIT :limit OFFSET :offset");
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+            $stmt->execute();
+            
+            while($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                addUrl("blog/category/" . $row['slug']);
+            }
+            $stmt = null;
+        }
+
+        // --- Calculator Categories ---
+        elseif ($type === 'calculator-category' && $incCalcCats) {
+            $stmt = $conn->prepare("SELECT slug FROM calculator_categories LIMIT :limit OFFSET :offset");
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+            $stmt->execute();
+            
+            while($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                addUrl("$calcBase/category/" . $row['slug']);
+            }
+            $stmt = null;
+        }
+
+        echo '</urlset>';
+    }
+
+} catch (Exception $e) {
+    if ($debugMode) echo "Error: " . $e->getMessage();
+    error_log("Sitemap Error: " . $e->getMessage());
+}
+
+$conn = null;
+?>

@@ -1,0 +1,15 @@
+# calcpro-api/phpstan.neon
+parameters:
+    level: 2
+    paths:
+        - api
+        - core
+        - scripts
+    excludePaths:
+        - vendor
+        - uploads
+    ignoreErrors:
+        - '#Variable \$conn might not be defined\.#'
+        - '#Constant PROJECT_ROOT not found\.#'
+        - '#Variable \$whereClauses in empty\(\) always exists#'
+        - '#Variable \$apiPath in empty\(\) always exists#'

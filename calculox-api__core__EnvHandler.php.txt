@@ -1,0 +1,185 @@
+<?php
+/**
+ * EnvHandler Class
+ * Handles safe reading and writing of .env files with security masking and automated backups.
+ * Upgraded for Docker/Coolify containerized environment support.
+ */
+class EnvHandler {
+    private $envPath;
+    private $projectRoot;
+    private $backupDir;
+    private $backupLimit = 10;
+
+    public function __construct($path) {
+        $this->envPath = $path;
+        $this->projectRoot = dirname($path);
+        $this->backupDir = $this->projectRoot . '/backups';
+    }
+
+    public function getStatus() {
+        return [
+            'exists' => file_exists($this->envPath),
+            'writable' => is_writable($this->envPath)
+        ];
+    }
+
+    /**
+     * Reads the configuration from physical file OR System Environment (Docker/Coolify).
+     */
+    public function read($sensitiveKeys = []) {
+        $data = [];
+
+        // 1. Try to read from the physical .env file first
+        if (file_exists($this->envPath)) {
+            $lines = @file($this->envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            
+            // If readable, parse the file
+            if ($lines !== false) {
+                foreach ($lines as $line) {
+                    if (strpos(trim($line), '#') === 0) continue;
+                    if (strpos($line, '=') !== false) {
+                        list($key, $value) = explode('=', $line, 2);
+                        $key = trim($key);
+                        $value = trim($value, '"\'');
+                        
+                        if (in_array($key, $sensitiveKeys) && !empty($value)) {
+                            $value = '********';
+                        }
+                        $data[$key] = $value;
+                    }
+                }
+            }
+        }
+
+        // 2. Cloud-Native Fallback: Pull from Coolify/Docker System Memory
+        // This ensures we always get the DB credentials even if the physical file is locked by root.
+        $expectedKeys = [
+            'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASS',
+            'APP_ENV', 'JWT_SECRET', 'ADMIN_JWT_SECRET', 'ENCRYPTION_KEY', 
+            'FRONTEND_URL', 'CORS_ALLOWED_ORIGINS'
+        ];
+
+        foreach ($expectedKeys as $key) {
+            // Check getenv, $_ENV, and $_SERVER for container-injected variables
+            $sysVal = getenv($key);
+            if ($sysVal === false) $sysVal = $_ENV[$key] ?? $_SERVER[$key] ?? false;
+
+            if ($sysVal !== false && $sysVal !== '') {
+                if (in_array($key, $sensitiveKeys)) {
+                    $data[$key] = '********';
+                } else {
+                    $data[$key] = $sysVal;
+                }
+            }
+        }
+
+        // 3. SECURE FAIL-STOP: Only halt if NO database configuration was found anywhere
+        if (empty($data['DB_HOST'])) {
+            if (ob_get_length()) ob_clean();
+            http_response_code(503);
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['success' => false, 'error_code' => 'CRITICAL_ENV_FAILURE', 'message' => 'Service Unavailable. System offline for maintenance.']);
+            exit();
+        }
+
+        return $data;
+    }
+
+    public function update($newValues) {
+        if (!file_exists($this->envPath)) {
+            throw new Exception(".env file not found.");
+        }
+        if (!is_writable($this->envPath)) {
+            throw new Exception("Permission Denied: .env file is not writable.");
+        }
+
+        $this->handleBackup();
+
+        $lines = file($this->envPath);
+        $result = [];
+
+        foreach ($lines as $line) {
+            $trimmedLine = trim($line);
+            
+            if (empty($trimmedLine) || strpos($trimmedLine, '#') === 0) {
+                $result[] = $line;
+                continue;
+            }
+
+            $matched = false;
+            foreach ($newValues as $key => $val) {
+                if (strpos($trimmedLine, $key . '=') === 0) {
+                    $matched = true;
+                    if ($val === '********') {
+                        $result[] = $line;
+                    } else {
+                        $finalVal = (strpos($val, ' ') !== false) ? '"' . $val . '"' : $val;
+                        $result[] = "{$key}={$finalVal}\n";
+                    }
+                    break;
+                }
+            }
+
+            if (!$matched) {
+                $result[] = $line;
+            }
+        }
+
+        if (file_put_contents($this->envPath, implode('', $result)) === false) {
+            throw new Exception("Failed to write to .env file.");
+        }
+
+        return true;
+    }
+
+    private function handleBackup() {
+        if (!is_dir($this->backupDir)) {
+            if (!mkdir($this->backupDir, 0755, true)) {
+                throw new Exception("Failed to create backup directory.");
+            }
+        }
+
+        $htaccessProtect = $this->backupDir . '/.htaccess';
+        if (!file_exists($htaccessProtect)) {
+            file_put_contents($htaccessProtect, "Order Deny,Allow\nDeny from all");
+        }
+
+        $timestamp = date('Y-m-d_H-i-s');
+        $snapshotDir = $this->backupDir . '/' . $timestamp;
+
+        if (!mkdir($snapshotDir, 0755)) {
+            throw new Exception("Failed to create snapshot directory.");
+        }
+
+        if (!copy($this->envPath, $snapshotDir . '/.env')) {
+            throw new Exception("Failed to backup .env file.");
+        }
+
+        $rootHtaccess = $this->projectRoot . '/.htaccess';
+        if (file_exists($rootHtaccess)) {
+            copy($rootHtaccess, $snapshotDir . '/.htaccess');
+        }
+
+        $dirs = glob($this->backupDir . '/*', GLOB_ONLYDIR);
+        usort($dirs, function($a, $b) {
+            return filemtime($a) - filemtime($b);
+        });
+        
+        if (count($dirs) > $this->backupLimit) {
+            $toDelete = count($dirs) - $this->backupLimit;
+            for ($i = 0; $i < $toDelete; $i++) {
+                $this->deleteDirectory($dirs[$i]);
+            }
+        }
+    }
+
+    private function deleteDirectory($dir) {
+        if (!is_dir($dir)) return;
+        $files = array_diff(scandir($dir), array('.', '..'));
+        foreach ($files as $file) {
+            (is_dir("$dir/$file")) ? $this->deleteDirectory("$dir/$file") : unlink("$dir/$file");
+        }
+        return rmdir($dir);
+    }
+}
+?>

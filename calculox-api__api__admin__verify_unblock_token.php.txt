@@ -1,0 +1,101 @@
+<?php
+// File: calcpro-api/api/admin/verify_unblock_token.php
+
+// Core utilities
+require_once dirname(__DIR__, 2) . '/core/config.php';
+require_once dirname(__DIR__, 2) . '/core/response.php';
+require_once dirname(__DIR__, 2) . '/core/SecurityGuard.php';
+
+// This is a public-facing recovery utility; no JWT check is required.
+
+// ========================================================================
+// --- SECURITY & UX ENHANCEMENT: ARTIFICIAL PROCESSING DELAY ---
+// Mitigates Timing Analysis Attacks and allows the UI to display 
+// a smooth "Processing..." animation to the user.
+// ========================================================================
+sleep(2); // 2-second strict delay
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // OWASP FIX: Prevent unhandled exceptions from malformed payloads
+    if (json_last_error() !== JSON_ERROR_NONE || !is_object($data)) {
+        sendResponse(false, null, 'Invalid request payload format.', 400, 'INVALID_PAYLOAD');
+    }
+
+    // OWASP FIX: Cast to string safely using null coalescing to prevent PHP warnings and type juggling
+    $token = (string)($data->token ?? '');
+
+    if ($token === '') {
+        sendResponse(false, null, 'A valid recovery token is required.', 400, 'INVALID_INPUT');
+    }
+
+    $token_hash = hash('sha256', $token);
+
+    // --- 2. Find the Token Record (Fetching 'block_level' for dynamic messaging) ---
+    $sql_find = "SELECT id, admin_id, ip_blind_index, block_level, expires_at FROM admin_unblock_tokens WHERE token_hash = :token_hash";
+    $stmt_find = $conn->prepare($sql_find);
+    $stmt_find->execute([':token_hash' => $token_hash]);
+    $token_record = $stmt_find->fetch(PDO::FETCH_ASSOC);
+
+    if (!$token_record) {
+        sendResponse(false, null, 'This recovery link is invalid. Please try logging in again.', 400, 'INVALID_TOKEN');
+    }
+
+    // --- 3. Check Expiry (Strict UTC) ---
+    if (strtotime($token_record['expires_at'] . ' UTC') < time()) {
+        // Cleanup expired token
+        $conn->prepare("DELETE FROM admin_unblock_tokens WHERE id = :id")->execute([':id' => $token_record['id']]);
+        sendResponse(false, null, 'This recovery link has expired. If your IP is still blocked, attempt to log in again to receive a new link.', 400, 'EXPIRED_TOKEN');
+    }
+
+    // --- 4. Execute the Unblock Process ---
+    $conn->beginTransaction();
+    
+    try {
+        $blind_index = $token_record['ip_blind_index'];
+        // Default to 'temporary' for backward compatibility with older tokens
+        $block_level = $token_record['block_level'] ?? 'temporary'; 
+
+        // A. Remove Temporary and Permanent Blocks
+        if ($blind_index) {
+             // Remove from temporary blocks
+             $del_temp = $conn->prepare("DELETE FROM temporary_blocks WHERE ip_blind_index = :b_index");
+             $del_temp->execute([':b_index' => $blind_index]);
+             
+             // Remove from permanent blacklist (Ensures escalated IPs are also freed)
+             $del_perm = $conn->prepare("DELETE FROM ip_blacklist WHERE ip_blind_index = :b_index");
+             $del_perm->execute([':b_index' => $blind_index]);
+             
+             // Clear the failure counters to prevent immediate re-blocking on the next typo
+             $conn->prepare("DELETE FROM login_attempts WHERE ip_blind_index = :b_index")->execute([':b_index' => $blind_index]);
+             $conn->prepare("DELETE FROM admin_login_failures WHERE ip_blind_index = :b_index")->execute([':b_index' => $blind_index]);
+        }
+
+        // B. Invalidate the Token
+        $del_token = $conn->prepare("DELETE FROM admin_unblock_tokens WHERE id = :id");
+        $del_token->execute([':id' => $token_record['id']]);
+
+        $conn->commit();
+        
+        // --- 5. Dynamic UX Messaging ---
+        if ($block_level === 'permanent') {
+            sendResponse(true, null, 'Your permanent IP ban has been successfully revoked. You may now log in securely.', 200);
+        } else {
+            sendResponse(true, null, 'Your temporary IP block has been successfully lifted. You may now log in.', 200);
+        }
+
+    } catch (Exception $innerE) {
+        $conn->rollBack();
+        throw $innerE;
+    }
+
+} catch (Exception $e) {
+    error_log("Error in verify_unblock_token.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred while processing your request.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

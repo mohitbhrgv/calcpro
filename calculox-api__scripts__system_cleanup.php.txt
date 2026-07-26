@@ -1,0 +1,130 @@
+<?php
+// File: calcpro-api/scripts/system_cleanup.php
+
+// Core configuration
+require_once dirname(__DIR__) . '/core/config.php';
+
+// Ensure this script can only be run via CLI or with a specific secure cron token
+if (php_sapi_name() !== 'cli' && (!isset($_GET['token']) || $_GET['token'] !== $_ENV['CRON_SECRET'])) {
+    http_response_code(403);
+    die("Forbidden: Scheduled tasks must be executed via CLI or valid token.\n");
+}
+
+function getSetting($conn, $key, $default) {
+    $stmt = $conn->prepare("SELECT setting_value FROM settings WHERE setting_key = :key");
+    $stmt->execute([':key' => $key]);
+    if ($row = $stmt->fetch()) {
+        return (int)$row['setting_value'];
+    }
+    return $default;
+}
+
+try {
+    echo "--- Starting Calculox Primary Maintenance ---\n";
+    $conn->beginTransaction();
+
+    // ========================================================================
+    // TIER 1A: GENERAL LOGIN ATTEMPTS (Table: login_attempts)
+    // ========================================================================
+    $login_retention = getSetting($conn, 'login_attempt_retention_days', 30);
+    $stmt_logins = $conn->prepare("DELETE FROM login_attempts WHERE attempted_at < NOW() - INTERVAL :days DAY");
+    $stmt_logins->bindValue(':days', $login_retention, PDO::PARAM_INT);
+    $stmt_logins->execute();
+    $affected_logins = $stmt_logins->rowCount();
+
+    // ========================================================================
+    // TIER 1B: ADMIN FAILURES (Table: admin_login_failures)
+    // ========================================================================
+    $admin_fail_retention = getSetting($conn, 'admin_login_failures_retention_days', 30);
+    $stmt_admin_fails = $conn->prepare("DELETE FROM admin_login_failures WHERE attempted_at < NOW() - INTERVAL :days DAY");
+    $stmt_admin_fails->bindValue(':days', $admin_fail_retention, PDO::PARAM_INT);
+    $stmt_admin_fails->execute();
+    $affected_admin_fails = $stmt_admin_fails->rowCount();
+
+    echo "[TIER 1] Threat Audits: Deleted $affected_logins General Fails (>$login_retention days) & $affected_admin_fails Admin Fails (>$admin_fail_retention days).\n";
+
+    // ========================================================================
+    // TIER 2: 404 MONITOR LOGS (Table: monitor_404_logs)
+    // ========================================================================
+    $seo_retention = getSetting($conn, 'seo_404_log_retention_days', 30);
+    $stmt_404 = $conn->prepare("DELETE FROM monitor_404_logs WHERE updated_at < NOW() - INTERVAL :days DAY");
+    $stmt_404->bindValue(':days', $seo_retention, PDO::PARAM_INT);
+    $stmt_404->execute();
+    $affected_404 = $stmt_404->rowCount();
+
+    echo "[TIER 2] 404 Monitor: Deleted $affected_404 missing page records older than $seo_retention days.\n";
+
+    // ========================================================================
+    // TIER 3: SYSTEM NOTIFICATIONS (Table: admin_notifications)
+    // ========================================================================
+    $sys_retention = getSetting($conn, 'system_log_retention_days', 90);
+    $stmt_sys = $conn->prepare("DELETE FROM admin_notifications WHERE created_at < NOW() - INTERVAL :days DAY");
+    $stmt_sys->bindValue(':days', $sys_retention, PDO::PARAM_INT);
+    $stmt_sys->execute();
+    $affected_sys = $stmt_sys->rowCount();
+
+    echo "[TIER 3] System Logs: Deleted $affected_sys general audit/notification logs older than $sys_retention days.\n";
+
+    // ========================================================================
+    // TIER 4: TELEMETRY VAULT (Table: system_error_logs)
+    // ========================================================================
+    $info_retention = getSetting($conn, 'log_retention_info', 30);
+    $resolved_retention = getSetting($conn, 'log_retention_resolved', 90);
+
+    $stmt_info = $conn->prepare("DELETE FROM system_error_logs WHERE severity = 'info' AND status NOT IN ('new', 'investigating') AND created_at < NOW() - INTERVAL :days DAY");
+    $stmt_info->bindValue(':days', $info_retention, PDO::PARAM_INT);
+    $stmt_info->execute();
+    $affected_info = $stmt_info->rowCount();
+
+    $stmt_resolved = $conn->prepare("DELETE FROM system_error_logs WHERE status IN ('resolved', 'ignored') AND created_at < NOW() - INTERVAL :days DAY");
+    $stmt_resolved->bindValue(':days', $resolved_retention, PDO::PARAM_INT);
+    $stmt_resolved->execute();
+    $affected_resolved = $stmt_resolved->rowCount();
+
+    echo "[TIER 4] Telemetry Vault: Deleted $affected_info routine info logs (>$info_retention days) & $affected_resolved resolved/ignored logs (>$resolved_retention days).\n";
+
+    // ========================================================================
+    // TIER 5: TRUSTED DEVICES (Table: admin_trusted_devices)
+    // ========================================================================
+    $trusted_retention = getSetting($conn, 'trusted_device_retention_days', 30);
+    $stmt_trusted = $conn->prepare("DELETE FROM admin_trusted_devices WHERE last_verified_at < NOW() - INTERVAL :days DAY");
+    $stmt_trusted->bindValue(':days', $trusted_retention, PDO::PARAM_INT);
+    $stmt_trusted->execute();
+    $affected_trusted = $stmt_trusted->rowCount();
+
+    echo "[TIER 5] Trusted Devices: Cleaned up $affected_trusted inactive devices older than $trusted_retention days.\n";
+
+    // ========================================================================
+    // TIER 6: TEMPORARY BLOCKS (Table: temporary_blocks)
+    // ========================================================================
+    $timeframe_hours = getSetting($conn, 'security_escalation_timeframe_hours', 168);
+    $stmt_blocks = $conn->prepare("DELETE FROM temporary_blocks WHERE blocked_at < NOW() - INTERVAL :hours HOUR");
+    $stmt_blocks->bindValue(':hours', $timeframe_hours, PDO::PARAM_INT);
+    $stmt_blocks->execute();
+    $affected_blocks = $stmt_blocks->rowCount();
+
+    echo "[TIER 6] Temp Blocks: Cleaned up $affected_blocks Temporary Blocks older than $timeframe_hours hours.\n";
+
+    // ========================================================================
+    // TIER 7: CONSUMED CAPTCHAS (Table: consumed_captchas)
+    // ========================================================================
+    $captcha_retention = getSetting($conn, 'captcha_retention_hours', 24);
+    $stmt_captchas = $conn->prepare("DELETE FROM consumed_captchas WHERE consumed_at < NOW() - INTERVAL :hours HOUR");
+    $stmt_captchas->bindValue(':hours', $captcha_retention, PDO::PARAM_INT);
+    $stmt_captchas->execute();
+    $affected_captchas = $stmt_captchas->rowCount();
+
+    echo "[TIER 7] Consumed Captchas: Emptied $affected_captchas used tickets older than $captcha_retention hours.\n";
+
+    $conn->commit();
+    echo "--- Maintenance Complete ---\n";
+
+} catch (Exception $e) {
+    if ($conn && $conn->inTransaction()) {
+        $conn->rollBack();
+    }
+    error_log("CRON Error (system_cleanup): " . $e->getMessage());
+    echo "Error: " . $e->getMessage() . "\n";
+}
+$conn = null;
+?>

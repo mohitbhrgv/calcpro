@@ -1,0 +1,249 @@
+<?php
+// File: calcpro-api/api/admin/update_settings.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+// --- 1. RBAC ENFORCEMENT ---
+if (!isset($admin_data->adminRole) || $admin_data->adminRole !== 'super_admin') {
+    sendResponse(false, null, 'Unauthorized: Only Super Admins can modify global settings.', 403, 'FORBIDDEN');
+    exit; // CRITICAL ENTERPRISE FIX: Halt execution immediately
+}
+
+try {
+    $json = file_get_contents('php://input');
+    $data = json_decode($json, true);
+
+    if (json_last_error() !== JSON_ERROR_NONE || !is_array($data)) {
+        throw new Exception('Invalid JSON data provided.', 400);
+    }
+
+    // --- SECURITY WHITELIST ---
+    $allowed_system_settings = [
+        'siteName', 'siteDescription', 'site_logo', 'site_icon', 'site_footer_text',
+        'site_logo_height_header_desktop', 'site_logo_height_header_tablet', 'site_logo_height_header_mobile',
+        'site_logo_height_footer_desktop', 'site_logo_height_footer_tablet', 'site_logo_height_footer_mobile',
+        'site_logo_brightness', 'site_logo_opacity', 'site_logo_grayscale',
+        'saveLimit', 'maintenanceMode', 'cdnApiKey', 'calculatorCategories', 'defaultPrecision', 'defaultUnits',
+        'inactivity_logout_enabled', 'inactivity_timeout_minutes', 'security_2fa_enabled', 'security_2fa_frequency',
+        'site_timezone', 'date_format', 'time_format',
+        
+        // Security Settings (ENTERPRISE FIX: Added password_expiry_days to whitelist)
+        'login_attempt_retention_days', 'admin_login_failures_retention_days', 'system_log_retention_days', 'security_log_pagination_limit',
+        'security_temp_block_duration_minutes', 'security_escalation_timeframe_hours', 'security_escalation_threshold', 'password_expiry_days',
+        
+        // Telemetry Vault Keys
+        'log_retention_info', 'log_retention_resolved', 
+        
+        // Data Retention Settings
+        'jwt_blacklist_retention_days', 'otp_retention_hours', 'trusted_device_retention_days',
+        'unblock_token_retention_hours', 'password_reset_retention_hours',
+        
+        // Backup Vault Retentions 
+        'cloud_backup_limit', 'local_backup_limit',
+        
+        // 404 Monitor Settings
+        'seo_404_monitor_mode', 'seo_404_monitor_limit', 'seo_404_monitor_exclude', 'seo_404_monitor_ignore_query',
+        'seo_404_log_retention_days', 
+        
+        // Sitemap & Robots Settings
+        'seo_sitemap_inc_posts', 
+        'seo_sitemap_inc_pages', 'seo_sitemap_inc_calcs',
+        'seo_sitemap_inc_blog_cats', 'seo_sitemap_inc_calc_cats', 'seo_sitemap_pagination_limit',
+        'seo_robots_custom_enable', 'seo_robots_custom_content',
+
+        // Integrations & Scripts
+        'integration_ga4_id', 'integration_gsc_code', 'integration_header_scripts', 'integration_footer_scripts',
+
+        // Structure & Special Pages
+        'seo_page_for_about', 'seo_page_for_contact', 'seo_enable_sitelinks_search',
+        
+        // Local SEO
+        'seo_local_json_ld'
+    ];
+
+    $conn->beginTransaction();
+
+    // --- LOGIC TO DETECT DURATION CHANGE ---
+    $old_duration = null;
+    if (isset($data['security_temp_block_duration_minutes'])) {
+        $stmt_old_dur = $conn->prepare("SELECT setting_value FROM settings WHERE setting_key = 'security_temp_block_duration_minutes'");
+        $stmt_old_dur->execute();
+        
+        if ($row = $stmt_old_dur->fetch(PDO::FETCH_ASSOC)) {
+            $old_duration = (int)$row['setting_value'];
+        } else {
+            $old_duration = 1440; // Fallback to default
+        }
+    }
+
+    $sql = "INSERT INTO settings (setting_key, setting_value) VALUES (:key, :value) ON DUPLICATE KEY UPDATE setting_value = :update_value";
+    $stmt = $conn->prepare($sql);
+
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        error_log("Database prepare statement failed in update_settings.php: " . $errorInfo[2]);
+        throw new Exception('A secure database error occurred while preparing the configuration update.', 500);
+    }
+
+    foreach ($data as $key => $value) {
+        
+        if ($key === 'seo_social_default_og_image_id' || $key === 'seo_default_og_image_id') {
+            continue;
+        }
+
+        $is_allowed = in_array($key, $allowed_system_settings) || (strpos($key, 'seo_') === 0);
+        if ($is_allowed) {
+            $value_to_save = "";
+            if (is_array($value) || is_object($value)) { 
+                $value_to_save = json_encode($value);
+            } 
+            elseif (is_bool($value)) { 
+                $value_to_save = $value ? 'true' : 'false'; 
+            } 
+            else {
+                $value_to_save = (string)$value;
+            }
+
+            // --- STRICT DATA SANITIZATION & BOUNDARIES ---
+            if ($key === 'inactivity_timeout_minutes') { 
+                $valInt = (int)$value;
+                // ENTERPRISE FIX: Strictly enforce 5, 10, or 15 minutes to sync with Auth/UI
+                if (!in_array($valInt, [5, 10, 15])) {
+                    $valInt = 15; // Fallback to safe strict default
+                }
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'seo_sitemap_pagination_limit') {
+                $valInt = max(50, min(50000, (int)$value));
+                $value_to_save = (string)$valInt;
+            }
+            elseif ($key === 'site_timezone') { 
+                try { 
+                    new DateTimeZone($value);
+                } catch (Exception $e) { 
+                    throw new Exception("Invalid timezone: ".htmlspecialchars((string)$value), 400);
+                } 
+            }
+            elseif ($key === 'login_attempt_retention_days' || $key === 'admin_login_failures_retention_days' || $key === 'seo_404_log_retention_days') { 
+                $valInt = max(1, min(365, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'system_log_retention_days' || $key === 'log_retention_info' || $key === 'log_retention_resolved') { 
+                $valInt = max(1, min(730, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'cloud_backup_limit' || $key === 'local_backup_limit') { 
+                $valInt = max(1, min(90, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'security_log_pagination_limit') { 
+                $valInt = max(10, min(500, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'security_temp_block_duration_minutes') { 
+                $valInt = max(5, min(43200, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'security_escalation_timeframe_hours') { 
+                $valInt = max(1, min(720, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'security_escalation_threshold') { 
+                $valInt = max(2, min(20, (int)$value));
+                $value_to_save = (string)$valInt; 
+            }
+            elseif ($key === 'password_expiry_days') { 
+                $valInt = (int)$value;
+                if ($valInt !== 0) {
+                    $valInt = max(30, min(365, $valInt)); 
+                }
+                $value_to_save = (string)$valInt;
+            }
+            elseif ($key === 'jwt_blacklist_retention_days' || $key === 'trusted_device_retention_days') {
+                $valInt = max(1, min(365, (int)$value));
+                $value_to_save = (string)$valInt;
+            }
+            elseif ($key === 'otp_retention_hours' || $key === 'unblock_token_retention_hours' || $key === 'password_reset_retention_hours') {
+                $valInt = max(1, min(168, (int)$value));
+                $value_to_save = (string)$valInt;
+            }
+            
+            // Security: Prevent malicious keys via strict regex
+            if (!preg_match('/^[a-zA-Z0-9_]+$/', $key)) continue;
+            
+            if (!$stmt->execute([
+                ':key' => $key,
+                ':value' => $value_to_save,
+                ':update_value' => $value_to_save
+            ])) {
+                throw new Exception("Failed to update setting key: " . htmlspecialchars($key));
+            }
+
+            if ($key === 'seo_social_default_og_image' || $key === 'seo_default_og_image') {
+                if (empty($value_to_save)) {
+                    $conn->exec("DELETE FROM settings WHERE setting_key = 'seo_social_default_og_image_id'");
+                } else {
+                    $filename = basename($value_to_save);
+                    $stmt_find = $conn->prepare("SELECT id FROM media WHERE file_name = :filename LIMIT 1");
+                    
+                    if ($stmt_find) {
+                        $stmt_find->execute([':filename' => $filename]);
+                        if ($row_find = $stmt_find->fetch(PDO::FETCH_ASSOC)) {
+                            $new_id = (string)$row_find['id'];
+                            $id_key = 'seo_social_default_og_image_id';
+                            
+                            $stmt->execute([
+                                ':key' => $id_key,
+                                ':value' => $new_id,
+                                ':update_value' => $new_id
+                            ]);
+                        } else {
+                            $conn->exec("DELETE FROM settings WHERE setting_key = 'seo_social_default_og_image_id'");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    $new_duration = isset($data['security_temp_block_duration_minutes']) ? (int)$data['security_temp_block_duration_minutes'] : null;
+
+    if ($new_duration !== null && $old_duration !== null && $new_duration !== $old_duration) {
+        $sql_reset = "UPDATE temporary_blocks SET blocked_at = NOW() WHERE blocked_at > NOW() - INTERVAL :old_duration MINUTE";
+        $stmt_reset = $conn->prepare($sql_reset);
+        $stmt_reset->execute([':old_duration' => $old_duration]);
+    }
+    
+    $is_disabling_2fa = isset($data['security_2fa_enabled']) && ($data['security_2fa_enabled'] === false || $data['security_2fa_enabled'] === 'false');
+    $is_switching_strict = isset($data['security_2fa_frequency']) && $data['security_2fa_frequency'] === 'always';
+
+    if ($is_disabling_2fa || $is_switching_strict) {
+        $conn->exec("DELETE FROM admin_trusted_devices");
+    }
+
+    $conn->commit();
+    sendResponse(true, null, 'Settings updated successfully!');
+
+} catch (Throwable $e) {
+    if (isset($conn) && $conn->inTransaction()) {
+        $conn->rollBack();
+    }
+    $code = is_numeric($e->getCode()) && $e->getCode() > 0 ? $e->getCode() : 500;
+    $clientMessage = $e->getMessage();
+    
+    if ($code === 500 || $e instanceof Error) {
+        $clientMessage = "An internal server error occurred while updating settings.";
+    }
+    
+    error_log("Fatal Error in update_settings.php: " . $e->getMessage() . " in " . $e->getFile() . " on line " . $e->getLine());
+    sendResponse(false, null, $clientMessage, $code);
+}
+
+$conn = null;
+?>

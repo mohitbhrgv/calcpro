@@ -1,0 +1,76 @@
+<?php
+// File: calcpro-api/api/public/get_public_calculators.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+try {
+    // --- 1. Parameters ---
+    $tagSlug = isset($_GET['tag']) ? trim($_GET['tag']) : null;
+    $tagDetails = null;
+
+    // --- 2. VALIDATION: Check if Tag Exists ---
+    if ($tagSlug) {
+        $tagCheckSql = "SELECT id, name, slug FROM tags WHERE slug = :slug";
+        $stmtCheck = $conn->prepare($tagCheckSql);
+        $stmtCheck->execute([':slug' => $tagSlug]);
+        $tagDetails = $stmtCheck->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$tagDetails) {
+            sendResponse(false, null, 'Tag not found.', 404, 'NOT_FOUND');
+        }
+    }
+
+    // --- 3. Build Main Query ---
+    $whereConditions = ["c.status = 'published'"];
+    $executeParams = [];
+
+    if ($tagSlug) {
+        // Subquery Strategy dynamically parameterized
+        $whereConditions[] = "c.id IN (SELECT ct.calculator_id FROM calculator_tags ct JOIN tags t ON ct.tag_id = t.id WHERE t.slug = :tagSlug)";
+        $executeParams[':tagSlug'] = $tagSlug;
+    }
+
+    $whereSql = implode(" AND ", $whereConditions);
+    
+    $sql = "
+        SELECT c.*, 
+        GROUP_CONCAT(DISTINCT cc.name SEPARATOR ', ') as category_names,
+        GROUP_CONCAT(DISTINCT cc.slug SEPARATOR ',') as category_slugs
+        FROM calculators c
+        LEFT JOIN calculator_category_assignments cca ON c.id = cca.calculator_id
+        LEFT JOIN calculator_categories cc ON cca.category_id = cc.id
+        WHERE {$whereSql}
+        GROUP BY c.id
+        ORDER BY c.name ASC
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception("Database prepare failed: " . $errorInfo[2]);
+    }
+    
+    $stmt->execute($executeParams);
+    $calculators = [];
+    
+    while($calc = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $calc['is_featured'] = (bool)$calc['is_featured'];
+        $calculators[] = $calc;
+    }
+    
+    // --- 4. Response ---
+    sendResponse(true, [
+        'calculators' => $calculators,
+        'tag_details' => $tagDetails
+    ], 'Calculators fetched successfully.');
+    
+} catch (Exception $e) {
+    error_log("Error in get_public_calculators.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching calculators.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

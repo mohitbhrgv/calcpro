@@ -1,0 +1,184 @@
+<?php
+// File: calcpro-api/core/auth.php
+
+use Firebase\JWT\JWT;
+use Firebase\JWT\Key;
+use Firebase\JWT\ExpiredException;
+use Firebase\JWT\SignatureInvalidException;
+
+/**
+ * --- Phase 2: ENTERPRISE SEC FIX - STRICT COOKIE ISSUER ---
+ * Centralized function to issue SOC 2 compliant session cookies.
+ */
+function issueSecureSessionCookie($name, $value, $expirySeconds) {
+    $cookieDomain = !empty($_ENV['COOKIE_DOMAIN']) ? trim($_ENV['COOKIE_DOMAIN']) : '';
+    
+    $options = [
+        'expires' => time() + $expirySeconds,
+        'path' => '/',
+        'domain' => $cookieDomain, 
+        'secure' => true, // MUST be true for SameSite=None
+        'httponly' => true, // Prevents XSS Javascript theft
+        'samesite' => 'None' // Unlocks cross-subdomain API Fetch
+    ];
+    
+    setcookie($name, $value, $options);
+}
+
+function revokeSecureSessionCookie($name) {
+    $cookieDomain = !empty($_ENV['COOKIE_DOMAIN']) ? trim($_ENV['COOKIE_DOMAIN']) : '';
+    
+    setcookie($name, '', [
+        'expires' => time() - 3600,
+        'path' => '/',
+        'domain' => $cookieDomain,
+        'secure' => true,
+        'httponly' => true,
+        'samesite' => 'None'
+    ]);
+}
+
+/**
+ * Verifies the short-lived JWT Access Token from the HTTP-Only Cookie.
+ * Enforces the Single Active Session (Concurrency) architecture and Strict RTR.
+ */
+function verifyAdminToken() {
+    global $conn;
+    $jwtSecretKey = $_ENV['JWT_SECRET'];
+    $headers = getallheaders();
+    $jwt = null;
+
+    if (isset($_COOKIE['calcpro_access_token'])) {
+        $jwt = $_COOKIE['calcpro_access_token'];
+    } elseif (isset($_COOKIE['calcpro_admin_token'])) {
+        sendResponse(false, null, 'Session architecture updated. Please log in again.', 401, 'AUTH_MIGRATION_REQUIRED');
+    }
+    
+    if (!$jwt) {
+        sendResponse(false, null, 'No valid session token provided.', 401, 'AUTH_TOKEN_MISSING');
+    }
+
+    try {
+        $decoded = JWT::decode($jwt, new Key($jwtSecretKey, 'HS256'));
+
+        // --- SECURE BLACKLIST CHECK ---
+        $jti = $decoded->jti ?? null;
+
+        if ($jti && isset($conn)) {
+            try {
+                $stmt = $conn->prepare("SELECT id FROM jwt_blacklist WHERE jti = :jti LIMIT 1");
+                $stmt->execute([':jti' => $jti]);
+                
+                if ($stmt->fetch()) {
+                    sendResponse(false, null, 'Session expired or logged out.', 401, 'AUTH_TOKEN_REVOKED');
+                }
+            } catch (PDOException $e) {
+                if (function_exists('logInternalSystemError')) {
+                    logInternalSystemError('error', 'Auth DB Blacklist Check Failed: ' . $e->getMessage(), __FILE__, __LINE__);
+                }
+                sendResponse(false, null, 'Authentication service temporarily unavailable.', 500, 'AUTH_SERVICE_UNAVAILABLE');
+            }
+        }
+
+        $adminId = $decoded->data->adminId ?? null;
+        $session_jti = $decoded->session_jti ?? null; 
+        $iat = $decoded->iat ?? 0;
+
+        if ($adminId && isset($conn)) {
+            try {
+                $stmtAdmin = $conn->prepare("SELECT password_last_updated, current_session_jti FROM admins WHERE id = :id LIMIT 1");
+                $stmtAdmin->execute([':id' => $adminId]);
+                $admin = $stmtAdmin->fetch(PDO::FETCH_ASSOC);
+
+                if (!$admin) {
+                    sendResponse(false, null, 'Admin account not found or deactivated.', 401, 'AUTH_ACCOUNT_MISSING');
+                }
+
+                if ($session_jti !== null && $admin['current_session_jti'] !== $session_jti) {
+                    sendResponse(false, null, 'Session terminated because your account was logged into from another device.', 401, 'AUTH_CONCURRENCY_VIOLATION');
+                }
+
+                $passwordLastUpdatedStr = $admin['password_last_updated'];
+                $passwordLastUpdatedTime = strtotime($passwordLastUpdatedStr . ' UTC');
+
+                if ($iat < $passwordLastUpdatedTime) {
+                     sendResponse(false, null, 'Session expired due to a recent password change. Please log in again.', 401, 'AUTH_TOKEN_OBSOLETE');
+                }
+
+                $stmtSetting = $conn->prepare("SELECT setting_value FROM settings WHERE setting_key = 'password_expiry_days' LIMIT 1");
+                $stmtSetting->execute();
+                $setting = $stmtSetting->fetch(PDO::FETCH_ASSOC);
+                
+                $expiryDays = isset($setting['setting_value']) ? (int)$setting['setting_value'] : 0;
+
+                if ($expiryDays > 0) {
+                    $utcZone = new DateTimeZone('UTC');
+                    $lastUpdatedDate = new DateTime($passwordLastUpdatedStr, $utcZone);
+                    $currentDate = new DateTime('now', $utcZone); 
+                    
+                    $interval = $currentDate->diff($lastUpdatedDate);
+                    $daysPassed = $interval->days;
+
+                    if ($daysPassed >= $expiryDays) {
+                        $currentUri = $_SERVER['REQUEST_URI'] ?? '';
+                        $cleanPath = parse_url((string)$currentUri, PHP_URL_PATH) ?: '';
+                        $endpointFile = basename($cleanPath);
+                        
+                        $allowedEndpoints = [
+                            'update_admin_password.php', 
+                            'logout.php', 
+                            'get_me.php'
+                        ];
+                        
+                        $isAllowedEndpoint = in_array($endpointFile, $allowedEndpoints, true);
+
+                        if (!$isAllowedEndpoint) {
+                             sendResponse(false, null, 'Your password has expired. You must update your password to continue.', 403, 'PASSWORD_EXPIRED_FORCED_UPDATE');
+                        }
+                    }
+                }
+
+            } catch (PDOException $e) {
+                 if (function_exists('logInternalSystemError')) {
+                    logInternalSystemError('error', 'Auth DB User/Expiry Check Failed: ' . $e->getMessage(), __FILE__, __LINE__);
+                }
+                sendResponse(false, null, 'Authentication service temporarily unavailable.', 500, 'AUTH_SERVICE_UNAVAILABLE');
+            }
+        }
+
+        // --- Phase 2: ENTERPRISE SEC FIX - CSRF PROTECTION (HMAC DOUBLE SUBMIT) ---
+        $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+        if (in_array(strtoupper($method), ['POST', 'PUT', 'DELETE', 'PATCH'])) {
+            $csrfCookie = $_COOKIE['calcpro_csrf_token'] ?? null;
+            $csrfHeader = $headers['X-CSRF-Token'] ?? $headers['x-csrf-token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+
+            if (empty($csrfCookie) || empty($csrfHeader)) {
+                if (function_exists('logInternalSystemError')) {
+                    logInternalSystemError('security', 'CSRF validation failed: Missing token for admin ID: ' . ($adminId ?? 'Unknown'), __FILE__, __LINE__);
+                }
+                sendResponse(false, null, 'Security verification failed. CSRF token missing.', 403, 'CSRF_VALIDATION_FAILED');
+            }
+
+            $hmacSecret = base64_decode($_ENV['APP_ENCRYPTION_KEY'] ?? '');
+            if (empty($hmacSecret)) {
+                $hmacSecret = $_ENV['JWT_SECRET'] ?? 'fallback_secret';
+            }
+            
+            // Reconstruct the expected HMAC using the raw string sent from the frontend JS
+            $expectedHmac = hash_hmac('sha256', $csrfHeader, $hmacSecret);
+
+            if (!hash_equals($csrfCookie, $expectedHmac)) {
+                if (function_exists('logInternalSystemError')) {
+                    logInternalSystemError('security', 'CSRF validation failed: Signature mismatch for admin ID: ' . ($adminId ?? 'Unknown'), __FILE__, __LINE__);
+                }
+                sendResponse(false, null, 'Security verification failed. CSRF signature mismatch.', 403, 'CSRF_VALIDATION_FAILED');
+            }
+        }
+
+        return $decoded->data;
+
+    } catch (Exception $e) {
+        sendResponse(false, null, 'Invalid or expired token.', 401, 'AUTH_TOKEN_INVALID');
+    }
+}
+?>

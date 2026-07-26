@@ -1,0 +1,57 @@
+<?php
+// File: calcpro-api/api/admin/mark_notification_read.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // Case 1: Mark ALL as read
+    if (isset($data->mark_all) && $data->mark_all === true) {
+        $sql = "UPDATE admin_notifications SET is_read = 1 WHERE is_read = 0";
+        if ($conn->exec($sql) !== false) {
+            sendResponse(true, null, 'All notifications marked as read.');
+        } else {
+            $errorInfo = $conn->errorInfo();
+            throw new Exception("Database update failed: " . $errorInfo[2]);
+        }
+    }
+    
+    // Case 2: Mark SINGLE as read
+    elseif (isset($data->id) && is_numeric($data->id)) {
+        $id = (int)$data->id;
+        $sql = "UPDATE admin_notifications SET is_read = 1 WHERE id = :id";
+        $stmt = $conn->prepare($sql);
+        
+        if (!$stmt) {
+            $errorInfo = $conn->errorInfo();
+            throw new Exception("Prepare failed: " . $errorInfo[2]);
+        }
+
+        if ($stmt->execute([':id' => $id])) {
+            sendResponse(true, null, 'Notification marked as read.');
+        } else {
+            $errorInfo = $stmt->errorInfo();
+            throw new Exception("Execute failed: " . $errorInfo[2]);
+        }
+    } 
+    
+    // Case 3: Invalid Input
+    else {
+        sendResponse(false, null, 'Invalid request parameters.', 400, 'INVALID_INPUT');
+    }
+
+} catch (Exception $e) {
+    error_log("Error in mark_notification_read.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

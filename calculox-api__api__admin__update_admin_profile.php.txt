@@ -1,0 +1,87 @@
+<?php
+// File: calcpro-api/api/admin/update_admin_profile.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+// This function identifies the logged-in admin via their JWT and returns their data.
+// The script will halt with a 401 error if the token is invalid.
+$admin_data = verifyAdminToken();
+$admin_id = $admin_data->adminId;
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // OWASP FIX: Prevent unhandled exceptions and crashes from malformed JSON payloads
+    if (json_last_error() !== JSON_ERROR_NONE || !is_object($data)) {
+        sendResponse(false, null, 'Invalid request payload format.', 400, 'INVALID_PAYLOAD');
+    }
+
+    // OWASP FIX: Cast to string safely using null coalescing to prevent object injection/TypeError
+    $name_input = (string)($data->name ?? '');
+    $email_input = (string)($data->email ?? '');
+
+    // --- 2. Validation ---
+    if ($name_input === '' || empty(trim($name_input))) {
+        sendResponse(false, null, 'Name cannot be empty.', 400, 'INVALID_INPUT');
+    }
+    
+    if ($email_input === '' || !filter_var(trim($email_input), FILTER_VALIDATE_EMAIL)) {
+        sendResponse(false, null, 'A valid email address is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Strict Data Sanitization ---
+    $name = strip_tags(trim($name_input));
+    $email = trim($email_input);
+
+    // --- 4. Check for Duplicate Email ---
+    // Make sure the email isn't being used by another admin.
+    $sql_check = "SELECT id FROM admins WHERE email = :email AND id != :id";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->execute([
+        ':email' => $email,
+        ':id' => $admin_id
+    ]);
+    
+    if ($stmt_check->fetch(PDO::FETCH_ASSOC)) {
+        sendResponse(false, null, 'This email address is already in use by another account.', 409, 'DUPLICATE_EMAIL');
+    }
+
+    // --- 5. Update the Admin Record ---
+    $sql_update = "UPDATE admins SET name = :name, email = :email WHERE id = :id";
+    $stmt_update = $conn->prepare($sql_update);
+
+    if ($stmt_update->execute([
+        ':name' => $name,
+        ':email' => $email,
+        ':id' => $admin_id
+    ])) {
+        
+        // NOTE: The strict sync to `author_profiles` has been removed to allow custom Public Display Names.
+
+        // --- 6. Send Back Updated User Data ---
+        // This is crucial for the AuthContext on the frontend to stay in sync.
+        $updated_user_data = [
+            'id' => $admin_id,
+            'name' => $name,
+            'email' => $email,
+            'role' => $admin_data->adminRole // Role doesn't change here
+        ];
+        sendResponse(true, $updated_user_data, 'Profile updated successfully!');
+    } else {
+        $errorInfo = $stmt_update->errorInfo();
+        throw new Exception("Database update failed: " . $errorInfo[2]);
+    }
+
+} catch (Exception $e) {
+    error_log("Error in update_admin_profile.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

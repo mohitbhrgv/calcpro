@@ -1,0 +1,522 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="x-apple-disable-message-reformatting" />
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="supported-color-schemes" content="light dark" />
+    <title>{{SITE_NAME}} &mdash; Internal Notification</title>
+    <style type="text/css" rel="stylesheet" media="all">
+
+      @import url("https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Mono:wght@400;500&display=swap");
+
+      * { box-sizing: border-box; }
+      body {
+        width: 100% !important;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        -webkit-text-size-adjust: none;
+        background-color: #f9fafb;
+        color: #4b5563;
+        font-family: "DM Sans", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      }
+      a { color: {{BRAND_COLOR}}; text-decoration: none; }
+      a img { border: none; }
+      td { word-break: break-word; }
+
+      .preheader {
+        display: none !important;
+        visibility: hidden;
+        mso-hide: all;
+        font-size: 1px;
+        line-height: 1px;
+        max-height: 0;
+        max-width: 0;
+        opacity: 0;
+        overflow: hidden;
+      }
+
+      .email-wrapper { width: 100%; margin: 0; padding: 0; background-color: #f9fafb; }
+      .top-spacer { height: 36px; background-color: #f9fafb; }
+
+      /* ── Header card ── */
+      .email-header {
+        width: 600px;
+        max-width: 100%;
+        margin: 0 auto;
+        background-color: {{BRAND_COLOR}};
+        border-radius: 12px 12px 0 0;
+        overflow: hidden;
+        position: relative;
+      }
+      .header-inner {
+        padding: 32px 44px 30px;
+        position: relative;
+      }
+      .header-grid {
+        position: absolute;
+        inset: 0;
+        background-image:
+          linear-gradient(rgba(255,255,255,0.08) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px);
+        background-size: 24px 24px;
+        pointer-events: none;
+      }
+      .header-top-row {
+        width: 100%;
+        overflow: hidden;
+      }
+      
+      .brand-icon-wrapper {
+        float: left;
+        margin-right: 12px;
+      }
+
+      .brand-text-wrapper {
+        display: inline-block;
+        float: left;
+        margin-top: 2px;
+      }
+      .brand-name {
+        display: block;
+        font-size: 22px;
+        font-weight: 700;
+        color: #ffffff;
+        letter-spacing: -0.5px;
+        line-height: 1.1;
+        font-family: "DM Sans", sans-serif;
+      }
+      .brand-sub {
+        display: block;
+        font-size: 12.5px;
+        color: rgba(255,255,255,0.8);
+        font-weight: 500;
+        letter-spacing: 0.3px;
+        margin-top: 3px;
+      }
+      .internal-badge {
+        display: inline-block;
+        float: right;
+        margin-top: 6px;
+        background: rgba(255,255,255,0.15);
+        border: 1px solid rgba(255,255,255,0.25);
+        border-radius: 100px;
+        padding: 3px 11px 3px 9px;
+        font-size: 11px;
+        font-weight: 500;
+        color: #ffffff;
+        letter-spacing: 0.5px;
+        font-family: "DM Mono", monospace;
+      }
+      .internal-dot {
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        background: #a5f3fc;
+        border-radius: 50%;
+        margin-right: 6px;
+        vertical-align: middle;
+        margin-bottom: 1px;
+        box-shadow: 0 0 5px rgba(165,243,252,0.8);
+      }
+      .header-rule {
+        margin: 22px 0 20px;
+        border: none;
+        border-top: 1px solid rgba(255,255,255,0.15);
+        clear: both;
+      }
+      .event-label {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.85);
+        font-family: "DM Mono", monospace;
+        margin-bottom: 8px;
+      }
+      .header-h1 {
+        margin: 0;
+        font-size: 26px;
+        font-weight: 700;
+        color: #ffffff;
+        letter-spacing: -0.5px;
+        line-height: 1.25;
+        font-family: "DM Sans", sans-serif;
+      }
+      .header-subtitle {
+        margin: 8px 0 0;
+        font-size: 14px;
+        color: rgba(255,255,255,0.85);
+        line-height: 1.5;
+        font-family: "DM Sans", sans-serif;
+      }
+
+      /* ── Body card ── */
+      .email-body-card {
+        width: 600px;
+        max-width: 100%;
+        margin: 0 auto;
+        background-color: #ffffff;
+        border-left: 1px solid #e5e7eb;
+        border-right: 1px solid #e5e7eb;
+      }
+      .content-cell { padding: 40px 44px 16px; }
+
+      /* ── Typography ── */
+      h2 {
+        margin: 0 0 6px 0;
+        font-size: 16px;
+        font-weight: 700;
+        color: #111827;
+        letter-spacing: -0.2px;
+        font-family: "DM Sans", sans-serif;
+      }
+      p {
+        margin: 0 0 18px 0;
+        font-size: 15px;
+        line-height: 1.65;
+        color: #4b5563;
+        font-family: "DM Sans", sans-serif;
+      }
+      p:last-child { margin-bottom: 0; }
+      strong { color: #111827; font-weight: 600; }
+
+      /* ── Alert banner ── */
+      .alert-banner {
+        border-radius: 8px;
+        padding: 14px 18px;
+        margin: 0 0 28px;
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 1.55;
+        font-family: "DM Sans", sans-serif;
+      }
+      .alert-info    { background:#eef2ff; border:1px solid #c7d2fe; color:#3730a3; }
+      .alert-warning { background:#fefce8; border:1px solid #fde68a; color:#92400e; }
+      .alert-danger  { background:#fef2f2; border:1px solid #fecaca; color:#991b1b; }
+      .alert-success { background:#f0fdf4; border:1px solid #bbf7d0; color:#14532d; }
+      .alert-icon { margin-right: 8px; }
+
+      /* ── OTP Display Block ── */
+      .otp-wrapper {
+        text-align: center;
+        padding: 26px;
+        background-color: #f3f4f6;
+        border-radius: 8px;
+        border: 1px solid #e5e7eb;
+        margin: 24px 0;
+      }
+      .otp-code {
+        display: inline-block;
+        font-family: "DM Mono", monospace;
+        font-size: 38px;
+        letter-spacing: 12px;
+        color: {{BRAND_COLOR}};
+        font-weight: 700;
+        user-select: all;
+        -webkit-user-select: all;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .otp-helper {
+        font-size: 13px;
+        color: #6b7280;
+        margin-top: 16px;
+        font-weight: 500;
+      }
+
+      /* ── Metadata block ── */
+      .meta-block {
+        width: 100%;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        overflow: hidden;
+        margin: 0 0 28px;
+        background: #f9fafb;
+      }
+      .meta-block-header {
+        padding: 10px 20px;
+        background: #f3f4f6;
+        border-bottom: 1px solid #e5e7eb;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.7px;
+        text-transform: uppercase;
+        color: #6b7280;
+        font-family: "DM Mono", monospace;
+      }
+      .meta-row {
+        display: block;
+        padding: 11px 20px;
+        border-bottom: 1px solid #f3f4f6;
+        font-size: 13.5px;
+        color: #374151;
+        font-family: "DM Sans", sans-serif;
+      }
+      .meta-row:last-child { border-bottom: none; }
+      .meta-label {
+        display: inline-block;
+        min-width: 130px;
+        font-size: 12px;
+        font-weight: 500;
+        color: #6b7280;
+        letter-spacing: 0.2px;
+        font-family: "DM Mono", monospace;
+      }
+      .meta-value {
+        color: #111827;
+        font-weight: 500;
+      }
+      .meta-value.mono {
+        font-family: "DM Mono", monospace;
+        font-size: 12.5px;
+        color: {{BRAND_COLOR}};
+      }
+
+      /* ── CTA buttons ── */
+      .cta-wrapper {
+        text-align: center;
+        padding: 8px 0 4px;
+        margin: 28px 0 0;
+      }
+      .btn-primary {
+        display: inline-block;
+        background-color: {{BRAND_COLOR}};
+        color: #ffffff !important;
+        font-family: "DM Sans", sans-serif;
+        font-size: 14px;
+        font-weight: 600;
+        text-decoration: none;
+        border-radius: 8px;
+        padding: 13px 26px;
+        border: 1px solid {{BRAND_COLOR}};
+        letter-spacing: -0.1px;
+      }
+
+      /* ── PREMIUM SIGN-OFF UI ── */
+      .sign-off {
+        margin-top: 24px;
+        padding-top: 24px;
+        border-top: 1px solid #f3f4f6;
+      }
+      .sign-off-text {
+        font-size: 13.5px;
+        color: #6b7280;
+        line-height: 1.6;
+        margin: 0 0 20px;
+        font-family: "DM Sans", sans-serif;
+      }
+      .signature-block {
+        margin-top: 12px;
+        padding-top: 16px;
+        border-top: 1px dashed #e5e7eb;
+      }
+      .signature-greeting {
+        font-size: 14px;
+        color: #6b7280;
+        margin: 0 0 4px 0;
+        display: block;
+        font-family: "DM Sans", sans-serif;
+      }
+      .signature-name {
+        font-size: 16px;
+        font-weight: 700;
+        color: #111827;
+        margin: 0 0 2px 0;
+        display: block;
+        letter-spacing: -0.2px;
+        font-family: "DM Sans", sans-serif;
+      }
+      .signature-dept {
+        font-size: 12px;
+        font-weight: 600;
+        color: {{BRAND_COLOR}};
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        font-family: "DM Mono", monospace;
+        display: block;
+      }
+
+      /* ── Footer ── */
+      .email-footer-card {
+        width: 600px;
+        max-width: 100%;
+        margin: 0 auto;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-top: none;
+        border-radius: 0 0 12px 12px;
+        padding: 12px 44px 28px;
+      }
+      .footer-rule {
+        border: none;
+        border-top: 1px solid #f3f4f6;
+        margin: 0 0 18px;
+      }
+      .footer-links {
+        text-align: center;
+        margin-bottom: 10px;
+      }
+      .footer-links a {
+        font-size: 12px;
+        color: #9ca3af;
+        text-decoration: none;
+        margin: 0 10px;
+        font-family: "DM Mono", monospace;
+      }
+      .footer-links a:hover { color: {{BRAND_COLOR}}; }
+      .footer-copy {
+        text-align: center;
+        font-size: 12px;
+        color: #9ca3af;
+        line-height: 1.7;
+        font-family: "DM Mono", monospace;
+        margin: 0;
+      }
+
+      .bottom-spacer { height: 40px; background-color: #f9fafb; }
+
+      /* ── Strict Mobile Responsiveness ── */
+      @media only screen and (max-width: 640px) {
+        .email-header,
+        .email-body-card,
+        .email-footer-card { width: 100% !important; border-radius: 0 !important; border-left: none !important; border-right: none !important; }
+        .content-cell { padding: 28px 20px 16px !important; }
+        .email-footer-card { padding: 14px 20px 24px !important; }
+        .header-inner { padding: 24px 20px 22px !important; }
+        .internal-badge { float: none !important; display: inline-block; margin: 10px 0 0; }
+        .brand-text-wrapper { margin-top: 2px; }
+        .otp-wrapper { padding: 20px 10px !important; margin: 18px 0 !important; }
+        .otp-code { font-size: 26px !important; letter-spacing: 6px !important; }
+        .otp-helper { font-size: 12px !important; margin-top: 12px !important; }
+        .btn-primary { display: block !important; width: 100% !important; text-align: center !important; padding: 15px 20px !important; }
+      }
+
+      /* ── Dark mode ── */
+      @media (prefers-color-scheme: dark) {
+        body, .email-wrapper { background-color: #111827 !important; }
+        .top-spacer, .bottom-spacer { background-color: #111827 !important; }
+        .email-body-card { background-color: #1f2937 !important; border-color: #374151 !important; }
+        .email-footer-card { background-color: #1f2937 !important; border-color: #374151 !important; }
+        .footer-rule { border-color: #374151 !important; }
+        .sign-off { border-color: #374151 !important; }
+        .signature-block { border-color: #374151 !important; }
+        p { color: #d1d5db !important; }
+        strong { color: #f9fafb !important; }
+        .otp-wrapper { background-color: #111827 !important; border-color: #374151 !important; }
+        .otp-helper { color: #9ca3af !important; }
+        .meta-block { background-color: #111827 !important; border-color: #374151 !important; }
+        .meta-block-header { background-color: #1f2937 !important; border-color: #374151 !important; color: #9ca3af !important; }
+        .meta-row { border-color: #1f2937 !important; color: #d1d5db !important; }
+        .meta-value { color: #f9fafb !important; }
+        .alert-info { background: #1e1b4b !important; border-color: #3730a3 !important; color: #c7d2fe !important; }
+        .alert-danger { background: #450a0a !important; border-color: #7f1d1d !important; color: #fca5a5 !important; }
+        .alert-warning { background: #422006 !important; border-color: #78350f !important; color: #fcd34d !important; }
+        .footer-copy { color: #6b7280 !important; }
+        .footer-links a { color: #6b7280 !important; }
+        .sign-off-text { color: #9ca3af !important; }
+        .signature-name { color: #f9fafb !important; }
+        .signature-greeting { color: #9ca3af !important; }
+        h2 { color: #f9fafb !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <span class="preheader">{{PREHEADER}} &mdash; Confidential. Internal team use only.</span>
+
+    <table class="email-wrapper" width="100%" cellpadding="0" cellspacing="0" role="presentation">
+      <tr><td align="center">
+
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+          <tr><td class="top-spacer"></td></tr>
+        </table>
+
+        <table class="email-header" width="600" cellpadding="0" cellspacing="0" role="presentation" align="center">
+          <tr>
+            <td class="header-inner">
+              <div class="header-grid"></div>
+
+              <div class="header-top-row">
+                <a href="{{SUPPORT_URL}}" style="text-decoration:none; display:inline-block;">
+                  <div class="brand-icon-wrapper">
+                    {{LOGO_HTML}}
+                  </div>
+                  <div class="brand-text-wrapper">
+                      <span class="brand-name">{{SITE_NAME}}</span>
+                      <span class="brand-sub">Admin Control Panel</span>
+                  </div>
+                </a>
+                <span class="internal-badge">
+                  <span class="internal-dot"></span>Internal Only
+                </span>
+              </div>
+
+              <hr class="header-rule" />
+
+              <div class="event-label">&#9656;&nbsp; {{EVENT_TYPE}}</div>
+              <h1 class="header-h1">{{GREETING}}</h1>
+              <p class="header-subtitle">{{TIMESTAMP}}</p>
+            </td>
+          </tr>
+        </table>
+
+        <table class="email-body-card" width="600" cellpadding="0" cellspacing="0" role="presentation" align="center">
+          <tr>
+            <td class="content-cell">
+
+              {{ALERT_BANNER}}
+
+              {{BODY_CONTENT}}
+
+              {{META_BLOCK}}
+
+              {{ACTION_BLOCK}}
+
+              <div class="sign-off">
+                <p class="sign-off-text">
+                  This is a confidential internal notification sent to active administrators only. Please do not forward or share this message.
+                </p>
+                <div class="signature-block">
+                  <span class="signature-greeting">Best regards,</span>
+                  <span class="signature-name">The {{SITE_NAME}} Team</span>
+                  <span class="signature-dept">Security Operations</span>
+                </div>
+              </div>
+
+            </td>
+          </tr>
+        </table>
+
+        <table class="email-footer-card" width="600" cellpadding="0" cellspacing="0" role="presentation" align="center">
+          <tr>
+            <td>
+              <hr class="footer-rule" />
+              <div class="footer-links">
+                <a href="{{SUPPORT_URL}}">Admin Login</a>
+              </div>
+              <p class="footer-copy">
+                &copy; {{YEAR}} {{SITE_NAME}} &mdash; Administrator Control Panel<br>
+                This automated notification was generated for secure authentication protocols.
+              </p>
+              
+              <div style="text-align: center; margin-top: 16px; padding-top: 16px; border-top: 1px solid #f3f4f6;">
+                <p style="margin: 0; font-size: 11.5px; color: #9ca3af; font-family: 'DM Mono', monospace; line-height: 1.6;">
+                  &#128274; <strong>Security Commitment:</strong> {{SITE_NAME}} continuously enforces strict enterprise-grade security protocols to ensure your data remains protected.
+                </p>
+              </div>
+              
+            </td>
+          </tr>
+        </table>
+
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+          <tr><td class="bottom-spacer"></td></tr>
+        </table>
+
+      </td></tr>
+    </table>
+  </body>
+</html>

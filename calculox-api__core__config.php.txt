@@ -1,0 +1,517 @@
+<?php
+// ------------------------------------------------------------------
+// 1. INITIALIZE OUTPUT BUFFERING & JSON ERROR HANDLING
+// ------------------------------------------------------------------
+ob_start();
+
+// [FIX #5] Application-Layer Security Headers (OWASP Standards)
+header('Content-Type: application/json; charset=utf-8');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: no-referrer'); 
+header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none';");
+
+function logInternalSystemError($severity, $message, $file, $line, $trace = null) {
+    global $conn;
+    $stackTrace = "File: $file\nLine: $line" . ($trace ? "\nTrace:\n$trace" : "");
+    $urlEndpoint = $_SERVER['REQUEST_URI'] ?? 'Unknown Backend Script';
+    
+    $errorHash = hash('sha256', 'backend' . $severity . mb_substr($message, 0, 2000) . $file . $line);
+
+    if (isset($conn) && $conn instanceof PDO) {
+        try {
+            $checkStmt = $conn->prepare("SELECT id FROM system_error_logs WHERE error_hash = :hash AND status IN ('new', 'investigating') LIMIT 1");
+            $checkStmt->execute([':hash' => $errorHash]);
+            $existingError = $checkStmt->fetch();
+
+            if ($existingError) {
+                $updateStmt = $conn->prepare("UPDATE system_error_logs SET hit_count = hit_count + 1, updated_at = NOW() WHERE id = :id");
+                $updateStmt->execute([':id' => $existingError['id']]);
+            } else {
+                $stmt = $conn->prepare("
+                    INSERT INTO system_error_logs 
+                    (environment, severity, error_message, stack_trace, url_endpoint, user_type, status, error_hash, hit_count) 
+                    VALUES 
+                    ('backend', :sev, :msg, :trace, :url, 'public', 'new', :hash, 1)
+                ");
+
+                $stmt->execute([
+                    ':sev'   => $severity,
+                    ':msg'   => mb_substr($message, 0, 2000),
+                    ':trace' => mb_substr($stackTrace, 0, 10000),
+                    ':url'   => mb_substr($urlEndpoint, 0, 1000),
+                    ':hash'  => $errorHash
+                ]);
+            }
+
+            return;
+        } catch (\PDOException $e) { }
+    }
+    error_log("BACKEND CRASH [$severity]: $message in $file on line $line");
+
+}
+
+function jsonErrorHandler($errno, $errstr, $errfile, $errline) {
+    if (!(error_reporting() & $errno)) {
+        return false;
+
+    }
+    if (ob_get_length()) ob_clean();
+    $severity = ($errno == E_WARNING || $errno == E_USER_WARNING) ? 'warning' : 'error';
+
+    logInternalSystemError($severity, $errstr, $errfile, $errline);
+
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'message' => "An internal system error occurred. (Ref: Core Error)",
+    ]);
+
+    exit();
+}
+
+function jsonExceptionHandler($e) {
+    if (ob_get_length()) ob_clean();
+    
+    // --- ENTERPRISE FIX: Mid-Flight Infrastructure Protection ---
+    // If the database drops while an API call is running, instantly trigger the 503 Blackout
+    if ($e instanceof \PDOException) {
+        logInternalSystemError('critical', 'DB Drop: ' . $e->getMessage(), $e->getFile(), $e->getLine());
+        http_response_code(503);
+        echo json_encode([
+            'success' => false,
+            'error_code' => 'CRITICAL_DB_FAILURE',
+            'message' => 'Service Unavailable. System offline for maintenance.'
+        ]);
+        exit();
+    }
+
+    logInternalSystemError('critical', $e->getMessage(), $e->getFile(), $e->getLine(), $e->getTraceAsString());
+    http_response_code(500);
+
+    echo json_encode([
+        'success' => false,
+        'message' => "A critical system error occurred. (Ref: Core Exception)"
+    ]);
+
+    exit();
+}
+
+register_shutdown_function(function() {
+    $error = error_get_last();
+    if ($error && ($error['type'] === E_ERROR || $error['type'] === E_PARSE || $error['type'] === E_CORE_ERROR)) {
+        if (ob_get_length()) ob_clean();
+        logInternalSystemError('critical', $error['message'], $error['file'], $error['line']);
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'message' => "A fatal system error occurred. (Ref: Core Fatal)"
+ 
+        ]);
+    } else {
+        if (ob_get_level() > 0) {
+            ob_end_flush();
+        }
+    }
+});
+
+set_error_handler('jsonErrorHandler');
+set_exception_handler('jsonExceptionHandler');
+
+// ------------------------------------------------------------------
+// 2. COMPOSER & ENVIRONMENT
+// ------------------------------------------------------------------
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+define('PROJECT_ROOT', dirname(__DIR__));
+
+if (!file_exists(PROJECT_ROOT . '/vendor/autoload.php')) {
+    if (ob_get_length()) ob_clean();
+    http_response_code(500);
+
+    echo json_encode(['success' => false, 'message' => 'Composer vendor folder missing. Run "composer install".']);
+    exit();
+}
+
+require_once PROJECT_ROOT . '/vendor/autoload.php';
+
+try {
+    $dotenv = Dotenv\Dotenv::createImmutable(PROJECT_ROOT);
+    $dotenv->safeLoad();
+    
+    $requiredVars = ['DB_HOST', 'DB_USER', 'DB_PASS', 'DB_NAME', 'JWT_SECRET'];
+    foreach ($requiredVars as $var) {
+        if (!isset($_ENV[$var])) {
+            $sysVal = getenv($var);
+            if ($sysVal !== false) {
+                $_ENV[$var] = $sysVal;
+            }
+        }
+    }
+    
+    $dotenv->required($requiredVars);
+
+    // --- ENTERPRISE FIX: ACTIVATE CENTRAL BOUNCER ---
+    // Instantly activates the global firewall before any database or route logic executes.
+    require_once __DIR__ . '/SecurityGuard.php';
+    SecurityGuard::enforceCORS();
+
+// --- ENTERPRISE FIX: Added leading slash \ to catch global Exceptions, bypassing PHPMailer collision ---
+} catch (\Exception $e) {
+    if (ob_get_length()) ob_clean();
+    http_response_code(503);
+
+    echo json_encode(['success' => false, 'error_code' => 'CRITICAL_ENV_FAILURE', 'message' => 'Service Unavailable. System offline for maintenance.']);
+    exit();
+}
+
+// ------------------------------------------------------------------
+// 3. SECURITY CONSTANTS
+// ------------------------------------------------------------------
+define('LOGIN_ATTEMPT_LIMIT', 3);
+define('LOCKOUT_DURATION_MINUTES', 1440);
+
+define('PERMABLOCK_THRESHOLD', 2);
+define('PERMABLOCK_TIMEFRAME_HOURS', 168);
+
+// ------------------------------------------------------------------
+// 4. DATABASE CONNECTION (PDO MIGRATION)
+// ------------------------------------------------------------------
+try {
+    $dsn = "mysql:host=" . $_ENV['DB_HOST'] . ";dbname=" . $_ENV['DB_NAME'] . ";charset=utf8mb4";
+    $options = [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES   => false, 
+    ];
+
+    $conn = new PDO($dsn, $_ENV['DB_USER'], $_ENV['DB_PASS'], $options);
+} catch (\PDOException $e) {
+    if (ob_get_length()) ob_clean();
+    http_response_code(503);
+
+    echo json_encode(['success' => false, 'error_code' => 'CRITICAL_DB_FAILURE', 'message' => 'Service Unavailable. System offline for maintenance.']);
+    exit();
+}
+
+// ------------------------------------------------------------------
+// 5. TIMEZONE SYNCHRONIZATION
+// ------------------------------------------------------------------
+date_default_timezone_set('UTC');
+$conn->exec("SET time_zone = '+00:00'");
+
+try {
+    $tableCheck = $conn->query("SHOW TABLES LIKE 'settings'");
+
+    if ($tableCheck && $tableCheck->fetch()) {
+        $tz_result = $conn->query("SELECT setting_value FROM settings WHERE setting_key = 'site_timezone' LIMIT 1");
+
+        $row = $tz_result ? $tz_result->fetch() : null;
+        
+        if ($row && !empty($row['setting_value'])) {
+            $db_timezone = $row['setting_value'];
+
+            if ($db_timezone && in_array($db_timezone, timezone_identifiers_list())) {
+                date_default_timezone_set($db_timezone);
+
+            }
+        }
+    }
+// --- ENTERPRISE FIX: Added leading slash \ to global Exception catch ---
+} catch (\Exception $e) {
+    logInternalSystemError('warning', 'Timezone Sync Warning: ' . $e->getMessage(), __FILE__, __LINE__);
+
+}
+
+// ------------------------------------------------------------------
+// 6. GLOBAL HELPER FUNCTIONS
+// ------------------------------------------------------------------
+
+function getSecureRealIp() {
+    $remote_addr = $_SERVER['REMOTE_ADDR'];
+
+    $trusted_proxies = [
+        '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.1/32',
+        '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', 
+        '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20', 
+        '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13', 
+        '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22'
+    ];
+
+    $is_trusted = false;
+    
+    $ip = ip2long($remote_addr);
+    if ($ip !== false) {
+        foreach ($trusted_proxies as $proxy) {
+            list($subnet, $bits) = explode('/', $proxy);
+
+            $subnet_long = ip2long($subnet);
+            // OWASP FIX: Explicitly cast $bits to int for strict type safety during bitwise math
+            $mask = -1 << (32 - (int)$bits);
+            $subnet_long &= $mask;
+
+            if (($ip & $mask) == $subnet_long) {
+                $is_trusted = true;
+
+                break;
+            }
+        }
+    } else {
+        if ($remote_addr === '::1') {
+            $is_trusted = true;
+
+        }
+    }
+
+    if ($is_trusted) {
+        if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+            return trim($_SERVER['HTTP_CF_CONNECTING_IP']);
+
+        }
+        if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+            $ips = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
+
+            return trim($ips[0]);
+        }
+    }
+    
+    return $remote_addr;
+
+}
+
+function isSecureConnection() {
+    if (!empty($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS']) !== 'off') {
+        return true;
+
+    }
+    if (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') {
+        return true;
+
+    }
+    return false;
+}
+
+// ------------------------------------------------------------------
+// 7. GLOBAL HTTPS ENFORCEMENT (PRODUCTION ONLY)
+// ------------------------------------------------------------------
+if (strtolower($_ENV['APP_ENV'] ?? 'development') === 'production') {
+    // Inject Strict-Transport-Security (HSTS) - Only if not CLI to prevent warnings
+    if (php_sapi_name() !== 'cli') {
+        header('Strict-Transport-Security: max-age=31536000; includeSubDomains; preload');
+    }
+
+    // ENTERPRISE FIX: HTTPS Enforcement with CLI/Localhost whitelist
+    // Bypass enforcement if running in CLI or if connection originates from local docker network
+    $isCli = (php_sapi_name() === 'cli');
+    $isLocal = (isset($_SERVER['REMOTE_ADDR']) && $_SERVER['REMOTE_ADDR'] === '127.0.0.1');
+
+    // Hard rejection if the request is not over a secure connection
+    if (!$isCli && !$isLocal && !isSecureConnection()) {
+        if (ob_get_length()) ob_clean();
+
+        http_response_code(403);
+        echo json_encode([
+            'success' => false,
+            'message' => 'HTTPS is strictly required for this application. Plaintext connections are refused.'
+        ]);
+
+        exit();
+    }
+}
+
+function sendSecurityEmail($toEmail, $toName, $subject, $htmlBody, $altBody) {
+    global $conn;
+
+    if (is_array($htmlBody)) {
+        // Failsafe Defaults
+        $siteName = 'Calculox';
+
+        $brandColor = '#4f46e5'; 
+
+        // --- ENTERPRISE WHITE LOGO REPLICA ---
+        // Draws the login screen grid logo purely with indestructible HTML/CSS.
+
+        $logoHtml = '
+        <table cellpadding="0" cellspacing="0" border="0" style="display:inline-block; width:38px; height:38px; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); border-radius:10px; box-shadow:0 4px 10px rgba(0,0,0,0.15); margin-top:2px;">
+            <tr>
+                <td align="center" valign="middle" style="width:38px; height:38px; padding:0; margin:0;">
+                    <table cellpadding="0" cellspacing="2" border="0" style="margin:0 auto;">
+               
+                        <tr>
+                            <td style="width:6px; height:6px; border:1.5px solid #ffffff; border-radius:2px;"></td>
+                            <td style="width:6px; height:6px; border:1.5px solid #ffffff; border-radius:2px;"></td>
+                       
+                        </tr>
+                        <tr>
+                            <td style="width:6px; height:6px; border:1.5px solid #ffffff; border-radius:2px;"></td>
+                            <td style="width:6px; height:6px; border:1.5px solid #ffffff; border-radius:2px;"></td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>';
+        
+        try {
+            if (isset($conn) && $conn instanceof PDO) {
+                $stmt = $conn->query("SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('siteName', 'site_logo', 'primary_color')");
+                if ($stmt) {
+                    $settings = [];
+              
+                    while ($row = $stmt->fetch()) {
+                        $settings[$row['setting_key']] = $row['setting_value'];
+                    }
+                    
+                    if (!empty($settings['siteName'])) {
+  
+                        $siteName = htmlspecialchars($settings['siteName'], ENT_QUOTES, 'UTF-8');
+                    }
+                    if (!empty($settings['primary_color'])) {
+                        if (preg_match('/^#[a-f0-9]{6}$/i', $settings['primary_color'])) {
+     
+                            $brandColor = $settings['primary_color'];
+
+                        }
+                    }
+                    if (!empty($settings['site_logo'])) {
+                        $logoUrl = htmlspecialchars($settings['site_logo'], ENT_QUOTES, 'UTF-8');
+
+                        $logoHtml = '<img src="'.$logoUrl.'" alt="Logo" style="display:block; height:38px; width:auto; border-radius:4px;" />';
+
+                    }
+                }
+            }
+        } catch (\Exception $e) { }
+
+        $templatePath = PROJECT_ROOT . '/core/templates/email_base.html';
+        $templateHtml = file_exists($templatePath) ? file_get_contents($templatePath) : '{{BODY_CONTENT}}';
+
+        $preheader   = $htmlBody['preheader'] ?? 'System Notification';
+
+        $eventType   = $htmlBody['event_type'] ?? 'SECURITY ALERT';
+        $timestamp   = $htmlBody['timestamp'] ?? gmdate('F j, Y, g:i a') . ' UTC';
+        $greeting    = $htmlBody['greeting'] ?? 'Hello,';
+        $bodyContent = $htmlBody['body'] ?? '';
+
+        $actionUrl   = $htmlBody['action_url'] ?? '';
+        $actionText  = $htmlBody['action_text'] ?? 'Click Here';
+
+        $supportUrl  = rtrim($_ENV['ADMIN_FRONTEND_URL'] ?? '', '/') . '/#/admin/login';
+        $year        = date('Y');
+
+        // Allow inline CSS injection of brand color
+        $bodyContent = str_replace('{{BRAND_COLOR}}', $brandColor, $bodyContent);
+
+        $bodyContent = str_replace('{{SITE_NAME}}', $siteName, $bodyContent);
+        $subject     = str_replace('{{SITE_NAME}}', $siteName, $subject);
+
+        // Build Alert Banner
+        $alertBanner = '';
+
+        if (!empty($htmlBody['alert_message'])) {
+            $type = $htmlBody['alert_type'] ?? 'info';
+
+            $icon = '&#9670;'; 
+            if ($type === 'danger') $icon = '&#9888;';
+            if ($type === 'warning') $icon = '&#9888;';
+
+            if ($type === 'success') $icon = '&#10004;';
+            
+            $alertBanner = '
+            <div class="alert-banner alert-'.$type.'">
+                <span class="alert-icon">'.$icon.'</span>
+                '.$htmlBody['alert_message'].'
+            </div>';
+        }
+
+        // Build Metadata Block
+        $metaBlock = '';
+
+        if (!empty($htmlBody['meta_data']) && is_array($htmlBody['meta_data'])) {
+            $metaBlock = '<table class="meta-block" width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                            <tr><td class="meta-block-header">Event Details</td></tr><tr><td>';
+
+            foreach ($htmlBody['meta_data'] as $label => $value) {
+                $isMono = (strpos(strtolower($label), 'ip') !== false || strpos(strtolower($label), 'id') !== false) ? ' mono' : '';
+                $metaBlock .= '<span class="meta-row">
+                                 <span class="meta-label">'.$label.'</span>
+                                 <span class="meta-value'.$isMono.'">'.$value.'</span>
+                         
+                               </span>';
+            }
+            $metaBlock .= '</td></tr></table>';
+
+        }
+
+        // Build CTA Button
+        $actionBlock = '';
+
+        if (!empty($actionUrl)) {
+            $actionBlock = '
+            <div class="cta-wrapper">
+                <a href="'.$actionUrl.'" class="btn-primary" target="_blank">'.$actionText.'</a>
+            </div>';
+
+        }
+
+        $htmlBody = str_replace(
+            ['{{SITE_NAME}}', '{{BRAND_COLOR}}', '{{LOGO_HTML}}', '{{PREHEADER}}', '{{EVENT_TYPE}}', '{{TIMESTAMP}}', '{{GREETING}}', '{{ALERT_BANNER}}', '{{BODY_CONTENT}}', '{{META_BLOCK}}', '{{ACTION_BLOCK}}', '{{SUPPORT_URL}}', '{{YEAR}}'],
+            [$siteName, $brandColor, $logoHtml, $preheader, $eventType, $timestamp, $greeting, $alertBanner, $bodyContent, $metaBlock, $actionBlock, $supportUrl, $year],
+            $templateHtml
+        );
+
+    }
+
+    $mail = new PHPMailer(true);
+    try {
+        $mail->isSMTP();
+
+        $mail->Host       = $_ENV['SMTP_HOST'];
+        $mail->SMTPAuth   = true;
+        $mail->Username   = $_ENV['SMTP_USER'];
+
+        $mail->Password   = $_ENV['SMTP_PASS'];
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port       = $_ENV['SMTP_PORT'];
+
+        $mail->Timeout    = 30;
+
+        $mail->setFrom($_ENV['SMTP_FROM_EMAIL'], $_ENV['SMTP_FROM_NAME']);
+        $mail->addAddress($toEmail, $toName);
+        $mail->isHTML(true);
+        $mail->Subject = $subject;
+        $mail->Body    = $htmlBody;
+
+        $mail->AltBody = $altBody;
+
+        $mail->send();
+        return true;
+    } catch (\Exception $e) {
+        logInternalSystemError('error', "Mail Error: " . $e->getMessage(), __FILE__, __LINE__);
+
+        return false;
+    }
+}
+
+function getMediaIdFromUrl($conn, $url) {
+    if (empty(trim($url))) return null;
+    $parsedUrl = parse_url($url, PHP_URL_PATH);
+
+    if (!$parsedUrl) return null;
+    
+    $filename = urldecode(basename($parsedUrl));
+    try {
+        $stmt = $conn->prepare("SELECT id FROM media WHERE file_name = :filename LIMIT 1");
+
+        $stmt->execute([':filename' => $filename]);
+        $row = $stmt->fetch();
+        
+        return $row ? (int)$row['id'] : null;
+
+    } catch (\PDOException $e) {
+        logInternalSystemError('warning', "Media ID Lookup Error: " . $e->getMessage(), __FILE__, __LINE__);
+
+        return null;
+    }
+}
+?>

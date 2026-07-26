@@ -1,0 +1,98 @@
+<?php
+// calcpro-api/api/public/log_telemetry.php
+
+// 1. Load configuration FIRST to access environment variables securely
+// (This file ALREADY applies the secure CORS headers perfectly)
+require_once __DIR__ . '/../../core/config.php';
+require_once __DIR__ . '/../../core/response.php';
+
+// Ensure the request is POST (Preflight OPTIONS are already handled by config.php)
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    sendResponse(false, null, 'Method not allowed', 405);
+}
+
+$rawInput = file_get_contents('php://input');
+$data = json_decode($rawInput, true);
+
+if (!$data) {
+    sendResponse(false, null, 'Invalid payload', 400);
+}
+
+// ---------------------------------------------------------
+// PAYLOAD EXTRACTION & SANITIZATION
+// ---------------------------------------------------------
+$environment  = isset($data['environment']) ? strtolower(trim($data['environment'])) : 'frontend';
+$severity     = isset($data['severity']) ? strtolower(trim($data['severity'])) : 'error';
+$errorMessage = isset($data['error_message']) ? trim($data['error_message']) : 'Unknown error';
+$stackTrace   = isset($data['stack_trace']) ? trim($data['stack_trace']) : null;
+$urlEndpoint  = isset($data['url_endpoint']) ? trim($data['url_endpoint']) : ($_SERVER['HTTP_REFERER'] ?? 'Unknown');
+
+$allowedEnvironments = ['frontend', 'cpanel', 'backend'];
+if (!in_array($environment, $allowedEnvironments)) {
+    $environment = 'frontend'; 
+}
+
+$allowedSeverities = ['info', 'warning', 'error', 'critical'];
+if (!in_array($severity, $allowedSeverities)) {
+    $severity = 'error'; 
+}
+
+// Enforce strict length limits to prevent database bloat/DDoS payloads
+$errorMessage = mb_substr($errorMessage, 0, 2000);
+if ($stackTrace !== null) {
+    $stackTrace = mb_substr($stackTrace, 0, 10000); 
+}
+$urlEndpoint = mb_substr($urlEndpoint, 0, 1000);
+
+// ---------------------------------------------------------
+// SECURITY PATCH 2: STRICT GDPR PII HASHING
+// ---------------------------------------------------------
+$rawIp = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+$secret = $_ENV['JWT_SECRET'] ?? '';
+
+// Do NOT fall back to a hardcoded string. Abort if the system is not secure.
+if (empty($secret)) {
+    error_log("CRITICAL SECURITY ERROR: JWT_SECRET is missing. Telemetry aborted to prevent unhashed PII leakage.");
+    sendResponse(false, null, 'Internal Server Error: Secure environment not established.', 500);
+}
+
+$ipHash = hash('sha256', $rawIp . $secret);
+
+$userId = isset($data['user_id']) && is_numeric($data['user_id']) ? (int)$data['user_id'] : null;
+$userType = 'guest';
+
+if ($environment === 'cpanel') {
+    $userType = 'admin';
+} elseif ($userId !== null) {
+    $userType = 'public';
+}
+
+// ---------------------------------------------------------
+// DATABASE INSERTION
+// ---------------------------------------------------------
+try {
+    $stmt = $conn->prepare("
+        INSERT INTO system_error_logs 
+        (environment, severity, error_message, stack_trace, url_endpoint, user_id, user_type, user_ip_hash, status) 
+        VALUES 
+        (:env, :sev, :msg, :trace, :url, :uid, :utype, :iphash, 'new')
+    ");
+    
+    $stmt->execute([
+        ':env'    => $environment,
+        ':sev'    => $severity,
+        ':msg'    => $errorMessage,
+        ':trace'  => $stackTrace,
+        ':url'    => $urlEndpoint,
+        ':uid'    => $userId,
+        ':utype'  => $userType,
+        ':iphash' => $ipHash
+    ]);
+
+    sendResponse(true, null, 'Telemetry logged successfully', 201);
+
+} catch (\PDOException $e) {
+    error_log("Telemetry Insertion Failed: " . $e->getMessage());
+    sendResponse(false, null, 'Internal error processing telemetry', 500);
+}
+?>

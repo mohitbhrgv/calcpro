@@ -1,0 +1,142 @@
+<?php
+// File: calcpro-api/api/admin/update_media_details.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->id) || !is_numeric($data->id)) {
+        sendResponse(false, null, 'A valid Media ID is required.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->alt_text)) {
+        sendResponse(false, null, 'Alt text is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize Data ---
+    $mediaId = (int)$data->id;
+
+    // Fix Double-Escaping Bug: Strip script tags safely.
+    $safeAltText = strip_tags(trim($data->alt_text));
+
+    // --- 4. Begin Database Transaction ---
+    $conn->beginTransaction();
+
+    // --- 5. Fetch Full URL for Syncing ---
+    $stmtFetch = $conn->prepare("SELECT upload_path FROM media WHERE id = :id");
+    $stmtFetch->execute([':id' => $mediaId]);
+    $media = $stmtFetch->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$media) {
+        $conn->rollBack();
+        sendResponse(false, null, 'Media item not found.', 404, 'NOT_FOUND');
+    }
+    
+    $fullUrl = rtrim($_ENV['API_PUBLIC_URL'], '/') . '/' . $media['upload_path'];
+
+    // --- 6. Update Master Media Record ---
+    $stmtUpdate = $conn->prepare("UPDATE media SET alt_text = :alt WHERE id = :id");
+    if (!$stmtUpdate->execute([':alt' => $safeAltText, ':id' => $mediaId])) {
+        $conn->rollBack();
+        throw new Exception("Failed to update media record.");
+    }
+
+    // --- 7. INVISIBLE SMART SYNC (DOMDocument & Native JSON Fix) ---
+    $likePatternRaw = '%' . $fullUrl . '%';
+    $likePatternEsc = '%' . str_replace('/', '\\/', $fullUrl) . '%'; // Fix for escaped JSON search
+
+    // Helper: Safely replace Alt Text in HTML using DOMDocument without UTF-8 Data Loss
+    function updateHtmlAlt($content, $url, $newAlt) {
+        if (empty($content) || strpos($content, '<img') === false) return $content;
+
+        // Force UTF-8 persistence
+        $safeHtml = mb_convert_encoding($content, 'HTML-ENTITIES', 'UTF-8');
+
+        $dom = new DOMDocument();
+        libxml_use_internal_errors(true);
+        $dom->loadHTML('<?xml encoding="utf-8" ?>' . $safeHtml, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+        libxml_clear_errors();
+
+        $images = $dom->getElementsByTagName('img');
+        $changed = false;
+
+        foreach ($images as $img) {
+            if ($img->getAttribute('src') === $url) {
+                $img->setAttribute('alt', $newAlt);
+                $changed = true;
+            }
+        }
+        
+        if ($changed) {
+            $newContent = '';
+            foreach ($dom->childNodes as $node) {
+                $newContent .= $dom->saveHTML($node);
+            }
+            return trim(str_replace('<?xml encoding="utf-8" ?>', '', $newContent));
+        }
+        return $content;
+    }
+
+    // Helper: Safely update in JSON Array
+    function updateJsonAlt($jsonStr, $url, $newAlt) {
+        $decoded = json_decode($jsonStr, true);
+        if ($decoded === null) return $jsonStr;
+
+        array_walk_recursive($decoded, function(&$item) use ($url, $newAlt) {
+            if (is_string($item) && strpos($item, '<img') !== false) {
+                $item = updateHtmlAlt($item, $url, $newAlt);
+            }
+        });
+        return json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    // Sync Posts
+    $stmtSelPosts = $conn->prepare("SELECT id, content FROM posts WHERE content LIKE :like FOR UPDATE");
+    $stmtUpdPosts = $conn->prepare("UPDATE posts SET content = :content WHERE id = :id");
+    $stmtSelPosts->execute([':like' => $likePatternRaw]);
+
+    while ($row = $stmtSelPosts->fetch(PDO::FETCH_ASSOC)) {
+        $stmtUpdPosts->execute([':content' => updateHtmlAlt($row['content'], $fullUrl, $safeAltText), ':id' => $row['id']]);
+    }
+
+    // Sync Calculators
+    $stmtSelCalcs = $conn->prepare("SELECT id, content FROM calculators WHERE content LIKE :like FOR UPDATE");
+    $stmtUpdCalcs = $conn->prepare("UPDATE calculators SET content = :content WHERE id = :id");
+    $stmtSelCalcs->execute([':like' => $likePatternRaw]);
+
+    while ($row = $stmtSelCalcs->fetch(PDO::FETCH_ASSOC)) {
+        $stmtUpdCalcs->execute([':content' => updateHtmlAlt($row['content'], $fullUrl, $safeAltText), ':id' => $row['id']]);
+    }
+    
+    // Sync Pages (JSON context checking both formats)
+    $stmtSelPages = $conn->prepare("SELECT id, content_json FROM pages WHERE content_json LIKE :like_raw OR content_json LIKE :like_esc FOR UPDATE");
+    $stmtUpdPages = $conn->prepare("UPDATE pages SET content_json = :content WHERE id = :id");
+    $stmtSelPages->execute([':like_raw' => $likePatternRaw, ':like_esc' => $likePatternEsc]);
+
+    while ($row = $stmtSelPages->fetch(PDO::FETCH_ASSOC)) {
+        $stmtUpdPages->execute([':content' => updateJsonAlt($row['content_json'], $fullUrl, $safeAltText), ':id' => $row['id']]);
+    }
+
+    // --- 8. Commit & Respond ---
+    $conn->commit();
+    sendResponse(true, null, 'Media details saved and automatically synced across the site.', 200);
+
+} catch (Exception $e) {
+    if (isset($conn) && $conn->inTransaction()) {
+        $conn->rollBack();
+    }
+    error_log("Error in update_media_details.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

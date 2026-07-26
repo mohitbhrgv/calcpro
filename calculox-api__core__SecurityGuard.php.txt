@@ -1,0 +1,460 @@
+<?php
+/**
+ * SecurityGuard Class
+ * Centralizes Brute Force Protection logic, IP blocking, and audit logging.
+ * Implements the "Intelligent Escalation" strategy with GDPR-compliant AES-256-GCM Encryption.
+ * NOTE: Garbage Collection has been delegated to scripts/system_cleanup.php for maximum performance.
+ */
+
+require_once __DIR__ . '/NotificationManager.php';
+
+class SecurityGuard {
+    private $conn;
+    private $raw_ip_address;
+
+    // Kept in memory for this request lifecycle only
+    private $encrypted_ip;
+    private $blind_index;
+    private $notifier;
+
+    const MSG_PERMA_BLOCK = "This IP address has been permanently blocked due to suspicious activity.";
+
+    public function __construct($dbConnection, $ip = null) {
+        $this->conn = $dbConnection;
+        
+        // ENTERPRISE FIX: Use Proxy-Aware IP logic for brute-force tracking
+        $this->raw_ip_address = $ip ?: getSecureRealIp();
+        
+        // Immediately secure the IP upon object instantiation
+        $this->blind_index = self::generateBlindIndex($this->raw_ip_address);
+
+        $this->encrypted_ip = self::encryptIp($this->raw_ip_address);
+        
+        $this->notifier = new NotificationManager($dbConnection);
+    }
+
+    /**
+     * --- CRYPTOGRAPHY ENGINE ---
+     */
+     
+    // Universal Environment Fetcher (Fixes XAMPP $_ENV empty issues)
+    private static function getSecureEnv($key) {
+        $val = getenv($key);
+
+        if ($val !== false && $val !== '') return $val;
+        if (!empty($_ENV[$key])) return $_ENV[$key];
+        if (!empty($_SERVER[$key])) return $_SERVER[$key];
+        return '';
+
+    }
+
+    /**
+     * --- Phase 2: ENTERPRISE SEC FIX - CENTRALIZED CORS BOUNCER ---
+     * Strictly validates incoming requests against the .env vault and drops unauthorized traffic instantly.
+     */
+    public static function enforceCORS() {
+        // ==============================================================================
+        // ENTERPRISE FIX: CLI/Terminal Bypass
+        // If the script is executed via command line (Cron Job / Terminal), bypass CORS.
+        // CORS is a browser-only security mechanism and is irrelevant in the terminal.
+        // ==============================================================================
+        if (php_sapi_name() === 'cli') {
+            return;
+        }
+
+        $allowed_origins = [
+            rtrim(self::getSecureEnv('PUBLIC_FRONTEND_URL'), '/'),
+            rtrim(self::getSecureEnv('ADMIN_FRONTEND_URL'), '/')
+        ];
+
+        $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+
+        // ENTERPRISE FIX: Safely retrieve the request method to prevent undefined array key warnings
+        $method = $_SERVER['REQUEST_METHOD'] ?? '';
+
+        // Handle Preflight OPTIONS Request
+        if ($method === 'OPTIONS') {
+            if (in_array($origin, $allowed_origins) && !empty($origin)) {
+                header("Access-Control-Allow-Origin: $origin");
+                header("Access-Control-Allow-Credentials: true");
+                header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+                header("Access-Control-Allow-Headers: Content-Type, Authorization, X-CSRF-Token, x-csrf-token");
+                header("Access-Control-Max-Age: 86400"); // Cache preflight for 24 hours
+            }
+            http_response_code(200);
+            exit();
+        }
+
+        // Standard Request Validation
+        if (in_array($origin, $allowed_origins) && !empty($origin)) {
+            header("Access-Control-Allow-Origin: $origin");
+            header("Access-Control-Allow-Credentials: true");
+        } else if (!empty($origin)) {
+            // Enterprise Drop: Unauthorized external websites trying to scrape data will be hard-blocked.
+            if (ob_get_length()) ob_clean();
+            http_response_code(403);
+            echo json_encode(['success' => false, 'message' => 'CORS Policy: Unauthorized Origin Attempt Blocked.']);
+            exit();
+        }
+    }
+
+    public static function generateBlindIndex($ip) {
+        $key = self::getSecureEnv('BLIND_INDEX_KEY');
+
+        if (empty($key)) {
+            // FIX: Fail-Closed. Do not allow the system to operate with a fallback salt.
+            throw new Exception("Critical Security Error: BLIND_INDEX_KEY is not configured in the environment.");
+        }
+        return hash_hmac('sha256', $ip, $key);
+
+    }
+
+    public static function encryptIp($ip) {
+        $raw_key = self::getSecureEnv('APP_ENCRYPTION_KEY');
+
+        $key = base64_decode($raw_key);
+        
+        if (strlen($key) !== 32) {
+            // Failsafe: Do not proceed if key is missing or invalid length
+            throw new Exception("Critical Security Error: Invalid AES-256 encryption key configuration. Key length is " . strlen($key) . " bytes.");
+
+        }
+        
+        // --- Phase 3: ENTERPRISE SEC FIX - CSPRNG UPGRADE ---
+        // GCM requires a 12-byte IV. random_bytes() is the native, secure CSPRNG standard in PHP 7/8.
+        $iv = random_bytes(openssl_cipher_iv_length('aes-256-gcm'));
+
+        $tag = ''; // Passed by reference
+        
+        $ciphertext = openssl_encrypt($ip, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+
+        // FIX: Base64 encode individual components before concatenating to avoid binary collisions
+        return base64_encode($iv) . ':' . base64_encode($tag) . ':' . base64_encode($ciphertext);
+    }
+
+    public static function decryptIp($payload) {
+        $raw_key = self::getSecureEnv('APP_ENCRYPTION_KEY');
+
+        $key = base64_decode($raw_key);
+        
+        if (strlen($key) !== 32) return 'Decryption Error: Key Invalid';
+
+        // 1. Check for the NEW secure format: base64(iv):base64(tag):base64(ciphertext)
+        if (strpos($payload, ':') !== false) {
+            $parts = explode(':', $payload);
+
+            // Strict length validation (IV base64 = 16 chars, Tag base64 = 24 chars) to prevent IPv6 collisions
+            if (count($parts) === 3 && strlen($parts[0]) === 16 && strlen($parts[1]) === 24) {
+                $iv = base64_decode($parts[0], true);
+
+                $tag = base64_decode($parts[1], true);
+                $ciphertext = base64_decode($parts[2], true);
+                
+                if ($iv !== false && $tag !== false && $ciphertext !== false) {
+                    $ip = openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+
+                    return $ip !== false ? $ip : '[TAMPERED DATA BLOCKED]';
+
+                }
+            }
+        }
+        
+        // 2. Fallback for LEGACY format (Base64-encoded concatenated raw bytes)
+        $decoded = base64_decode($payload, true);
+
+        if ($decoded !== false && strpos($decoded, '::') !== false) {
+            $parts = explode('::', $decoded);
+
+            if (count($parts) === 3) {
+                list($iv, $tag, $ciphertext) = $parts;
+
+                $ip = openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+                return $ip !== false ? $ip : '[TAMPERED DATA BLOCKED]';
+
+            }
+        }
+
+        // 3. Fallback for old unencrypted IPs (e.g., standard IPv4 or IPv6 records)
+        return $payload;
+
+    }
+
+
+    /**
+     * Checks if the current IP is allowed to proceed using the secure Blind Index.
+     */
+    public function checkIpStatus() {
+        // 1. Check Permanent Blacklist using Blind Index (Fast & Secure)
+        $stmt = $this->conn->prepare("SELECT id FROM ip_blacklist WHERE ip_blind_index = :bIndex");
+
+        $stmt->execute([':bIndex' => $this->blind_index]);
+        if ($stmt->fetch()) {
+            return ['allowed' => false, 'code' => 'IP_PERMABANNED', 'message' => self::MSG_PERMA_BLOCK];
+
+        }
+        
+        // 2. Check Temporary Block (Dynamic Duration)
+        $lockout_min = 1440;
+
+        $setting_res = $this->conn->query("SELECT setting_value FROM settings WHERE setting_key = 'security_temp_block_duration_minutes'");
+
+        if ($setting_res && ($row = $setting_res->fetch())) {
+            $val = (int)$row['setting_value'];
+
+            if ($val > 0) $lockout_min = $val;
+        }
+
+        // Check if a block exists within that dynamic timeframe using Blind Index
+        $stmt = $this->conn->prepare("SELECT blocked_at FROM temporary_blocks WHERE ip_blind_index = :bIndex AND blocked_at > NOW() - INTERVAL :minutes MINUTE");
+
+        $stmt->execute([':bIndex' => $this->blind_index, ':minutes' => $lockout_min]);
+        
+        if ($stmt->fetch()) {
+            $seconds = $lockout_min * 60;
+
+            $d = floor($seconds / 86400);
+            $seconds %= 86400;
+            $h = floor($seconds / 3600);
+            $seconds %= 3600;
+
+            $m = floor($seconds / 60);
+
+            $parts = [];
+            if ($d > 0) $parts[] = $d . ' day' . ($d > 1 ? 's' : '');
+            if ($h > 0) $parts[] = $h . ' hour' . ($h > 1 ? 's' : '');
+            if ($m > 0) $parts[] = $m . ' minute' . ($m > 1 ? 's' : '');
+            
+            if (empty($parts)) {
+                $durationStr = "less than a minute";
+
+            } else {
+                if (count($parts) > 1) {
+                    $last = array_pop($parts);
+
+                    $durationStr = implode(', ', $parts) . " and " . $last;
+
+                } else {
+                    $durationStr = $parts[0];
+
+                }
+            }
+
+            $msg = "Too many failed login attempts. Access from this IP has been temporarily blocked for {$durationStr}.";
+
+            return ['allowed' => false, 'code' => 'IP_TEMPBANNED', 'message' => $msg];
+
+        }
+        return ['allowed' => true];
+
+    }
+
+    /**
+     * Logs a failed attempt securely.
+     */
+    public function logFailure($email = null, $adminId = null, $type = 'email') {
+        // 1. Log the specific failure saving ONLY encrypted data
+        if (($type === 'password' || $type === 'otp') && $adminId) {
+            $stmt = $this->conn->prepare("INSERT INTO admin_login_failures (admin_id, ip_address, ip_blind_index, failure_type) VALUES (:adminId, :ipEnc, :bIndex, :type)");
+
+            $stmt->execute([
+                ':adminId' => $adminId, 
+                ':ipEnc'   => $this->encrypted_ip, 
+                ':bIndex'  => $this->blind_index,
+                ':type'    => $type
+            ]);
+
+        } else {
+            $stmt = $this->conn->prepare("INSERT INTO login_attempts (ip_address, ip_blind_index, attempted_email) VALUES (:ipEnc, :bIndex, :email)");
+
+            $stmt->execute([
+                ':ipEnc'   => $this->encrypted_ip, 
+                ':bIndex'  => $this->blind_index,
+                ':email'   => $email
+            ]);
+
+        }
+        
+        $this->checkAndEscalateBlock($adminId, $type);
+
+    }
+
+    /**
+     * Counts total failures using Blind Index and applies blocks if necessary.
+     */
+    private function checkAndEscalateBlock($adminId = null, $failureType = 'email') {
+        $limit = defined('LOGIN_ATTEMPT_LIMIT') ? LOGIN_ATTEMPT_LIMIT : 3;
+
+        $sql = "SELECT COUNT(*) as total FROM (
+                    SELECT attempted_at FROM login_attempts WHERE ip_blind_index = :bIndex1 
+                    UNION ALL 
+                    SELECT attempted_at FROM admin_login_failures WHERE ip_blind_index = :bIndex2
+                ) as all_failures";
+                
+        $stmt = $this->conn->prepare($sql);
+        $stmt->execute([
+            ':bIndex1' => $this->blind_index, 
+            ':bIndex2' => $this->blind_index
+        ]);
+
+        $row = $stmt->fetch();
+        $count = $row ? (int)$row['total'] : 0;
+
+        if ($count >= $limit) {
+            $this->applyTemporaryBlock($adminId, $failureType);
+
+        }
+    }
+
+    /**
+     * Applies a Temp Block and checks if it should be escalated to Permanent.
+     */
+    private function applyTemporaryBlock($adminId = null, $blockType = 'email') {
+        $this->conn->beginTransaction();
+
+        try {
+            if ($blockType === 'password') {
+                 $reason = "Multiple failed password attempts on admin account.";
+
+                 $type_to_log = 'failed_password';
+            } elseif ($blockType === 'otp') {
+                 $reason = "Multiple failed 2FA (OTP) attempts.";
+
+                 $type_to_log = 'failed_otp';
+            } elseif ($blockType === 'email') {
+                 $reason = "Multiple failed email/username attempts (probing).";
+
+                 $type_to_log = 'failed_email';
+            } else {
+                 $reason = "Multiple failed login attempts.";
+
+                 $type_to_log = 'other';
+            }
+
+            $timeframe_hours = 168; // Default 7 days
+            $threshold = 2; // Default 2 blocks
+            
+            $res = $this->conn->query("SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('security_escalation_timeframe_hours', 'security_escalation_threshold')");
+
+            if ($res) {
+                while ($row = $res->fetch()) {
+                    if ($row['setting_key'] === 'security_escalation_timeframe_hours') $timeframe_hours = (int)$row['setting_value'];
+
+                    if ($row['setting_key'] === 'security_escalation_threshold') $threshold = (int)$row['setting_value'];
+                }
+            }
+
+            $check_stmt = $this->conn->prepare("SELECT COUNT(*) as block_count FROM temporary_blocks WHERE ip_blind_index = :bIndex AND blocked_at > NOW() - INTERVAL :hours HOUR");
+
+            $check_stmt->execute([
+                ':bIndex' => $this->blind_index, 
+                ':hours' => $timeframe_hours
+            ]);
+
+            $block_count_row = $check_stmt->fetch();
+            $block_count = $block_count_row ? (int)$block_count_row['block_count'] : 0;
+
+            $will_escalate = ($block_count >= ($threshold - 1));
+
+            $stmt = $this->conn->prepare("INSERT INTO temporary_blocks (ip_address, ip_blind_index, admin_id, reason, origin, block_type) VALUES (:ipEnc, :bIndex, :adminId, :reason, 'system', :blockType)");
+
+            $stmt->execute([
+                ':ipEnc'     => $this->encrypted_ip,
+                ':bIndex'    => $this->blind_index,
+                ':adminId'   => $adminId,
+                ':reason'    => $reason,
+                ':blockType' => $type_to_log
+            ]);
+
+            // Clear tracking tables via Blind Index
+            $this->conn->prepare("DELETE FROM login_attempts WHERE ip_blind_index = :bIndex")->execute([':bIndex' => $this->blind_index]);
+
+            $this->conn->prepare("DELETE FROM admin_login_failures WHERE ip_blind_index = :bIndex")->execute([':bIndex' => $this->blind_index]);
+
+            if ($will_escalate) {
+                $perm_stmt = $this->conn->prepare("INSERT INTO ip_blacklist (ip_address, ip_blind_index, admin_id, reason, origin, block_type) VALUES (:ipEnc, :bIndex, :adminId, :reason, 'system', :blockType) ON DUPLICATE KEY UPDATE blocked_at = NOW()");
+
+                $perm_stmt->execute([
+                    ':ipEnc'     => $this->encrypted_ip,
+                    ':bIndex'    => $this->blind_index,
+                    ':adminId'   => $adminId,
+                    ':reason'    => $reason,
+                    ':blockType' => $type_to_log
+                ]);
+
+                $del_temp = $this->conn->prepare("DELETE FROM temporary_blocks WHERE ip_blind_index = :bIndex");
+                $del_temp->execute([':bIndex' => $this->blind_index]);
+
+                // Do NOT send the raw IP in the notification payload for GDPR safety
+                $this->notifier->create(
+                    'security',
+                    'critical',
+                    'IP Blacklisted (Escalation)',
+                    "An IP has been permanently banned after multiple offenses. Reason: {$reason}",
+                    '/admin/security/brute-force?tab=blacklist'
+                );
+
+            } else {
+                $this->notifier->create(
+                    'security',
+                    'warning',
+                    'Temporary IP Block',
+                    "An IP has been temporarily blocked due to {$reason}",
+                    '/admin/security/brute-force?tab=tempBlocks'
+                );
+
+            }
+
+            $this->conn->commit();
+
+        } catch (Exception $e) {
+            $this->conn->rollBack();
+
+            error_log("SecurityGuard Error: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Executes Garbage Collection for all security modules and system logs.
+     */
+    public function runGarbageCollection() {
+        try {
+            $this->conn->beginTransaction();
+
+            $this->conn->exec("DELETE FROM temporary_blocks WHERE blocked_at < NOW() - INTERVAL 7 DAY");
+
+            $this->conn->exec("DELETE FROM login_attempts WHERE attempted_at < NOW() - INTERVAL 1 DAY");
+
+            $this->conn->exec("DELETE FROM admin_login_failures WHERE attempted_at < NOW() - INTERVAL 1 DAY");
+            
+            $info_days = 30;
+            $resolved_days = 90;
+
+            $res = $this->conn->query("SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('log_retention_info', 'log_retention_resolved')");
+
+            if ($res) {
+                while ($row = $res->fetch()) {
+                    if ($row['setting_key'] === 'log_retention_info') $info_days = (int)$row['setting_value'];
+
+                    if ($row['setting_key'] === 'log_retention_resolved') $resolved_days = (int)$row['setting_value'];
+                }
+            }
+
+            $stmt1 = $this->conn->prepare("DELETE FROM system_error_logs WHERE severity = 'info' AND created_at < NOW() - INTERVAL :days DAY");
+
+            $stmt1->execute([':days' => $info_days]);
+
+            $stmt2 = $this->conn->prepare("DELETE FROM system_error_logs WHERE status IN ('resolved', 'ignored') AND updated_at < NOW() - INTERVAL :days DAY");
+
+            $stmt2->execute([':days' => $resolved_days]);
+
+            $this->conn->commit();
+            return true;
+        } catch (Exception $e) {
+            $this->conn->rollBack();
+
+            error_log("Garbage Collection Error: " . $e->getMessage());
+            return false;
+        }
+    }
+}
+?>

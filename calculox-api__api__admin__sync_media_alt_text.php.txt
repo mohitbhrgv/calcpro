@@ -1,0 +1,141 @@
+<?php
+// File: calcpro-api/api/admin/sync_media_alt_text.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+
+    // --- 2. Validation ---
+    if (!isset($data->media_id) || !is_numeric($data->media_id)) {
+        sendResponse(false, null, 'A valid Media ID is required.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->full_url) || empty($data->full_url)) {
+        sendResponse(false, null, 'The full image URL is required for replacement.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->new_alt_text)) { 
+        sendResponse(false, null, 'New alt text is required.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize and Prepare Data ---
+    $mediaId = (int)$data->media_id;
+    $fullUrl = rtrim($data->full_url, '/'); // Ensure clean URL trailing
+    
+    // FIX: Removed Double-Escaping Bug. Use strip_tags to prevent XSS but allow React to handle entities natively.
+    $safeAltText = strip_tags(trim($data->new_alt_text));
+
+    // --- 4. Begin Database Transaction for Safety ---
+    $conn->beginTransaction();
+
+    // --- 5. Update the Master Record in the 'media' table ---
+    $updateMediaSql = "UPDATE media SET alt_text = :alt WHERE id = :id";
+    $stmtMedia = $conn->prepare($updateMediaSql);
+    
+    if (!$stmtMedia->execute([':alt' => $safeAltText, ':id' => $mediaId])) {
+        $conn->rollBack();
+        $errorInfo = $stmtMedia->errorInfo();
+        throw new Exception("Failed to update master media record: " . $errorInfo[2]);
+    }
+
+    // --- 6. DOMDocument & JSON Helper Functions (Enterprise Data Integrity) ---
+    $likePattern = '%' . $fullUrl . '%';
+
+    function updateHtmlAlt($content, $url, $newAlt) {
+        if (empty($content) || strpos($content, '<img') === false) return $content;
+        
+        $dom = new DOMDocument();
+        libxml_use_internal_errors(true);
+        // LIBXML_HTML_NOIMPLIED prevents PHP from wrapping fragments in <html><body> tags
+        $dom->loadHTML('<?xml encoding="utf-8" ?>' . $content, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+        libxml_clear_errors();
+
+        $images = $dom->getElementsByTagName('img');
+        $changed = false;
+        foreach ($images as $img) {
+            if ($img->getAttribute('src') === $url) {
+                $img->setAttribute('alt', $newAlt);
+                $changed = true;
+            }
+        }
+        
+        if ($changed) {
+            $newContent = '';
+            foreach ($dom->childNodes as $node) {
+                $newContent .= $dom->saveHTML($node);
+            }
+            return trim(str_replace('<?xml encoding="utf-8" ?>', '', $newContent));
+        }
+        return $content;
+    }
+
+    function updateJsonAlt($jsonStr, $url, $newAlt) {
+        $decoded = json_decode($jsonStr, true);
+        if ($decoded === null) return $jsonStr;
+        array_walk_recursive($decoded, function(&$item) use ($url, $newAlt) {
+            if (is_string($item) && strpos($item, '<img') !== false) {
+                $item = updateHtmlAlt($item, $url, $newAlt);
+            }
+        });
+        return json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    $postsUpdated = 0;
+    $calcsUpdated = 0;
+    $pagesUpdated = 0;
+
+    // --- 7. Update all instances in 'posts' content ---
+    $stmtSelPosts = $conn->prepare("SELECT id, content FROM posts WHERE content LIKE :like FOR UPDATE");
+    $stmtUpdPosts = $conn->prepare("UPDATE posts SET content = :content WHERE id = :id");
+    $stmtSelPosts->execute([':like' => $likePattern]);
+    
+    while ($row = $stmtSelPosts->fetch(PDO::FETCH_ASSOC)) {
+        $stmtUpdPosts->execute([':content' => updateHtmlAlt($row['content'], $fullUrl, $safeAltText), ':id' => $row['id']]);
+        $postsUpdated++;
+    }
+
+    // --- 8. Update all instances in 'calculators' content ---
+    $stmtSelCalcs = $conn->prepare("SELECT id, content FROM calculators WHERE content LIKE :like FOR UPDATE");
+    $stmtUpdCalcs = $conn->prepare("UPDATE calculators SET content = :content WHERE id = :id");
+    $stmtSelCalcs->execute([':like' => $likePattern]);
+    
+    while ($row = $stmtSelCalcs->fetch(PDO::FETCH_ASSOC)) {
+        $stmtUpdCalcs->execute([':content' => updateHtmlAlt($row['content'], $fullUrl, $safeAltText), ':id' => $row['id']]);
+        $calcsUpdated++;
+    }
+
+    // --- 9. FIX: Update all instances in 'pages' content (JSON) ---
+    $stmtSelPages = $conn->prepare("SELECT id, content_json FROM pages WHERE content_json LIKE :like FOR UPDATE");
+    $stmtUpdPages = $conn->prepare("UPDATE pages SET content_json = :content WHERE id = :id");
+    $stmtSelPages->execute([':like' => $likePattern]);
+    
+    while ($row = $stmtSelPages->fetch(PDO::FETCH_ASSOC)) {
+        $stmtUpdPages->execute([':content' => updateJsonAlt($row['content_json'], $fullUrl, $safeAltText), ':id' => $row['id']]);
+        $pagesUpdated++;
+    }
+
+    // --- 10. Commit and Send Response ---
+    $conn->commit();
+    sendResponse(true, [
+        'posts_affected' => $postsUpdated, 
+        'calculators_affected' => $calcsUpdated,
+        'pages_affected' => $pagesUpdated
+    ], 'Alt text synchronized successfully while preserving exact data formatting.');
+
+} catch (Exception $e) {
+    if (isset($conn) && $conn->inTransaction()) {
+        $conn->rollBack();
+    }
+    error_log("Error in sync_media_alt_text.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred during synchronization.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

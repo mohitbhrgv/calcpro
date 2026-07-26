@@ -1,0 +1,229 @@
+<?php
+// File: calcpro-api/api/admin/update_post.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+require_once '../../core/auth.php';
+
+// --- SECURITY CHECK ---
+$admin_data = verifyAdminToken();
+
+try {
+    // --- 1. Get Incoming Data ---
+    $json = file_get_contents('php://input');
+    $data = json_decode($json);
+    
+    // --- 2. Validation ---
+    if (!isset($data->id) || !is_numeric($data->id)) {
+        sendResponse(false, null, 'A valid Post ID is required.', 400, 'INVALID_INPUT');
+    }
+    if (!isset($data->title) || empty(trim($data->title))) {
+        sendResponse(false, null, 'Post title cannot be empty.', 400, 'INVALID_INPUT');
+    }
+
+    // --- 3. Sanitize and Prepare Data ---
+    $id = (int)$data->id;
+    $title = trim($data->title);
+    $slug = trim($data->slug);
+    $content = $data->content ?? '';
+    $excerpt = isset($data->excerpt) ? trim($data->excerpt) : null;
+    $status = in_array($data->status, ['published', 'draft', 'trash']) ? $data->status : 'draft';
+    
+    // Display Author (New Addition)
+    $display_author_id = (isset($data->display_author_id) && is_numeric($data->display_author_id) && $data->display_author_id > 0) ? (int)$data->display_author_id : null;
+
+    $read_time = function_exists('calculate_reading_time') ? calculate_reading_time($content) : 1;
+    $featuredImageId = (isset($data->featuredImageId) && is_numeric($data->featuredImageId)) ? (int)$data->featuredImageId : null;
+
+    $categoryIds = isset($data->categories) && is_array($data->categories) ? $data->categories : [];
+    $tagIds = isset($data->tags) && is_array($data->tags) ? $data->tags : [];
+
+    $primary_category_id = (isset($data->primary_category_id) && is_numeric($data->primary_category_id) && $data->primary_category_id > 0)
+                            ? (int)$data->primary_category_id
+                            : null;
+
+    $metaTitle = isset($data->metaTitle) ? trim($data->metaTitle) : null;
+    $metaDescription = isset($data->metaDescription) ? trim($data->metaDescription) : null;
+    $focusKeywords = isset($data->focusKeywords) ? trim($data->focusKeywords) : null;
+    $canonicalUrl = isset($data->canonical_url) ? trim($data->canonical_url) : null;
+
+    // Robots Meta
+    $noIndex = property_exists($data, 'no_index') && $data->no_index !== null ? (int)$data->no_index : null;
+    $noFollow = property_exists($data, 'no_follow') && $data->no_follow !== null ? (int)$data->no_follow : null;
+    $noArchive = property_exists($data, 'no_archive') && $data->no_archive !== null ? (int)$data->no_archive : null;
+    $noImageIndex = property_exists($data, 'no_image_index') && $data->no_image_index !== null ? (int)$data->no_image_index : null;
+    $noSnippet = property_exists($data, 'no_snippet') && $data->no_snippet !== null ? (int)$data->no_snippet : null;
+
+    // Advanced Meta
+    $maxSnippet = property_exists($data, 'max_snippet') && $data->max_snippet !== null ? (int)$data->max_snippet : null;
+    $maxVideoPreview = property_exists($data, 'max_video_preview') && $data->max_video_preview !== null ? (int)$data->max_video_preview : null;
+    $maxImagePreview = isset($data->max_image_preview) ? trim($data->max_image_preview) : null;
+
+    // OpenGraph SEO (WITH RELATIONAL SYNC)
+    $ogTitle = isset($data->ogTitle) ? trim($data->ogTitle) : null;
+    $ogDescription = isset($data->ogDescription) ? trim($data->ogDescription) : null;
+    $og_image = isset($data->og_image) ? trim($data->og_image) : null;
+    $og_image_id = function_exists('getMediaIdFromUrl') ? getMediaIdFromUrl($conn, $og_image) : null;
+
+    // Twitter SEO (WITH RELATIONAL SYNC)
+    $twitterTitle = isset($data->twitterTitle) ? trim($data->twitterTitle) : null;
+    $twitterDescription = isset($data->twitterDescription) ? trim($data->twitterDescription) : null;
+    $twitterImage = isset($data->twitterImage) ? trim($data->twitterImage) : null;
+    $twitter_image_id = function_exists('getMediaIdFromUrl') ? getMediaIdFromUrl($conn, $twitterImage) : null;
+    $twitterSync = (isset($data->twitterSync) && $data->twitterSync === false) ? 0 : 1;
+
+    // FAQ JSON
+    $faqJson = (isset($data->faq_json) && (is_array($data->faq_json) || is_object($data->faq_json)))
+        ? json_encode($data->faq_json)
+        : '[]';
+
+    // --- 3.1 Advanced Data Sanitization (Layout Fix) ---
+    // Safely removes excessive non-breaking spaces before hitting the database
+    if (!empty($content)) {
+        $content = preg_replace('/(&nbsp;|&#160;|\x{00A0}|\xC2\xA0)+/iu', ' ', $content);
+    }
+    if (!empty($faqJson) && $faqJson !== '[]') {
+        $faqJson = preg_replace('/(&nbsp;|&#160;|\x{00A0}|\xC2\xA0)+/iu', ' ', $faqJson);
+    }
+        
+    // Schema Enabled (Replaces schema_json)
+    $schema_enabled = (isset($data->schema_enabled) && $data->schema_enabled === false) ? 0 : 1;
+    
+    $isMinorEdit = (isset($data->is_minor_edit) && $data->is_minor_edit === true);
+
+    // Preserving the literal string since it does not contain external variables
+    $updateTimestampSql = $isMinorEdit ? "updated_at = updated_at" : "updated_at = NOW()";
+
+    // --- 4. Check for Duplicate Slug ---
+    $sql_check = "SELECT id FROM posts WHERE slug = :slug AND id != :id";
+    $stmt_check = $conn->prepare($sql_check);
+    $stmt_check->execute([':slug' => $slug, ':id' => $id]);
+    
+    if ($stmt_check->fetch(PDO::FETCH_ASSOC)) {
+        sendResponse(false, null, 'Another post with this slug already exists.', 409, 'DUPLICATE_SLUG');
+    }
+
+    // --- 5. Begin Transaction ---
+    $conn->beginTransaction();
+
+    // --- 6. Execute Update ---
+    $sql = "UPDATE posts SET 
+                title = :title, 
+                slug = :slug, 
+                content = :content, 
+                faq_json = :faq_json,
+                excerpt = :excerpt, 
+                status = :status, 
+                display_author_id = :display_author_id,
+                featured_image_id = :featured_image_id, 
+                read_time = :read_time,
+                meta_title = :meta_title, 
+                meta_description = :meta_description, 
+                focus_keywords = :focus_keywords, 
+                canonical_url = :canonical_url,
+                no_index = :no_index,
+                no_follow = :no_follow,
+                no_archive = :no_archive,
+                no_image_index = :no_image_index,
+                no_snippet = :no_snippet,
+                max_snippet = :max_snippet,
+                max_video_preview = :max_video_preview,
+                max_image_preview = :max_image_preview,
+                og_title = :og_title, 
+                og_description = :og_description, 
+                og_image = :og_image,
+                og_image_id = :og_image_id, 
+                twitter_title = :twitter_title,
+                twitter_description = :twitter_description,
+                twitter_image = :twitter_image,
+                twitter_image_id = :twitter_image_id, 
+                twitter_sync = :twitter_sync,
+                schema_enabled = :schema_enabled,
+                primary_category_id = :primary_category_id,
+                $updateTimestampSql 
+            WHERE id = :id";
+            
+    $stmt = $conn->prepare($sql);
+    
+    if (!$stmt->execute([
+        ':title' => $title,
+        ':slug' => $slug,
+        ':content' => $content,
+        ':faq_json' => $faqJson,
+        ':excerpt' => $excerpt,
+        ':status' => $status,
+        ':display_author_id' => $display_author_id,
+        ':featured_image_id' => $featuredImageId,
+        ':read_time' => $read_time,
+        ':meta_title' => $metaTitle,
+        ':meta_description' => $metaDescription,
+        ':focus_keywords' => $focusKeywords,
+        ':canonical_url' => $canonicalUrl,
+        ':no_index' => $noIndex,
+        ':no_follow' => $noFollow,
+        ':no_archive' => $noArchive,
+        ':no_image_index' => $noImageIndex,
+        ':no_snippet' => $noSnippet,
+        ':max_snippet' => $maxSnippet,
+        ':max_video_preview' => $maxVideoPreview,
+        ':max_image_preview' => $maxImagePreview,
+        ':og_title' => $ogTitle,
+        ':og_description' => $ogDescription,
+        ':og_image' => $og_image,
+        ':og_image_id' => $og_image_id,
+        ':twitter_title' => $twitterTitle,
+        ':twitter_description' => $twitterDescription,
+        ':twitter_image' => $twitterImage,
+        ':twitter_image_id' => $twitter_image_id,
+        ':twitter_sync' => $twitterSync,
+        ':schema_enabled' => $schema_enabled,
+        ':primary_category_id' => $primary_category_id,
+        ':id' => $id
+    ])) {
+        $conn->rollBack();
+        $errorInfo = $stmt->errorInfo();
+        throw new Exception("Post update failed: " . $errorInfo[2]);
+    }
+
+    // --- 7. Sync Categories ---
+    $stmtDelCat = $conn->prepare("DELETE FROM post_categories WHERE post_id = :id");
+    $stmtDelCat->execute([':id' => $id]);
+    
+    if (!empty($categoryIds)) {
+        $catStmt = $conn->prepare("INSERT INTO post_categories (post_id, category_id) VALUES (:post_id, :cat_id)");
+        foreach ($categoryIds as $catId) {
+            $catStmt->execute([':post_id' => $id, ':cat_id' => (int)$catId]);
+        }
+    }
+
+    // --- 8. Sync Tags ---
+    $stmtDelTag = $conn->prepare("DELETE FROM post_tags WHERE post_id = :id");
+    $stmtDelTag->execute([':id' => $id]);
+    
+    if (!empty($tagIds)) {
+        $tagStmt = $conn->prepare("INSERT INTO post_tags (post_id, tag_id) VALUES (:post_id, :tag_id)");
+        foreach ($tagIds as $tId) {
+            $tagStmt->execute([':post_id' => $id, ':tag_id' => (int)$tId]);
+        }
+    }
+
+    // --- 9. Commit ---
+    $conn->commit();
+    
+    $successMsg = $isMinorEdit 
+        ? 'Post updated (Minor Edit - date preserved).'
+        : 'Post updated successfully.';
+
+    sendResponse(true, null, $successMsg, 200);
+
+} catch (Exception $e) {
+    if ($conn->inTransaction()) {
+        $conn->rollBack();
+    }
+    error_log("Error in update_post.php: " . $e->getMessage());
+    sendResponse(false, null, 'Error: ' . $e->getMessage(), 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

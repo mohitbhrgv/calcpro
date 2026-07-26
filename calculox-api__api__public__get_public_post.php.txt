@@ -1,0 +1,319 @@
+<?php
+// File: calcpro-api/api/public/get_public_post.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+// Bulletproof Engine to fetch Alt Text and Dimensions from a raw URL string using PDO
+function getMediaData($conn, $url) {
+    if (empty($url)) return ['alt' => null, 'width' => null, 'height' => null];
+    $filename = basename($url);
+    $stmt = $conn->prepare("SELECT alt_text, dimensions FROM media WHERE file_name = :file_name LIMIT 1");
+    if (!$stmt) return ['alt' => null, 'width' => null, 'height' => null];
+    
+    $stmt->execute([':file_name' => $filename]);
+    $data = ['alt' => null, 'width' => null, 'height' => null];
+    if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $data['alt'] = $row['alt_text'];
+        if (!empty($row['dimensions'])) {
+            $dims = explode('x', strtolower($row['dimensions']));
+            if (count($dims) === 2) {
+                $data['width'] = (int)$dims[0];
+                $data['height'] = (int)$dims[1];
+            }
+        }
+    }
+    return $data;
+}
+
+try {
+    // --- 1. Validate Input ---
+    if (!isset($_GET['slug']) || empty(trim($_GET['slug']))) {
+        sendResponse(false, null, 'A post slug is required.', 400, 'INVALID_INPUT');
+    }
+    $slug = trim($_GET['slug']);
+
+    // --- ENTERPRISE FIX: Pre-fetch Super Admin Metadata for Fallback (Now includes short_description) ---
+    $superAdminStmt = $conn->query("SELECT a.name, a.slug, a.role, a.short_description, a.bio, a.social_links, m.upload_path as image_path FROM author_profiles a LEFT JOIN media m ON a.profile_image_id = m.id WHERE a.is_super_admin = 1 LIMIT 1");
+    $superAdmin = $superAdminStmt->fetch(PDO::FETCH_ASSOC);
+
+    // --- 2. Main Post Query (UPDATED TO FETCH GUEST AUTHOR SHORT DESCRIPTION) ---
+    $sql = "
+        SELECT
+            p.id, p.title, p.slug, p.content, p.faq_json, p.excerpt, p.read_time,
+            p.created_at as published_date,
+            p.updated_at,
+            p.meta_title, p.meta_description, p.focus_keywords,
+           
+            p.canonical_url,
+            p.no_index, p.no_follow, p.no_archive, p.no_image_index, p.no_snippet,
+            p.max_snippet, p.max_video_preview, p.max_image_preview,
+            p.og_title, p.og_description, p.og_image, p.og_image_id,
+            p.twitter_title, p.twitter_description, p.twitter_image, p.twitter_image_id, p.twitter_sync,
+            p.schema_enabled, 
+            
+            a.name as admin_author_name, a.role as admin_author_role,
+            ap.name as guest_author_name, ap.slug as guest_author_slug, ap.role as guest_author_role, ap.short_description as author_short_description, ap.bio as author_bio, ap.social_links as author_social_links,
+            ap.is_super_admin as ap_is_super_admin, 
+            ap_m.upload_path as author_image_path,
+            
+            m.upload_path as featured_image_path,
+            m.alt_text as featured_image_alt,
+ 
+            m.dimensions as featured_image_dimensions,
+            og_m.upload_path as og_image_path,
+            og_m.alt_text as og_image_alt_db,
+            og_m.dimensions as og_image_dimensions,
+            tw_m.upload_path as twitter_image_path,
+            tw_m.alt_text as twitter_image_alt_db,
+            tw_m.dimensions as twitter_image_dimensions,
+   
+            c_prim.name as primary_category_name,
+            c_prim.slug as primary_category_slug
+        FROM posts p
+        LEFT JOIN admins a ON p.author_id = a.id
+        LEFT JOIN author_profiles ap ON p.display_author_id = ap.id
+        LEFT JOIN media ap_m ON ap.profile_image_id = ap_m.id
+        LEFT JOIN media m ON p.featured_image_id = m.id
+     
+        LEFT JOIN media og_m ON p.og_image_id = og_m.id
+        LEFT JOIN media tw_m ON p.twitter_image_id = tw_m.id
+        LEFT JOIN categories c_prim ON p.primary_category_id = c_prim.id
+        WHERE p.slug = :slug AND p.status = 'published'
+        LIMIT 1
+    ";
+    $stmt = $conn->prepare($sql);
+    $stmt->execute([':slug' => $slug]);
+    $post_db = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$post_db) {
+        // --- 2b. CHECK FOR REDIRECTS ---
+        $redirect_sql = "SELECT target_url, status_code FROM redirects WHERE source_path = :source_path AND status = 'active' LIMIT 1";
+        $r_stmt = $conn->prepare($redirect_sql);
+        
+        if ($r_stmt) {
+            $full_source_path = 'blog/' . $slug;
+            $r_stmt->execute([':source_path' => $full_source_path]);
+            $redirect_data = $r_stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($redirect_data) {
+                sendResponse(true, [
+                    'is_redirect' => true,
+                    'target_url' => $redirect_data['target_url'],
+                    'status_code' => (int)$redirect_data['status_code']
+        
+                ], 'Resource has moved.');
+            }
+        }
+        sendResponse(false, null, 'Post not found or not published.', 404, 'NOT_FOUND');
+    }
+
+    // --- 3. Fetch Categories ---
+    $categorySql = "
+        SELECT c.id, c.name as category_name, c.slug as category_slug
+        FROM categories c
+        JOIN post_categories pc ON c.id = pc.category_id
+        WHERE pc.post_id = :post_id
+        ORDER BY c.id ASC
+    ";
+    $categoryStmt = $conn->prepare($categorySql);
+    $categoryStmt->execute([':post_id' => $post_db['id']]);
+    $categories = $categoryStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // --- 4. Fetch Tags ---
+    $tagSql = "
+        SELECT t.name, t.slug
+        FROM tags t
+        JOIN post_tags pt ON t.id = pt.tag_id
+        WHERE pt.post_id = :post_id
+    ";
+    $tagStmt = $conn->prepare($tagSql);
+    $tagStmt->execute([':post_id' => $post_db['id']]);
+    $tags = $tagStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // --- 5. Fetch Related Posts ---
+    $catIdForRelated = null;
+    if ($post_db['primary_category_name']) {
+        foreach ($categories as $cat) {
+            if ($cat['category_name'] === $post_db['primary_category_name']) {
+                $catIdForRelated = $cat['id'];
+                break;
+            }
+        }
+    }
+    if (!$catIdForRelated && !empty($categories)) {
+        $catIdForRelated = $categories[0]['id'];
+    }
+
+    $related_posts_db = [];
+    if ($catIdForRelated) {
+        $relatedSql = "
+            SELECT p.title, p.slug, m.upload_path as featured_image_path, p.created_at as published_date
+            FROM posts p
+            JOIN post_categories pc ON p.id = pc.post_id
+            LEFT JOIN media m ON p.featured_image_id = m.id
+          
+            WHERE pc.category_id = :cat_id AND p.id != :post_id AND p.status = 'published'
+            GROUP BY p.id
+            ORDER BY p.created_at DESC
+            LIMIT 3
+        ";
+        $relatedStmt = $conn->prepare($relatedSql);
+        $relatedStmt->execute([
+            ':cat_id' => $catIdForRelated,
+            ':post_id' => $post_db['id']
+        ]);
+        $related_posts_db = $relatedStmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+    
+    // --- 6. Dimension Math Engine ---
+    $api_base_url = $_ENV['API_PUBLIC_URL'];
+    $related_posts_frontend = [];
+    foreach ($related_posts_db as $related_post_db) {
+        $related_posts_frontend[] = [
+            'title' => $related_post_db['title'],
+            'slug' => $related_post_db['slug'],
+            'featured_image_url' => !empty($related_post_db['featured_image_path']) ?
+                rtrim($api_base_url, '/') . '/' . ltrim($related_post_db['featured_image_path'], '/') : null,
+            'published_date' => $related_post_db['published_date']
+        ];
+    }
+    
+    $featured_img_width = null;
+    $featured_img_height = null;
+    if (!empty($post_db['featured_image_dimensions'])) {
+        $dims = explode('x', strtolower($post_db['featured_image_dimensions']));
+        if (count($dims) === 2) {
+            $featured_img_width = (int)$dims[0];
+            $featured_img_height = (int)$dims[1];
+        }
+    }
+
+    $og_img_width = null;
+    $og_img_height = null;
+    if (!empty($post_db['og_image_dimensions'])) {
+        $dims = explode('x', strtolower($post_db['og_image_dimensions']));
+        if (count($dims) === 2) {
+            $og_img_width = (int)$dims[0];
+            $og_img_height = (int)$dims[1];
+        }
+    } elseif (!empty($post_db['og_image'])) {
+        $fallback = getMediaData($conn, $post_db['og_image']);
+        $og_img_width = $fallback['width'];
+        $og_img_height = $fallback['height'];
+        if (empty($post_db['og_image_alt_db'])) $post_db['og_image_alt_db'] = $fallback['alt'];
+    }
+
+    $tw_img_width = null;
+    $tw_img_height = null;
+    if (!empty($post_db['twitter_image_dimensions'])) {
+        $dims = explode('x', strtolower($post_db['twitter_image_dimensions']));
+        if (count($dims) === 2) {
+            $tw_img_width = (int)$dims[0];
+            $tw_img_height = (int)$dims[1];
+        }
+    } elseif (!empty($post_db['twitter_image'])) {
+        $fallback = getMediaData($conn, $post_db['twitter_image']);
+        $tw_img_width = $fallback['width'];
+        $tw_img_height = $fallback['height'];
+        if (empty($post_db['twitter_image_alt_db'])) $post_db['twitter_image_alt_db'] = $fallback['alt'];
+    }
+
+    // --- ENTERPRISE FIX: Dynamic Author Mapping (Fixing the Super Admin Bug) ---
+    $is_explicit_profile = !empty($post_db['guest_author_name']);
+    if ($is_explicit_profile) {
+        $resolved_author_name = $post_db['guest_author_name'];
+        // Keep the role authentic based on what was typed into the database
+        $resolved_author_role = !empty($post_db['guest_author_role']) ? $post_db['guest_author_role'] : 'Author';
+        $resolved_author_short_description = $post_db['author_short_description'];
+        $resolved_author_slug = $post_db['guest_author_slug'];
+        $resolved_author_bio = $post_db['author_bio'];
+        $resolved_author_image_path = $post_db['author_image_path'];
+        $resolved_author_social = $post_db['author_social_links'];
+    } else {
+        // Ultimate fallback: Assign to Super Admin with all their data
+        $resolved_author_name = $superAdmin['name'] ?? $post_db['admin_author_name'];
+        $resolved_author_role = $superAdmin['role'] ?? 'Author';
+        $resolved_author_short_description = $superAdmin['short_description'] ?? null;
+        $resolved_author_slug = $superAdmin['slug'] ?? null;
+        $resolved_author_bio = $superAdmin['bio'] ?? null;
+        $resolved_author_image_path = $superAdmin['image_path'] ?? null;
+        $resolved_author_social = $superAdmin['social_links'] ?? null;
+    }
+
+    $post_frontend = [
+        'id' => (int)$post_db['id'],
+        'title' => $post_db['title'],
+        'slug' => $post_db['slug'],
+        'content' => $post_db['content'],
+        'faq_json' => json_decode($post_db['faq_json'] ?? '[]', true),
+        'schema_enabled' => isset($post_db['schema_enabled']) ? (bool)$post_db['schema_enabled'] : true,
+        'excerpt' => $post_db['excerpt'],
+        'read_time' => (int)$post_db['read_time'],
+        'published_date' => $post_db['published_date'],
+        'updated_at' => $post_db['updated_at'],
+        'meta_title' => $post_db['meta_title'],
+        'meta_description' => $post_db['meta_description'],
+        'focus_keywords' => $post_db['focus_keywords'],
+        
+        // --- INJECTED SECURE AUTHOR PAYLOAD ---
+      
+        'author_name' => $resolved_author_name,
+        'author_slug' => $resolved_author_slug,
+        'author_role' => $resolved_author_role,
+        'author_short_description' => $resolved_author_short_description,
+        'author_bio' => $resolved_author_bio,
+        'author_image_url' => !empty($resolved_author_image_path) ? rtrim($api_base_url, '/') . '/' . ltrim($resolved_author_image_path, '/') : null,
+        'author_social_links' => !empty($resolved_author_social) ? json_decode($resolved_author_social, true) : new stdClass(),
+        
+        'featured_image_url' => !empty($post_db['featured_image_path']) ? rtrim($api_base_url, '/') . '/' . ltrim($post_db['featured_image_path'], '/') : null,
+        'featured_image_alt' => $post_db['featured_image_alt'],
+        'featured_image_width' => $featured_img_width,
+        'featured_image_height' => $featured_img_height,
+        
+        'primary_category_name' => $post_db['primary_category_name'],
+        'primary_category_slug' => $post_db['primary_category_slug'],
+        'parent_category_name' => null, 
+        'parent_category_slug' => null, 
+        'category_name' => $post_db['primary_category_name'] ?: (!empty($categories) ? $categories[0]['category_name'] : null),
+        
+        'categories' => $categories,
+        'tags' => $tags,
+        'related_posts' => $related_posts_frontend,
+        'canonical_url' => $post_db['canonical_url'],
+        
+        'no_index' => $post_db['no_index'] === null ? null : (bool)$post_db['no_index'],
+        'no_follow' => $post_db['no_follow'] === null ? null : (bool)$post_db['no_follow'],
+        'no_archive' => $post_db['no_archive'] === null ? null : (bool)$post_db['no_archive'],
+        'no_image_index' => $post_db['no_image_index'] === null ? null : (bool)$post_db['no_image_index'],
+        'no_snippet' => $post_db['no_snippet'] === null ? null : (bool)$post_db['no_snippet'],
+        'max_snippet' => $post_db['max_snippet'] !== null ? (int)$post_db['max_snippet'] : null,
+        'max_video_preview' => $post_db['max_video_preview'] !== null ? (int)$post_db['max_video_preview'] : null,
+        'max_image_preview' => $post_db['max_image_preview'],
+
+        'og_title' => $post_db['og_title'],
+        'og_description' => $post_db['og_description'],
+        'og_image' => !empty($post_db['og_image_path']) ? rtrim($api_base_url, '/') . '/' . ltrim($post_db['og_image_path'], '/') : $post_db['og_image'],
+        'og_image_alt' => !empty($post_db['og_image_alt_db']) ? $post_db['og_image_alt_db'] : null, 
+        'og_image_width' => $og_img_width,
+        'og_image_height' => $og_img_height,
+        
+        'twitter_title' => $post_db['twitter_title'],
+        'twitter_description' => $post_db['twitter_description'],
+        'twitter_image' => !empty($post_db['twitter_image_path']) ? rtrim($api_base_url, '/') . '/' . ltrim($post_db['twitter_image_path'], '/') : $post_db['twitter_image'],
+        'twitter_image_alt' => !empty($post_db['twitter_image_alt_db']) ? $post_db['twitter_image_alt_db'] : null, 
+        'twitter_image_width' => $tw_img_width,
+        'twitter_image_height' => $tw_img_height,
+        
+        'twitter_sync' => isset($post_db['twitter_sync']) ? (bool)$post_db['twitter_sync'] : true,
+    ];
+
+    sendResponse(true, $post_frontend, 'Post fetched successfully.');
+} catch (Exception $e) {
+    error_log("Error in get_public_post.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching the post.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

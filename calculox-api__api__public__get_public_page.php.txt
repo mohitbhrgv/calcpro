@@ -1,0 +1,173 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+// Bulletproof Engine to fetch Alt Text and Dimensions from a raw URL string using PDO
+function getMediaData($conn, $url) {
+    if (empty($url)) return ['alt' => null, 'width' => null, 'height' => null];
+    
+    $filename = basename($url);
+    $stmt = $conn->prepare("SELECT alt_text, dimensions FROM media WHERE file_name = :file_name LIMIT 1");
+    if (!$stmt) return ['alt' => null, 'width' => null, 'height' => null];
+    
+    $stmt->execute([':file_name' => $filename]);
+    $data = ['alt' => null, 'width' => null, 'height' => null];
+    
+    if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $data['alt'] = $row['alt_text'];
+        if (!empty($row['dimensions'])) {
+            $dims = explode('x', strtolower($row['dimensions']));
+            if (count($dims) === 2) {
+                $data['width'] = (int)$dims[0];
+                $data['height'] = (int)$dims[1];
+            }
+        }
+    }
+    return $data;
+}
+
+try {
+    if (!isset($_GET['slug']) || empty(trim($_GET['slug']))) {
+        sendResponse(false, null, 'A page slug is required.', 400, 'INVALID_INPUT');
+    }
+    $slug = trim($_GET['slug']);
+    
+    // --- Main Query ---
+    $sql = "
+        SELECT 
+            p.*, 
+            m.upload_path as featured_image_path, 
+            m.alt_text as featured_image_alt, 
+            m.dimensions as featured_image_dimensions,
+            og_m.upload_path as og_image_path,
+            og_m.alt_text as og_image_alt_db,
+            og_m.dimensions as og_image_dimensions,
+            tw_m.upload_path as twitter_image_path,
+            tw_m.alt_text as twitter_image_alt_db,
+            tw_m.dimensions as twitter_image_dimensions
+        FROM pages p
+        LEFT JOIN media m ON p.featured_image_id = m.id
+        LEFT JOIN media og_m ON p.og_image_id = og_m.id
+        LEFT JOIN media tw_m ON p.twitter_image_id = tw_m.id
+        WHERE p.slug = :slug AND p.status = 'published'
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare statement failed: ' . $errorInfo[2]);
+    }
+    
+    $stmt->execute([':slug' => $slug]);
+    $page = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($page) {
+        $api_base_url = $_ENV['API_PUBLIC_URL'] ?? 'https://calculox.com';
+
+        // 1. Dimensions: Featured
+        $featured_img_width = null;
+        $featured_img_height = null;
+        if (!empty($page['featured_image_dimensions'])) {
+            $dims = explode('x', strtolower($page['featured_image_dimensions']));
+            if (count($dims) === 2) {
+                $featured_img_width = (int)$dims[0];
+                $featured_img_height = (int)$dims[1];
+            }
+        }
+
+        // 2. Dimensions: OG
+        $og_img_width = null;
+        $og_img_height = null;
+        if (!empty($page['og_image_dimensions'])) {
+            $dims = explode('x', strtolower($page['og_image_dimensions']));
+            if (count($dims) === 2) {
+                $og_img_width = (int)$dims[0];
+                $og_img_height = (int)$dims[1];
+            }
+        } elseif (!empty($page['og_image'])) {
+            $fallback = getMediaData($conn, $page['og_image']);
+            $og_img_width = $fallback['width'];
+            $og_img_height = $fallback['height'];
+            if (empty($page['og_image_alt_db'])) $page['og_image_alt_db'] = $fallback['alt'];
+        }
+
+        // 3. Dimensions: Twitter
+        $tw_img_width = null;
+        $tw_img_height = null;
+        if (!empty($page['twitter_image_dimensions'])) {
+            $dims = explode('x', strtolower($page['twitter_image_dimensions']));
+            if (count($dims) === 2) {
+                $tw_img_width = (int)$dims[0];
+                $tw_img_height = (int)$dims[1];
+            }
+        } elseif (!empty($page['twitter_image'])) {
+            $fallback = getMediaData($conn, $page['twitter_image']);
+            $tw_img_width = $fallback['width'];
+            $tw_img_height = $fallback['height'];
+            if (empty($page['twitter_image_alt_db'])) $page['twitter_image_alt_db'] = $fallback['alt'];
+        }
+
+        // --- Output Mapping ---
+        $page_frontend = [
+            'id' => (int)$page['id'],
+            'title' => $page['title'],
+            'slug' => $page['slug'],
+            'page_key' => $page['page_key'],
+            'content' => json_decode($page['content_json'] ?? '{}', true),
+            'status' => $page['status'],
+
+            'featured_image_url' => !empty($page['featured_image_path']) ? rtrim($api_base_url, '/') . '/' . $page['featured_image_path'] : null,
+            'featured_image_alt' => $page['featured_image_alt'],
+            'featured_image_width' => $featured_img_width,
+            'featured_image_height' => $featured_img_height,
+            
+            'meta_title' => $page['meta_title'],
+            'meta_description' => $page['meta_description'],
+            'focus_keywords' => $page['focus_keywords'],
+            'canonical_url' => $page['canonical_url'],
+            
+            'og_title' => $page['og_title'],
+            'og_description' => $page['og_description'],
+            'og_image' => !empty($page['og_image_path']) ? rtrim($api_base_url, '/') . '/' . $page['og_image_path'] : $page['og_image'],
+            'og_image_alt' => !empty($page['og_image_alt_db']) ? $page['og_image_alt_db'] : null, 
+            'og_image_width' => $og_img_width,
+            'og_image_height' => $og_img_height,
+            
+            'twitter_title' => $page['twitter_title'],
+            'twitter_description' => $page['twitter_description'],
+            'twitter_image' => !empty($page['twitter_image_path']) ? rtrim($api_base_url, '/') . '/' . $page['twitter_image_path'] : $page['twitter_image'],
+            'twitter_image_alt' => !empty($page['twitter_image_alt_db']) ? $page['twitter_image_alt_db'] : null, 
+            'twitter_image_width' => $tw_img_width,
+            'twitter_image_height' => $tw_img_height,
+            
+            'twitter_sync' => isset($page['twitter_sync']) ? (bool)$page['twitter_sync'] : true,
+
+            'no_index' => $page['no_index'] === null ? null : (bool)$page['no_index'],
+            'no_follow' => $page['no_follow'] === null ? null : (bool)$page['no_follow'],
+            'no_archive' => $page['no_archive'] === null ? null : (bool)$page['no_archive'],
+            'no_image_index' => $page['no_image_index'] === null ? null : (bool)$page['no_image_index'],
+            'no_snippet' => $page['no_snippet'] === null ? null : (bool)$page['no_snippet'],
+            'max_snippet' => $page['max_snippet'] !== null ? (int)$page['max_snippet'] : null,
+            'max_video_preview' => $page['max_video_preview'] !== null ? (int)$page['max_video_preview'] : null,
+            'max_image_preview' => $page['max_image_preview'],
+
+            // FIX: Map schema_enabled as boolean instead of decoding schema_json
+            'schema_enabled' => isset($page['schema_enabled']) ? (bool)$page['schema_enabled'] : true,
+            'created_at' => $page['created_at'],
+            'updated_at' => $page['updated_at']
+        ];
+        
+        sendResponse(true, $page_frontend, 'Page content fetched successfully.');
+    } else {
+        sendResponse(false, null, 'Page not found.', 404, 'NOT_FOUND');
+    }
+
+} catch (Exception $e) {
+    error_log("Error in get_public_page.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching the page content.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

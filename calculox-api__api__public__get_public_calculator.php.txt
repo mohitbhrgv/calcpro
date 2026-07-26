@@ -1,0 +1,204 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+// Bulletproof Engine to fetch Alt Text and Dimensions from a raw URL string using PDO
+function getMediaData($conn, $url) {
+    if (empty($url)) return ['alt' => null, 'width' => null, 'height' => null];
+    
+    $filename = basename($url);
+    $stmt = $conn->prepare("SELECT alt_text, dimensions FROM media WHERE file_name = :file_name LIMIT 1");
+    
+    if (!$stmt) return ['alt' => null, 'width' => null, 'height' => null];
+    
+    $stmt->execute([':file_name' => $filename]);
+    $data = ['alt' => null, 'width' => null, 'height' => null];
+    
+    if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $data['alt'] = $row['alt_text'];
+        if (!empty($row['dimensions'])) {
+            $dims = explode('x', strtolower($row['dimensions']));
+            if (count($dims) === 2) {
+                $data['width'] = (int)$dims[0];
+                $data['height'] = (int)$dims[1];
+            }
+        }
+    }
+    return $data;
+}
+
+try {
+    if (!isset($_GET['slug']) || empty(trim($_GET['slug']))) {
+        sendResponse(false, null, 'A calculator slug is required.', 400, 'INVALID_INPUT');
+    }
+    $slug = trim($_GET['slug']);
+    
+    // --- Main Calculator Query ---
+    $sql = "
+        SELECT 
+            c.*,
+            m.upload_path as featured_image_path,
+            m.alt_text as featured_image_alt,
+            m.dimensions as featured_image_dimensions,
+            og_m.upload_path as og_image_path,
+            og_m.alt_text as og_image_alt_db,
+            og_m.dimensions as og_image_dimensions,
+            tw_m.upload_path as twitter_image_path,
+            tw_m.alt_text as twitter_image_alt_db,
+            tw_m.dimensions as twitter_image_dimensions,
+            c_prim.name as primary_category_name,
+            c_prim.slug as primary_category_slug,
+            GROUP_CONCAT(DISTINCT cc.name SEPARATOR '||') as category_names,
+            GROUP_CONCAT(DISTINCT cc.slug SEPARATOR '||') as category_slugs
+        FROM calculators c
+        LEFT JOIN media m ON c.featured_image_id = m.id
+        LEFT JOIN media og_m ON c.og_image_id = og_m.id
+        LEFT JOIN media tw_m ON c.twitter_image_id = tw_m.id
+        LEFT JOIN calculator_category_assignments cca ON c.id = cca.calculator_id
+        LEFT JOIN calculator_categories cc ON cca.category_id = cc.id
+        LEFT JOIN calculator_categories c_prim ON c.primary_category_id = c_prim.id
+        WHERE c.slug = :slug AND c.status = 'published'
+        GROUP BY c.id
+        LIMIT 1
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    $stmt->execute([':slug' => $slug]);
+    $calculator = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if ($calculator) {
+        // Process Categories
+        if (!empty($calculator['category_names']) && !empty($calculator['category_slugs'])) {
+            $categoryNames = explode('||', $calculator['category_names']);
+            $categorySlugs = explode('||', $calculator['category_slugs']);
+            
+            if ($calculator['primary_category_name']) {
+                $calculator['primary_category'] = [
+                    'name' => $calculator['primary_category_name'],
+                    'slug' => $calculator['primary_category_slug']
+                ];
+            } else {
+                $calculator['primary_category'] = [
+                    'name' => $categoryNames[0],
+                    'slug' => $categorySlugs[0]
+                ];
+            }
+        } else {
+            $calculator['primary_category'] = null;
+        }
+
+        // Fetch Associated Tags
+        $tagsSql = "
+            SELECT t.name, t.slug 
+            FROM tags t
+            JOIN calculator_tags ct ON t.id = ct.tag_id
+            WHERE ct.calculator_id = :calc_id
+        ";
+        $tagsStmt = $conn->prepare($tagsSql);
+        $tagsStmt->execute([':calc_id' => $calculator['id']]);
+        
+        $tags = [];
+        while($row = $tagsStmt->fetch(PDO::FETCH_ASSOC)) {
+            $tags[] = $row;
+        }
+        $calculator['tags'] = $tags;
+
+        $calculator['faq_json'] = json_decode($calculator['faq_json'] ?? '[]', true);
+        $calculator['schema_enabled'] = isset($calculator['schema_enabled']) ? (bool)$calculator['schema_enabled'] : true;
+        unset($calculator['schema_json']); // Ensure it doesn't accidentally pass through
+        
+        $calculator['is_featured'] = (bool)$calculator['is_featured'];
+        $api_base_url = $_ENV['API_PUBLIC_URL'] ?? 'https://calculox.com';
+
+        // 1. Dimensions: Featured Image
+        $featured_img_width = null;
+        $featured_img_height = null;
+        if (!empty($calculator['featured_image_dimensions'])) {
+            $dims = explode('x', strtolower($calculator['featured_image_dimensions']));
+            if (count($dims) === 2) {
+                $featured_img_width = (int)$dims[0];
+                $featured_img_height = (int)$dims[1];
+            }
+        }
+
+        // 2. Dimensions: OG Image
+        $og_img_width = null;
+        $og_img_height = null;
+        if (!empty($calculator['og_image_dimensions'])) {
+            $dims = explode('x', strtolower($calculator['og_image_dimensions']));
+            if (count($dims) === 2) {
+                $og_img_width = (int)$dims[0];
+                $og_img_height = (int)$dims[1];
+            }
+        } elseif (!empty($calculator['og_image'])) {
+            $fallback = getMediaData($conn, $calculator['og_image']);
+            $og_img_width = $fallback['width'];
+            $og_img_height = $fallback['height'];
+            if (empty($calculator['og_image_alt_db'])) $calculator['og_image_alt_db'] = $fallback['alt'];
+        }
+
+        // 3. Dimensions: Twitter Image
+        $tw_img_width = null;
+        $tw_img_height = null;
+        if (!empty($calculator['twitter_image_dimensions'])) {
+            $dims = explode('x', strtolower($calculator['twitter_image_dimensions']));
+            if (count($dims) === 2) {
+                $tw_img_width = (int)$dims[0];
+                $tw_img_height = (int)$dims[1];
+            }
+        } elseif (!empty($calculator['twitter_image'])) {
+            $fallback = getMediaData($conn, $calculator['twitter_image']);
+            $tw_img_width = $fallback['width'];
+            $tw_img_height = $fallback['height'];
+            if (empty($calculator['twitter_image_alt_db'])) $calculator['twitter_image_alt_db'] = $fallback['alt'];
+        }
+
+        // Final Response Mapping
+        $calculator['featured_image_url'] = !empty($calculator['featured_image_path']) ? rtrim($api_base_url, '/') . '/' . $calculator['featured_image_path'] : null;
+        $calculator['featured_image_width'] = $featured_img_width;
+        $calculator['featured_image_height'] = $featured_img_height;
+
+        $calculator['focusKeywords'] = $calculator['focus_keywords'];
+        $calculator['canonical_url'] = $calculator['canonical_url'];
+        $calculator['ogTitle'] = $calculator['og_title'];
+        $calculator['ogDescription'] = $calculator['og_description'];
+        $calculator['ogImage'] = !empty($calculator['og_image_path']) ? rtrim($api_base_url, '/') . '/' . $calculator['og_image_path'] : $calculator['og_image'];
+        $calculator['ogImageAlt'] = !empty($calculator['og_image_alt_db']) ? $calculator['og_image_alt_db'] : null;
+        
+        $calculator['ogImageWidth'] = $og_img_width;
+        $calculator['ogImageHeight'] = $og_img_height;
+        $calculator['og_image_width'] = $og_img_width; 
+        $calculator['og_image_height'] = $og_img_height;
+        
+        $calculator['twitterTitle'] = $calculator['twitter_title'];
+        $calculator['twitterDescription'] = $calculator['twitter_description'];
+        $calculator['twitterImage'] = !empty($calculator['twitter_image_path']) ? rtrim($api_base_url, '/') . '/' . $calculator['twitter_image_path'] : $calculator['twitter_image'];
+        $calculator['twitterImageAlt'] = !empty($calculator['twitter_image_alt_db']) ? $calculator['twitter_image_alt_db'] : null;
+
+        $calculator['twitterImageWidth'] = $tw_img_width;
+        $calculator['twitterImageHeight'] = $tw_img_height;
+        $calculator['twitter_image_width'] = $tw_img_width;
+        $calculator['twitter_image_height'] = $tw_img_height;
+        $calculator['twitterSync'] = isset($calculator['twitter_sync']) ? (bool)$calculator['twitter_sync'] : true;
+
+        $calculator['no_index'] = $calculator['no_index'] === null ? null : (bool)$calculator['no_index'];
+        $calculator['no_follow'] = $calculator['no_follow'] === null ? null : (bool)$calculator['no_follow'];
+        $calculator['no_archive'] = $calculator['no_archive'] === null ? null : (bool)$calculator['no_archive'];
+        $calculator['no_image_index'] = $calculator['no_image_index'] === null ? null : (bool)$calculator['no_image_index'];
+        $calculator['no_snippet'] = $calculator['no_snippet'] === null ? null : (bool)$calculator['no_snippet'];
+        $calculator['max_snippet'] = $calculator['max_snippet'] !== null ? (int)$calculator['max_snippet'] : null;
+        $calculator['max_video_preview'] = $calculator['max_video_preview'] !== null ? (int)$calculator['max_video_preview'] : null;
+        
+        sendResponse(true, $calculator, 'Calculator content fetched successfully.');
+    } else {
+        sendResponse(false, null, 'Calculator content not found.', 404, 'NOT_FOUND');
+    }
+
+} catch (Exception $e) {
+    error_log("Error in get_public_calculator.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching calculator content.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

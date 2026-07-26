@@ -1,0 +1,362 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+// Bulletproof Engine to fetch Alt Text and Dimensions from a raw URL string using PDO
+function getMediaDataFallback($conn, $url) {
+    if (empty($url)) return ['alt' => null, 'width' => null, 'height' => null];
+    
+    $filename = basename($url);
+    $stmt = $conn->prepare("SELECT alt_text, dimensions FROM media WHERE file_name = :file_name LIMIT 1");
+    
+    if (!$stmt) return ['alt' => null, 'width' => null, 'height' => null];
+    
+    $stmt->execute([':file_name' => $filename]);
+    $data = ['alt' => null, 'width' => null, 'height' => null];
+    
+    if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $data['alt'] = $row['alt_text'];
+        if (!empty($row['dimensions'])) {
+            $dims = explode('x', strtolower($row['dimensions']));
+            if (count($dims) === 2) {
+                $data['width'] = (int)$dims[0];
+                $data['height'] = (int)$dims[1];
+            }
+        }
+    }
+    return $data;
+}
+
+try {
+    // --- 1. Fetch Public Settings ---
+    $settings_sql = "SELECT setting_key, setting_value FROM settings";
+    $settings_result = $conn->query($settings_sql);
+    $settings = [];
+    
+    if ($settings_result) {
+        while ($row = $settings_result->fetch(PDO::FETCH_ASSOC)) {
+            $key = $row['setting_key'];
+            $val = $row['setting_value'];
+
+            if ($val === 'true') {
+                $val = true;
+            } elseif ($val === 'false') {
+                $val = false;
+            } elseif (is_numeric($val)) {
+                $val = $val + 0;
+            }
+            $settings[$key] = $val;
+        }
+    }
+
+    // --- ENHANCEMENT: Fetch Global OG Image Data (ID Priority) ---
+    if (!empty($settings['seo_social_default_og_image_id'])) {
+        $og_id = (int)$settings['seo_social_default_og_image_id'];
+        $stmt_og = $conn->prepare("SELECT upload_path, alt_text, dimensions FROM media WHERE id = :id LIMIT 1");
+        
+        if ($stmt_og) {
+            $stmt_og->execute([':id' => $og_id]);
+            if ($row_og = $stmt_og->fetch(PDO::FETCH_ASSOC)) {
+                $api_base_url = $_ENV['API_PUBLIC_URL'] ?? '';
+                $settings['seo_social_default_og_image'] = rtrim($api_base_url, '/') . '/' . $row_og['upload_path'];
+                $settings['seo_social_default_og_image_alt'] = $row_og['alt_text'];
+                
+                if (!empty($row_og['dimensions'])) {
+                    $dims = explode('x', strtolower($row_og['dimensions']));
+                    if (count($dims) === 2) {
+                        $settings['seo_social_default_og_image_width'] = (int)$dims[0];
+                        $settings['seo_social_default_og_image_height'] = (int)$dims[1];
+                    }
+                }
+            }
+        }
+    } 
+    
+    // --- Fail-Safe Fallback: If ID failed but string URL exists ---
+    if (empty($settings['seo_social_default_og_image_width']) && !empty($settings['seo_social_default_og_image'])) {
+        $fallbackData = getMediaDataFallback($conn, $settings['seo_social_default_og_image']);
+        $settings['seo_social_default_og_image_alt'] = $fallbackData['alt'];
+        if ($fallbackData['width']) {
+            $settings['seo_social_default_og_image_width'] = $fallbackData['width'];
+            $settings['seo_social_default_og_image_height'] = $fallbackData['height'];
+        }
+    }
+
+    // --- Define Global API Base URL for all subsequent formatting ---
+    $api_base_url = $_ENV['API_PUBLIC_URL'] ?? '';
+
+    // --- 2. Fetch All Published Page Content ---
+    $pages_sql = "
+        SELECT 
+            p.*, 
+            m.upload_path as featured_image_path, 
+            m.alt_text as featured_image_alt, 
+            m.dimensions as featured_image_dimensions,
+            og_m.upload_path as og_image_path,
+            og_m.alt_text as og_image_alt_db,
+            og_m.dimensions as og_image_dimensions,
+            tw_m.upload_path as twitter_image_path,
+            tw_m.alt_text as twitter_image_alt_db,
+            tw_m.dimensions as twitter_image_dimensions
+        FROM pages p
+        LEFT JOIN media m ON p.featured_image_id = m.id
+        LEFT JOIN media og_m ON p.og_image_id = og_m.id
+        LEFT JOIN media tw_m ON p.twitter_image_id = tw_m.id
+        WHERE p.status = 'published'
+    ";
+    
+    $pages_result = $conn->query($pages_sql);
+    $pages_content = [];
+    if ($pages_result) {
+        while ($row = $pages_result->fetch(PDO::FETCH_ASSOC)) {
+            if (!empty($row['page_key'])) {
+                
+                // Parse Featured Image Dimensions
+                $featured_img_width = null;
+                $featured_img_height = null;
+                if (!empty($row['featured_image_dimensions'])) {
+                    $dims = explode('x', strtolower($row['featured_image_dimensions']));
+                    if (count($dims) === 2) {
+                        $featured_img_width = (int)$dims[0];
+                        $featured_img_height = (int)$dims[1];
+                    }
+                }
+
+                // Parse OG Image Dimensions
+                $og_img_width = null;
+                $og_img_height = null;
+                if (!empty($row['og_image_dimensions'])) {
+                    $dims = explode('x', strtolower($row['og_image_dimensions']));
+                    if (count($dims) === 2) {
+                        $og_img_width = (int)$dims[0];
+                        $og_img_height = (int)$dims[1];
+                    }
+                } elseif (!empty($row['og_image'])) {
+                    $fallback = getMediaDataFallback($conn, $row['og_image']);
+                    $og_img_width = $fallback['width'];
+                    $og_img_height = $fallback['height'];
+                    if (empty($row['og_image_alt_db'])) $row['og_image_alt_db'] = $fallback['alt'];
+                }
+
+                // Parse Twitter Image Dimensions
+                $tw_img_width = null;
+                $tw_img_height = null;
+                if (!empty($row['twitter_image_dimensions'])) {
+                    $dims = explode('x', strtolower($row['twitter_image_dimensions']));
+                    if (count($dims) === 2) {
+                        $tw_img_width = (int)$dims[0];
+                        $tw_img_height = (int)$dims[1];
+                    }
+                } elseif (!empty($row['twitter_image'])) {
+                    $fallback = getMediaDataFallback($conn, $row['twitter_image']);
+                    $tw_img_width = $fallback['width'];
+                    $tw_img_height = $fallback['height'];
+                    if (empty($row['twitter_image_alt_db'])) $row['twitter_image_alt_db'] = $fallback['alt'];
+                }
+
+                $pages_content[$row['page_key']] = [
+                    'id' => (int)$row['id'],
+                    'title' => $row['title'],
+                    'slug' => $row['slug'],
+                    'page_key' => $row['page_key'],
+                    'content' => json_decode($row['content_json'] ?? '{}'),
+                    'status' => $row['status'],
+                    
+                    'featured_image_url' => !empty($row['featured_image_path']) ? rtrim($api_base_url, '/') . '/' . $row['featured_image_path'] : null,
+                    'featured_image_alt' => $row['featured_image_alt'],
+                    'featured_image_width' => $featured_img_width,
+                    'featured_image_height' => $featured_img_height,
+
+                    'meta_title' => $row['meta_title'],
+                    'meta_description' => $row['meta_description'],
+                    'focus_keywords' => $row['focus_keywords'],
+                    'canonical_url' => $row['canonical_url'],
+
+                    'og_title' => $row['og_title'],
+                    'og_description' => $row['og_description'],
+                    'og_image' => !empty($row['og_image_path']) ? rtrim($api_base_url, '/') . '/' . $row['og_image_path'] : $row['og_image'],
+                    'og_image_alt' => !empty($row['og_image_alt_db']) ? $row['og_image_alt_db'] : null,
+                    'og_image_width' => $og_img_width,
+                    'og_image_height' => $og_img_height,
+                    
+                    'twitter_title' => $row['twitter_title'] ?? null,
+                    'twitter_description' => $row['twitter_description'] ?? null,
+                    'twitter_image' => !empty($row['twitter_image_path']) ? rtrim($api_base_url, '/') . '/' . $row['twitter_image_path'] : ($row['twitter_image'] ?? null),
+                    'twitter_image_alt' => !empty($row['twitter_image_alt_db']) ? $row['twitter_image_alt_db'] : null,
+                    'twitter_image_width' => $tw_img_width,
+                    'twitter_image_height' => $tw_img_height,
+                    'twitter_sync' => isset($row['twitter_sync']) ? (bool)$row['twitter_sync'] : true,
+
+                    'no_index' => $row['no_index'] === null ? null : (bool)$row['no_index'],
+                    'no_follow' => $row['no_follow'] === null ? null : (bool)$row['no_follow'],
+                    'no_archive' => $row['no_archive'] === null ? null : (bool)$row['no_archive'],
+                    'no_image_index' => $row['no_image_index'] === null ? null : (bool)$row['no_image_index'],
+                    'no_snippet' => $row['no_snippet'] === null ? null : (bool)$row['no_snippet'],
+                    'max_snippet' => $row['max_snippet'] !== null ? (int)$row['max_snippet'] : null,
+                    'max_video_preview' => $row['max_video_preview'] !== null ? (int)$row['max_video_preview'] : null,
+                    'max_image_preview' => $row['max_image_preview'],
+                    
+                    'schema_json' => json_decode($row['schema_json'] ?? '[]', true),
+                    'created_at' => $row['created_at'] ?? null,
+                    'updated_at' => $row['updated_at'] ?? null
+                ];
+            }
+        }
+    }
+
+    // --- 3. Fetch All Published Posts ---
+    $posts_sql = "
+        SELECT
+            p.id, p.title, p.slug, p.excerpt, p.read_time, p.created_at as published_date, p.updated_at,
+            p.focus_keywords,
+            a.name as author_name,
+            c_prim.name as primary_category_name,
+            c_prim.slug as primary_category_slug,
+            (SELECT GROUP_CONCAT(c.slug SEPARATOR ',') 
+             FROM categories c JOIN post_categories pc ON c.id = pc.category_id WHERE pc.post_id = p.id) as category_slugs,
+            m.upload_path as featured_image_path,
+            m.alt_text as featured_image_alt
+        FROM posts p
+        LEFT JOIN admins a ON p.author_id = a.id
+        LEFT JOIN media m ON p.featured_image_id = m.id
+        LEFT JOIN categories c_prim ON p.primary_category_id = c_prim.id
+        WHERE p.status = 'published'
+        GROUP BY p.id
+        ORDER BY p.created_at DESC
+    ";
+    
+    $posts_result = $conn->query($posts_sql);
+    $posts_frontend = [];
+    if ($posts_result) {
+        while ($post_db = $posts_result->fetch(PDO::FETCH_ASSOC)) {
+            $posts_frontend[] = [
+                'id' => (int)$post_db['id'],
+                'title' => $post_db['title'],
+                'slug' => $post_db['slug'],
+                'excerpt' => $post_db['excerpt'],
+                'read_time' => (int)$post_db['read_time'],
+                'published_date' => $post_db['published_date'],
+                'updated_at' => $post_db['updated_at'],
+                'focus_keywords' => $post_db['focus_keywords'],
+                'author_name' => $post_db['author_name'],
+                'primary_category_name' => $post_db['primary_category_name'],
+                'primary_category_slug' => $post_db['primary_category_slug'],
+                'category_slugs' => $post_db['category_slugs'],
+                'featured_image_url' => !empty($post_db['featured_image_path']) ? rtrim($api_base_url, '/') . '/' . $post_db['featured_image_path'] : null,
+                'featured_image_alt' => $post_db['featured_image_alt'] ?? null
+            ];
+        }
+    }
+
+    // --- 4. Fetch Blog Categories ---
+    $blog_categories_sql = "
+        SELECT DISTINCT c.id, c.name, c.slug, c.description, c.meta_title, c.meta_description, c.created_at, c.updated_at, 
+               m.upload_path AS featured_image_url, m.dimensions AS featured_image_dimensions,
+               m.alt_text AS featured_image_alt
+        FROM categories c
+        JOIN post_categories pc ON c.id = pc.category_id
+        JOIN posts p ON pc.post_id = p.id
+        LEFT JOIN media m ON c.featured_image_id = m.id
+        WHERE p.status = 'published'
+        ORDER BY c.name ASC
+    ";
+    
+    $blog_categories_result = $conn->query($blog_categories_sql);
+    $blog_categories = [];
+    if ($blog_categories_result) {
+        while ($row = $blog_categories_result->fetch(PDO::FETCH_ASSOC)) {
+            $row['id'] = (int)$row['id'];
+            if ($row['featured_image_url']) {
+                $row['featured_image_url'] = rtrim($api_base_url, '/') . '/' . ltrim($row['featured_image_url'], '/');
+            }
+            if (!empty($row['featured_image_dimensions'])) {
+                $dims = explode('x', strtolower($row['featured_image_dimensions']));
+                if (count($dims) === 2) {
+                    $row['featured_image_width'] = (int)$dims[0];
+                    $row['featured_image_height'] = (int)$dims[1];
+                }
+            }
+            unset($row['featured_image_dimensions']);
+            $blog_categories[] = $row;
+        }
+    }
+
+    // --- 5. Fetch All Published Calculators ---
+    $calculators_sql = "
+        SELECT c.id, c.slug, c.name, c.is_featured,
+               c.primary_category_id, c.focus_keywords,
+               c_prim.name as primary_category_name,
+               c_prim.slug as primary_category_slug,
+               GROUP_CONCAT(cc.name SEPARATOR ', ') as category_names,
+               GROUP_CONCAT(cc.slug SEPARATOR ',') as category_slugs
+        FROM calculators c
+        LEFT JOIN calculator_category_assignments cca ON c.id = cca.calculator_id
+        LEFT JOIN calculator_categories cc ON cca.category_id = cc.id
+        LEFT JOIN calculator_categories c_prim ON c.primary_category_id = c_prim.id
+        WHERE c.status = 'published'
+        GROUP BY c.id
+        ORDER BY c.name ASC
+    ";
+    
+    $calculators_result = $conn->query($calculators_sql);
+    $calculators = [];
+    if ($calculators_result) {
+        while($calc = $calculators_result->fetch(PDO::FETCH_ASSOC)) {
+            $calc['is_featured'] = (bool)$calc['is_featured'];
+            $calculators[] = $calc;
+        }
+    }
+
+    // --- 6. Fetch Calculator Categories ---
+    $calculator_categories_sql = "
+        SELECT DISTINCT cc.id, cc.name, cc.slug, cc.description, cc.meta_title, cc.meta_description, cc.created_at, cc.updated_at, 
+               m.upload_path AS featured_image_url, m.dimensions AS featured_image_dimensions,
+               m.alt_text AS featured_image_alt
+        FROM calculator_categories cc
+        JOIN calculator_category_assignments cca ON cc.id = cca.category_id
+        JOIN calculators c ON cca.calculator_id = c.id
+        LEFT JOIN media m ON cc.featured_image_id = m.id
+        WHERE c.status = 'published'
+        ORDER BY cc.name ASC
+    ";
+    
+    $calculator_categories_result = $conn->query($calculator_categories_sql);
+    $calculator_categories = [];
+    if ($calculator_categories_result) {
+        while ($row = $calculator_categories_result->fetch(PDO::FETCH_ASSOC)) {
+            $row['id'] = (int)$row['id'];
+            if ($row['featured_image_url']) {
+                $row['featured_image_url'] = rtrim($api_base_url, '/') . '/' . ltrim($row['featured_image_url'], '/');
+            }
+            if (!empty($row['featured_image_dimensions'])) {
+                $dims = explode('x', strtolower($row['featured_image_dimensions']));
+                if (count($dims) === 2) {
+                    $row['featured_image_width'] = (int)$dims[0];
+                    $row['featured_image_height'] = (int)$dims[1];
+                }
+            }
+            unset($row['featured_image_dimensions']);
+            $calculator_categories[] = $row;
+        }
+    }
+
+    // --- 7. Assemble Data ---
+    $bootstrap_data = [
+        'settings' => $settings,
+        'pages' => $pages_content,
+        'posts' => $posts_frontend,
+        'blogCategories' => $blog_categories,
+        'calculators' => $calculators,
+        'calculatorCategories' => $calculator_categories
+    ];
+    
+    sendResponse(true, $bootstrap_data, 'Public content bootstrapped successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_public_bootstrap.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching initial site data.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

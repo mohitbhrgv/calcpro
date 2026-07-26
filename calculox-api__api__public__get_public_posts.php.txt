@@ -1,0 +1,172 @@
+<?php
+// File: calcpro-api/api/public/get_public_posts.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+try {
+    // --- 1. Parameters ---
+    $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+    $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 9;
+    $offset = ($page - 1) * $limit;
+    
+    $tagSlug = isset($_GET['tag']) ? trim($_GET['tag']) : null;
+    $tagDetails = null;
+
+    // --- 2. VALIDATION: Check if Tag Exists ---
+    if ($tagSlug) {
+        $tagCheckSql = "SELECT id, name, slug FROM tags WHERE slug = :slug";
+        $stmtCheck = $conn->prepare($tagCheckSql);
+        $stmtCheck->execute([':slug' => $tagSlug]);
+        $tagDetails = $stmtCheck->fetch(PDO::FETCH_ASSOC);
+
+        if (!$tagDetails) {
+            // Return 404 if tag doesn't exist
+            sendResponse(false, null, 'Tag not found.', 404, 'NOT_FOUND');
+        }
+    }
+
+    // --- ENTERPRISE FIX: Pre-fetch Super Admin Data for Fallback ---
+    $superAdminStmt = $conn->query("SELECT name, slug FROM author_profiles WHERE is_super_admin = 1 LIMIT 1");
+    $superAdmin = $superAdminStmt->fetch(PDO::FETCH_ASSOC);
+
+    // --- 3. Build Query ---
+    $whereConditions = ["p.status = 'published'"];
+    $executeParams = [];
+    $joinClause = "";
+
+    if ($tagSlug) {
+        $joinClause = "
+            JOIN post_tags pt ON p.id = pt.post_id
+            JOIN tags t ON pt.tag_id = t.id
+        ";
+        $whereConditions[] = "t.slug = ?"; // Positional placeholder for dynamic arrays
+        $executeParams[] = $tagSlug;
+    }
+
+    $whereSql = implode(" AND ", $whereConditions);
+
+    // --- 4. Get Total Count ---
+    $countSql = "
+        SELECT COUNT(DISTINCT p.id) as total 
+        FROM posts p
+        {$joinClause}
+        WHERE {$whereSql}
+    ";
+    $stmtCount = $conn->prepare($countSql);
+    $stmtCount->execute($executeParams);
+    $totalResult = $stmtCount->fetch(PDO::FETCH_ASSOC);
+    $totalRecords = $totalResult ? (int)$totalResult['total'] : 0;
+    $totalPages = ceil($totalRecords / $limit);
+
+    // --- 5. Main Query (UPDATED TO FETCH SUPER ADMIN FLAG) ---
+    $sql = "
+        SELECT
+            p.id,
+            p.title,
+            p.slug,
+            p.excerpt,
+            p.read_time,
+            p.created_at as published_date,
+            p.updated_at,
+            a.name as admin_author_name,
+            ap.name as guest_author_name,
+            ap.slug as guest_author_slug,
+            ap.is_super_admin as ap_is_super_admin,
+            (
+                SELECT GROUP_CONCAT(c.name SEPARATOR ', ')
+                FROM categories c
+                JOIN post_categories pc ON c.id = pc.category_id
+                WHERE pc.post_id = p.id
+            ) as category_name,
+            (
+                SELECT GROUP_CONCAT(c.slug SEPARATOR ',')
+                FROM categories c
+                JOIN post_categories pc ON c.id = pc.category_id
+                WHERE pc.post_id = p.id
+            ) as category_slugs,
+            m.upload_path as featured_image_path
+        FROM
+            posts p
+        LEFT JOIN
+            admins a ON p.author_id = a.id
+        LEFT JOIN
+            author_profiles ap ON p.display_author_id = ap.id
+        LEFT JOIN
+            media m ON p.featured_image_id = m.id
+        {$joinClause}
+        WHERE
+            {$whereSql}
+        GROUP BY
+            p.id
+        ORDER BY
+            p.created_at DESC
+        LIMIT ? OFFSET ?
+    ";
+
+    $stmt = $conn->prepare($sql);
+    
+    // Dynamically bind standard parameters as strings
+    $paramIndex = 1;
+    foreach ($executeParams as $param) {
+        $stmt->bindValue($paramIndex++, $param, PDO::PARAM_STR);
+    }
+    
+    // Bind pagination params strictly as INT
+    $stmt->bindValue($paramIndex++, $limit, PDO::PARAM_INT);
+    $stmt->bindValue($paramIndex++, $offset, PDO::PARAM_INT);
+
+    $stmt->execute();
+    $posts_db = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // --- 6. Transform Data ---
+    $api_base_url = $_ENV['API_PUBLIC_URL'];
+    $posts_frontend = [];
+    foreach ($posts_db as $post_db) {
+        // --- ENTERPRISE FIX: Accurate Resolution of Super Admin vs Guest ---
+        $is_explicit_profile = !empty($post_db['guest_author_name']);
+        
+        if ($is_explicit_profile) {
+            $resolved_author_name = $post_db['guest_author_name'];
+            $resolved_author_slug = $post_db['guest_author_slug'];
+        } else {
+            // Default fallback to Super Admin if no explicit author is tied to the post
+            $resolved_author_name = $superAdmin['name'] ?? $post_db['admin_author_name'];
+            $resolved_author_slug = $superAdmin['slug'] ?? null;
+        }
+
+        $posts_frontend[] = [
+            'id' => (int)$post_db['id'],
+            'title' => $post_db['title'],
+            'slug' => $post_db['slug'],
+            'excerpt' => $post_db['excerpt'],
+            'read_time' => (int)$post_db['read_time'],
+            'published_date' => $post_db['published_date'],
+            'updated_at' => $post_db['updated_at'],
+            'author_name' => $resolved_author_name,
+            'author_slug' => $resolved_author_slug,
+            'category_name' => $post_db['category_name'],
+            'category_slugs' => $post_db['category_slugs'],
+            'featured_image_url' => !empty($post_db['featured_image_path']) ? rtrim($api_base_url, '/') . '/' . ltrim($post_db['featured_image_path'], '/') : null
+        ];
+    }
+    
+    $responseData = [
+        'posts' => $posts_frontend,
+        'tag_details' => $tagDetails,
+        'pagination' => [
+            'currentPage' => $page,
+            'totalPages' => $totalPages,
+            'totalPosts' => (int)$totalRecords
+        ]
+    ];
+    sendResponse(true, $responseData, 'Posts fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_public_posts.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching posts.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

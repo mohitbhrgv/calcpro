@@ -1,0 +1,68 @@
+<?php
+// File: calcpro-api/api/public/get_seo_config.php
+
+require_once dirname(__DIR__, 2) . '/core/config.php';
+require_once dirname(__DIR__, 2) . '/core/response.php'; // Inherits X-Robots-Tag
+
+// ========================================================================
+// 1. STRICT INTERNAL AUTHENTICATION (SOC 2 Access Control)
+// ========================================================================
+// [ENTERPRISE FIX] Smarter Header Extraction: Safely bypasses Nginx stripping bugs
+$authHeader = '';
+if (isset($_SERVER['HTTP_AUTHORIZATION'])) {
+    $authHeader = trim($_SERVER['HTTP_AUTHORIZATION']);
+} elseif (isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+    $authHeader = trim($_SERVER['REDIRECT_HTTP_AUTHORIZATION']);
+} else {
+    $headers = getallheaders();
+    $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? '';
+}
+
+$internalToken = $_ENV['INTERNAL_API_TOKEN'] ?? '';
+
+// If the token is missing or incorrect, instantly slam the door (Timing-Attack Safe).
+$providedToken = trim(str_ireplace('bearer ', '', $authHeader));
+if (empty($internalToken) || empty($providedToken) || !hash_equals((string)$internalToken, (string)$providedToken)) {
+    sendResponse(false, null, 'Forbidden: Invalid internal token. Check .env variables.', 403);
+}
+
+// ========================================================================
+// 2. SCOPED DATA FETCHING (Zero Data Leakage Guarantee)
+// ========================================================================
+try {
+    // We strictly limit the query to the 3 SEO keys. No other data is pulled.
+    $sql = "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('seo_robots_custom_enable', 'seo_robots_custom_content', 'seo_global_search_visibility')";
+    $result = $conn->query($sql);
+    
+    // Set safe defaults
+    $seoData = [
+        'seo_global_search_visibility' => false,
+        'seo_robots_custom_enable' => false,
+        'seo_robots_custom_content' => ''
+    ];
+
+    if ($result) {
+        while ($row = $result->fetch(PDO::FETCH_ASSOC)) {
+            // [ENTERPRISE FIX] Broaden boolean parsing to handle all DB dialects safely
+            $val = strtolower(trim($row['setting_value']));
+            $isTruthy = in_array($val, ['true', '1', 'active', 'yes', 'on'], true);
+
+            if ($row['setting_key'] === 'seo_global_search_visibility') {
+                $seoData['seo_global_search_visibility'] = $isTruthy;
+            }
+            if ($row['setting_key'] === 'seo_robots_custom_enable') {
+                $seoData['seo_robots_custom_enable'] = $isTruthy;
+            }
+            if ($row['setting_key'] === 'seo_robots_custom_content') {
+                $seoData['seo_robots_custom_content'] = $row['setting_value'];
+            }
+        }
+    }
+
+    sendResponse(true, $seoData, 'SEO configuration retrieved securely', 200);
+
+} catch (Exception $e) {
+    error_log("SEO Config DB Error: " . $e->getMessage());
+    sendResponse(false, null, 'Internal Server Error', 500);
+}
+?>

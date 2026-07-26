@@ -1,0 +1,331 @@
+<?php
+/**
+ * Enterprise Automated Cloud Disaster Recovery Execution (With Retention & Pruning Engine)
+ */
+
+if (php_sapi_name() !== 'cli') {
+    http_response_code(403);
+    die("HTTP 403 Forbidden: This routine can only be executed via the server command line interface (CLI).\n");
+}
+
+require_once __DIR__ . '/../core/config.php';
+require_once __DIR__ . '/../core/response.php';
+require_once __DIR__ . '/../core/NotificationManager.php';
+
+$expectedSecret = getenv('CRON_SECRET') ?: $_ENV['CRON_SECRET'] ?? 'MISSING_SECRET';
+$providedSecret = $argv[1] ?? '';
+
+if (!hash_equals($expectedSecret, $providedSecret) || $expectedSecret === 'MISSING_SECRET') {
+    die("SECURITY FAULT: Invalid or missing authorization secret.\nUsage: php scripts/auto_backup.php <YOUR_CRON_SECRET>\n");
+}
+
+$autoloader = __DIR__ . '/../vendor/autoload.php';
+if (!file_exists($autoloader)) {
+    die("SECURITY FAULT: AWS SDK not found. Run composer install.\n");
+}
+require_once $autoloader;
+
+use Aws\S3\S3Client;
+use Aws\S3\Transfer;
+use Aws\Exception\AwsException;
+
+set_time_limit(0);
+ini_set('memory_limit', '1024M');
+
+$s3Key = getenv('S3_ACCESS_KEY') ?: $_ENV['S3_ACCESS_KEY'] ?? '';
+$s3Secret = getenv('S3_SECRET_KEY') ?: $_ENV['S3_SECRET_KEY'] ?? '';
+$s3Region = getenv('S3_REGION') ?: $_ENV['S3_REGION'] ?? 'auto';
+$s3Bucket = getenv('S3_BUCKET') ?: $_ENV['S3_BUCKET'] ?? '';
+$s3Endpoint = getenv('S3_ENDPOINT') ?: $_ENV['S3_ENDPOINT'] ?? ''; 
+
+$dbHost = getenv('DB_HOST') ?: $_ENV['DB_HOST'] ?? 'localhost';
+$dbUser = getenv('DB_USER') ?: $_ENV['DB_USER'] ?? 'root';
+$dbPass = getenv('DB_PASS') ?: $_ENV['DB_PASS'] ?? '';
+
+// --- ENTERPRISE FIX: REMOVED HARDCODED FALLBACK ---
+// The system will now securely extract the value strictly from the environment vault.
+$dbName = getenv('DB_NAME') ?: $_ENV['DB_NAME'] ?? '';
+
+try {
+    if (empty($dbName)) {
+        throw new PDOException("Database Name (DB_NAME) is strictly required but missing from the environment vault.");
+    }
+    $pdo = new PDO("mysql:host=$dbHost;dbname=$dbName;charset=utf8mb4", $dbUser, $dbPass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+} catch (PDOException $e) {
+    die("CRITICAL: Database connection failed during cron initialization.\n");
+}
+
+if (empty($s3Key) || empty($s3Secret) || empty($s3Bucket)) {
+    $notifier = new NotificationManager($pdo);
+    $notifier->create('system', 'critical', 'Auto-Backup Failed', 'Cloud storage credentials not configured.', null);
+    die("CRITICAL: Cloud storage credentials not configured.\n");
+}
+
+$clientConfig = [
+    'version' => 'latest',
+    'region'  => $s3Region,
+    'credentials' => [
+        'key'    => $s3Key,
+        'secret' => $s3Secret,
+    ]
+];
+if (!empty($s3Endpoint)) {
+    $clientConfig['endpoint'] = $s3Endpoint;
+    $clientConfig['use_path_style_endpoint'] = true; 
+}
+
+$s3 = new S3Client($clientConfig);
+
+$timestamp = date('Ymd_His');
+$uploadDir = __DIR__ . '/../uploads';
+$tempBackupDir = __DIR__ . '/../storage/backups';
+
+if (!is_dir($tempBackupDir)) { @mkdir($tempBackupDir, 0755, true); }
+
+$localDbDumpPath = $tempBackupDir . "/calculox_db_auto_{$timestamp}.sql";
+
+echo "[INFO] Commencing database extraction...\n";
+
+try {
+    // ==============================================================================
+    // ENTERPRISE FIX: NATIVE PHP PDO EXTRACTION ENGINE (AUTOMATED)
+    // Completely bypasses OS-level binary execution restrictions (mysqldump).
+    // ==============================================================================
+    $sqlFile = fopen($localDbDumpPath, 'w');
+    if (!$sqlFile) {
+        throw new Exception("Native Extraction Engine Failed: Cannot open temp directory for writing.");
+    }
+
+    fwrite($sqlFile, "-- Calculox Enterprise Native Backup Engine (Automated)\n");
+    fwrite($sqlFile, "-- Generated: " . gmdate('Y-m-d H:i:s') . " UTC\n\n");
+    fwrite($sqlFile, "SET FOREIGN_KEY_CHECKS=0;\n");
+    fwrite($sqlFile, "SET SQL_MODE=\"NO_AUTO_VALUE_ON_ZERO\";\n");
+    fwrite($sqlFile, "START TRANSACTION;\n\n");
+
+    $tables = [];
+    $stmt = $pdo->query("SHOW TABLES");
+    while ($row = $stmt->fetch(PDO::FETCH_NUM)) {
+        $tables[] = $row[0];
+    }
+
+    foreach ($tables as $table) {
+        fwrite($sqlFile, "-- Table structure for table `{$table}`\n");
+        fwrite($sqlFile, "DROP TABLE IF EXISTS `{$table}`;\n");
+        
+        $createStmt = $pdo->query("SHOW CREATE TABLE `{$table}`");
+        $createRow = $createStmt->fetch(PDO::FETCH_NUM);
+        fwrite($sqlFile, $createRow[1] . ";\n\n");
+
+        $dataStmt = $pdo->query("SELECT * FROM `{$table}`");
+        while ($row = $dataStmt->fetch(PDO::FETCH_ASSOC)) {
+            $keys = array_keys($row);
+            $vals = [];
+            foreach ($row as $val) {
+                if ($val === null) {
+                    $vals[] = 'NULL';
+                } else {
+                    $vals[] = $pdo->quote((string)$val);
+                }
+            }
+            
+            $keysString = "`" . implode("`, `", $keys) . "`";
+            $valsString = implode(", ", $vals);
+            
+            fwrite($sqlFile, "INSERT INTO `{$table}` ({$keysString}) VALUES ({$valsString});\n");
+        }
+        fwrite($sqlFile, "\n");
+    }
+
+    fwrite($sqlFile, "SET FOREIGN_KEY_CHECKS=1;\n");
+    fwrite($sqlFile, "COMMIT;\n");
+    fclose($sqlFile);
+
+    if (!file_exists($localDbDumpPath) || filesize($localDbDumpPath) === 0) {
+         throw new Exception("Native Extraction Engine Failed: Resulting SQL file is empty.");
+    }
+} catch (Throwable $e) {
+    $notifier = new NotificationManager($pdo);
+    $notifier->create('system', 'critical', 'Cron DB Extraction Failed', $e->getMessage(), null);
+    die("FATAL ERROR: " . $e->getMessage() . "\n");
+}
+
+$uploadResults = [];
+try {
+    echo "[INFO] Transmitting database to cloud vault...\n";
+    $dbObjectName = "database/calculox_db_auto_{$timestamp}.sql";
+    $s3->putObject([
+        'Bucket' => $s3Bucket,
+        'Key'    => $dbObjectName,
+        'SourceFile' => $localDbDumpPath,
+        'ServerSideEncryption' => 'AES256'
+    ]);
+    $uploadResults[] = "Database core securely archived.";
+
+    echo "[INFO] Generating Media Manifest Time Capsule...\n";
+    $manifestPath = $tempBackupDir . "/calculox_media_auto_{$timestamp}.json";
+    $stmtMedia = $pdo->query("SELECT * FROM media");
+    file_put_contents($manifestPath, json_encode($stmtMedia->fetchAll(PDO::FETCH_ASSOC), JSON_PRETTY_PRINT));
+    
+    $manifestObjectName = "database/calculox_media_auto_{$timestamp}.json";
+    $s3->putObject([
+        'Bucket' => $s3Bucket,
+        'Key'    => $manifestObjectName,
+        'SourceFile' => $manifestPath,
+        'ServerSideEncryption' => 'AES256'
+    ]);
+    @unlink($manifestPath);
+    $uploadResults[] = "Historical media metadata manifest archived to Cloud.";
+
+    if (is_dir($uploadDir)) {
+        echo "[INFO] Synchronizing media matrix...\n";
+        try {
+            $manager = new Transfer($s3, $uploadDir, "s3://{$s3Bucket}/media", [
+                'concurrency' => 5,
+                'before' => function (\Aws\Command $command) {
+                    $command['ServerSideEncryption'] = 'AES256'; 
+                }
+            ]);
+            $manager->transfer();
+            $uploadResults[] = "Media matrix synchronized optimally.";
+        } catch (Throwable $mediaException) {
+            error_log("CLOUD MEDIA SYNC WARNING: " . $mediaException->getMessage());
+            $notifier = new NotificationManager($pdo);
+            $notifier->create('system', 'warning', 'Cloud Media Sync Error', $mediaException->getMessage(), null);
+            $uploadResults[] = "WARNING: Media sync failed (Database succeeded). Check system logs.";
+        }
+    }
+
+    echo "[INFO] Analyzing cloud retention rules...\n";
+    
+    $retentionLimit = 14;
+    try {
+        $stmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'cloud_backup_limit' LIMIT 1");
+        $stmt->execute();
+        
+        if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $retentionLimit = max(1, (int)$row['setting_value']);
+        } else {
+            $stmt2 = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = 'data_retention' LIMIT 1");
+            $stmt2->execute();
+            if ($row2 = $stmt2->fetch(PDO::FETCH_ASSOC)) {
+                $settingsJson = json_decode($row2['setting_value'], true);
+                if (isset($settingsJson['cloud_backup_limit'])) {
+                    $retentionLimit = max(1, (int)$settingsJson['cloud_backup_limit']);
+                }
+            }
+        }
+    } catch (PDOException $e) {
+        error_log("Retention DB Check Failed, falling back to default 14 days: " . $e->getMessage());
+    }
+
+    // --- STANDARD RETENTION PRUNING ---
+    $cloudObjects = $s3->listObjectsV2([
+        'Bucket' => $s3Bucket,
+        'Prefix' => 'database/'
+    ]);
+    if (isset($cloudObjects['Contents'])) {
+        $allBackups = [];
+        foreach ($cloudObjects['Contents'] as $object) {
+            if (pathinfo($object['Key'], PATHINFO_EXTENSION) === 'sql') {
+                $allBackups[] = $object;
+            }
+        }
+
+        if (count($allBackups) > $retentionLimit) {
+            usort($allBackups, function($a, $b) {
+                return strtotime($a['LastModified']) - strtotime($b['LastModified']);
+            });
+            $excessCount = count($allBackups) - $retentionLimit;
+            $filesToDelete = array_slice($allBackups, 0, $excessCount);
+
+            $deletedCount = 0;
+            foreach ($filesToDelete as $fileToPurge) {
+                $s3->deleteObject([
+                    'Bucket' => $s3Bucket,
+                    'Key'    => $fileToPurge['Key']
+                ]);
+                
+                $manifestKeyToPurge = str_replace('calculox_db_auto_', 'calculox_media_auto_', $fileToPurge['Key']);
+                $manifestKeyToPurge = str_replace('.sql', '.json', $manifestKeyToPurge);
+                $s3->deleteObject([
+                    'Bucket' => $s3Bucket,
+                    'Key'    => $manifestKeyToPurge
+                ]);
+                
+                $deletedCount++;
+            }
+            $uploadResults[] = "Retention active: $deletedCount old artifact(s) + manifests securely purged (Limit: $retentionLimit).";
+        } else {
+            $uploadResults[] = "Retention verified: Library is within limits (" . count($allBackups) . "/$retentionLimit).";
+        }
+    }
+
+    // ==============================================================================
+    // ENTERPRISE FIX: CLOUD MEDIA GARBAGE COLLECTION (SOFT-EXPIRY PRUNING)
+    // Deletes physical cloud images that have outlived the retention limit.
+    // ==============================================================================
+    echo "[INFO] Executing Cloud Media Garbage Collection...\n";
+    try {
+        $manifestKeys = [];
+        $activeObjects = $s3->listObjectsV2(['Bucket' => $s3Bucket, 'Prefix' => 'database/calculox_media_auto_']);
+        if (isset($activeObjects['Contents'])) {
+            foreach ($activeObjects['Contents'] as $object) {
+                if (pathinfo($object['Key'], PATHINFO_EXTENSION) === 'json') {
+                    $manifestKeys[] = $object['Key'];
+                }
+            }
+        }
+
+        $masterMediaList = [];
+        foreach ($manifestKeys as $manifestKey) {
+            $manifestContent = $s3->getObject(['Bucket' => $s3Bucket, 'Key' => $manifestKey]);
+            $data = json_decode($manifestContent['Body'], true);
+            if (is_array($data)) {
+                foreach ($data as $mediaItem) {
+                    if (!empty($mediaItem['file_name'])) {
+                        $masterMediaList[$mediaItem['file_name']] = true; // O(1) Dependency Map
+                    }
+                }
+            }
+        }
+
+        // Failsafe: Only prune if we successfully built a ledger to prevent accidental wipes.
+        if (empty($manifestKeys) || empty($masterMediaList)) {
+            $uploadResults[] = "Cloud GC bypassed (Awaiting mature ledger baseline).";
+        } else {
+            $cloudMediaObjects = $s3->listObjectsV2(['Bucket' => $s3Bucket, 'Prefix' => 'media/']);
+            $prunedCount = 0;
+            if (isset($cloudMediaObjects['Contents'])) {
+                foreach ($cloudMediaObjects['Contents'] as $mediaObj) {
+                    $cloudFileName = basename($mediaObj['Key']);
+                    if (empty($cloudFileName)) continue;
+
+                    // If a file in the Cloud Vault is not required by ANY active retention manifest, delete it.
+                    if (!isset($masterMediaList[$cloudFileName])) {
+                        $s3->deleteObject(['Bucket' => $s3Bucket, 'Key' => $mediaObj['Key']]);
+                        $prunedCount++;
+                    }
+                }
+            }
+            $uploadResults[] = "Cloud GC: $prunedCount expired media asset(s) permanently pruned.";
+        }
+    } catch (Exception $gcEx) {
+        error_log("Cloud GC Exception: " . $gcEx->getMessage());
+        $uploadResults[] = "Cloud GC skipped (Safety Abort)";
+    }
+
+    @unlink($localDbDumpPath);
+    echo "[SUCCESS] " . implode(' | ', $uploadResults) . "\n";
+} catch (AwsException $e) {
+    @unlink($localDbDumpPath);
+    $errMsg = $e->getAwsErrorMessage() ?: $e->getMessage();
+    $notifier = new NotificationManager($pdo);
+    $notifier->create('system', 'critical', 'AWS Cron Upload Failed', $errMsg, null);
+    echo "[CRITICAL] Cloud transmission failure: " . $errMsg . "\n";
+} catch (Throwable $e) {
+    @unlink($localDbDumpPath);
+    $notifier = new NotificationManager($pdo);
+    $notifier->create('system', 'critical', 'Cron Execution Fault', $e->getMessage(), null);
+    echo "[ERROR] System exception during backup protocol: " . $e->getMessage() . "\n";
+}
+?>

@@ -1,0 +1,74 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+// No auth.php needed for this public endpoint
+
+try {
+    $sql = "
+        SELECT DISTINCT
+            c.id,
+            c.name,
+            c.slug,
+            c.description,
+            c.meta_title,
+            c.meta_description,
+            c.created_at,
+            c.updated_at,
+            m.upload_path AS featured_image_url,
+            m.dimensions AS featured_image_dimensions,
+            m.alt_text AS featured_image_alt
+        FROM
+            categories c
+        JOIN
+            post_categories pc ON c.id = pc.category_id
+        JOIN
+            posts p ON pc.post_id = p.id
+        LEFT JOIN
+            media m ON c.featured_image_id = m.id
+        WHERE
+            p.status = 'published'
+        ORDER BY
+            c.name ASC
+    ";
+    
+    $stmt = $conn->prepare($sql);
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare statement failed: ' . $errorInfo[2]);
+    }
+    
+    $stmt->execute();
+    $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Get base URL for media paths (Strict Environment Extraction)
+    $api_base_url = $_ENV['API_PUBLIC_URL'] ?? '';
+    
+    // Format URL and parse dimensions
+    foreach ($categories as &$cat) {
+        if ($cat['featured_image_url']) {
+            $cat['featured_image_url'] = rtrim($api_base_url, '/') . '/' . ltrim($cat['featured_image_url'], '/');
+        }
+        
+        // Phase 5 Fix: Parse "1920x1080" into width and height
+        if (!empty($cat['featured_image_dimensions'])) {
+            $dims = explode('x', strtolower($cat['featured_image_dimensions']));
+            if (count($dims) === 2) {
+                $cat['featured_image_width'] = (int)$dims[0];
+                $cat['featured_image_height'] = (int)$dims[1];
+            }
+        }
+        // Remove the raw dimensions string so we don't pollute the frontend payload
+        unset($cat['featured_image_dimensions']);
+    }
+
+    // Send the successful response with the list of categories.
+    sendResponse(true, $categories, 'Public categories fetched successfully.');
+    
+} catch (Exception $e) {
+    error_log("Error in get_public_categories.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while fetching categories.', 500);
+}
+
+$conn = null;
+?>

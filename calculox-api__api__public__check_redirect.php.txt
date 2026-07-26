@@ -1,0 +1,56 @@
+<?php
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+try {
+    // 1. Input Validation
+    if (!isset($_GET['path']) || trim($_GET['path']) === '') {
+        sendResponse(false, null, 'Path parameter is required.', 400, 'INVALID_INPUT');
+        exit;
+    }
+
+    // Clean the path to match database format (strip leading/trailing slashes)
+    // The admin dashboard automatically strips leading slashes when saving rules.
+    $raw_path = trim($_GET['path']);
+    $clean_path = ltrim($raw_path, '/');
+
+    // 2. Prepare Database Query
+    // We strictly enforce that only 'active' status redirects are processed
+    $sql = "SELECT target_url, status_code FROM redirects WHERE source_path = :source_path AND status = 'active' LIMIT 1";
+    $stmt = $conn->prepare($sql);
+    
+    if ($stmt === false) {
+        $errorInfo = $conn->errorInfo();
+        throw new Exception('Database prepare statement failed: ' . $errorInfo[2]);
+    }
+
+    $stmt->execute([':source_path' => $clean_path]);
+    
+    // 3. Process Result
+    if ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $response_data = [
+            'has_redirect' => true,
+            'target_url' => $row['target_url'],
+            'status_code' => (int)$row['status_code']
+        ];
+        
+        // ARCHITECTURAL FIX: Explicitly force HTTP 200 OK at the transport level.
+        // This securely envelopes the 410/451 status inside the JSON payload, 
+        // preventing Apache/Nixpacks from intercepting and crashing Next.js.
+        sendResponse(true, $response_data, 'Redirect rule found.', 200);
+    } else {
+        // Return success true but has_redirect false. 
+        // A missing redirect is an expected operational state, not a server error.
+        sendResponse(true, ['has_redirect' => false], 'No active redirect rule found for this path.', 200);
+    }
+
+} catch (Exception $e) {
+    // Log the actual error for the admin, but return a sanitized message to the public frontend
+    error_log("Error in check_redirect.php: " . $e->getMessage());
+    sendResponse(false, null, 'An error occurred while checking redirect rules.', 500, 'SERVER_ERROR');
+}
+
+// Ensure database connection is closed cleanly
+$conn = null;
+?>

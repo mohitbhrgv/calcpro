@@ -1,0 +1,48 @@
+<?php
+// File: calcpro-api/api/admin/verify_reset_token.php
+
+// Use robust, absolute paths
+require_once dirname(__DIR__, 2) . '/core/config.php';
+require_once dirname(__DIR__, 2) . '/core/response.php';
+
+try {
+    // 1. Validation
+    if (!isset($_GET['token']) || empty($_GET['token'])) {
+        sendResponse(false, null, 'A token is required.', 400, 'INVALID_INPUT');
+    }
+
+    $token = (string)$_GET['token'];
+    
+    // Hash the incoming token to match the database stored hash
+    $token_hash = hash('sha256', $token);
+
+    // 2. Find Token in Database
+    $sql = "SELECT expires_at FROM admin_password_resets WHERE token_hash = :token_hash LIMIT 1";
+    $stmt = $conn->prepare($sql);
+    $stmt->execute([':token_hash' => $token_hash]);
+    $record = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$record) {
+        // Token doesn't exist, was deleted, or was already used
+        sendResponse(false, null, 'This password reset link is invalid or has already been used.', 400, 'INVALID_TOKEN');
+    }
+
+    // 3. Evaluate Expiration strictly in UTC
+    $utcZone = new DateTimeZone('UTC');
+    $expiresAt = new DateTime($record['expires_at'], $utcZone);
+    $now = new DateTime('now', $utcZone);
+
+    if ($expiresAt < $now) {
+        sendResponse(false, null, 'This password reset link has expired.', 400, 'EXPIRED_TOKEN');
+    }
+
+    // 4. Token is perfectly valid
+    sendResponse(true, null, 'Token is valid.', 200);
+
+} catch (Exception $e) {
+    error_log("Error in verify_reset_token.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

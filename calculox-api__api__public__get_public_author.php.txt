@@ -1,0 +1,141 @@
+<?php
+// (Update) calcpro-api/api/public/get_public_author.php
+
+// Core utilities
+require_once '../../core/config.php';
+require_once '../../core/response.php';
+
+try {
+    // --- 1. Defensive Parameters ---
+    $slug = (isset($_GET['slug']) && $_GET['slug'] !== 'undefined') ? trim($_GET['slug']) : null;
+    $id = (isset($_GET['id']) && is_numeric($_GET['id'])) ? (int)$_GET['id'] : null;
+    
+    $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+    $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 9;
+    $offset = ($page - 1) * $limit;
+
+    if (!$slug && !$id) {
+        sendResponse(false, null, 'Author slug or ID is required.', 400, 'INVALID_INPUT');
+    }
+
+    // Strict Environment Extraction
+    $api_base_url = $_ENV['API_PUBLIC_URL'] ?? '';
+
+    // --- 2. Fetch Author Profile (CRITICAL FIX: Added a.expertise to SELECT statements) ---
+    if ($slug) {
+        // Look up using case-insensitive slug mapping
+        $sqlAuthor = "SELECT a.id, a.name, a.slug, a.role, a.expertise, a.bio, a.social_links, m.upload_path
+                      FROM author_profiles a
+                      LEFT JOIN media m ON a.profile_image_id = m.id
+                      WHERE LOWER(a.slug) = LOWER(:slug) LIMIT 1";
+        $stmtAuthor = $conn->prepare($sqlAuthor);
+        $stmtAuthor->execute([':slug' => $slug]);
+    } else {
+        $sqlAuthor = "SELECT a.id, a.name, a.slug, a.role, a.expertise, a.bio, a.social_links, m.upload_path
+                      FROM author_profiles a
+                      LEFT JOIN media m ON a.profile_image_id = m.id
+                      WHERE a.id = :id LIMIT 1";
+        $stmtAuthor = $conn->prepare($sqlAuthor);
+        $stmtAuthor->execute([':id' => $id]);
+    }
+    
+    $author = $stmtAuthor->fetch(PDO::FETCH_ASSOC);
+
+    if (!$author) {
+        sendResponse(false, null, 'Author profile not found inside the database.', 404, 'NOT_FOUND');
+    }
+
+    $authorId = (int)$author['id'];
+
+    $authorFrontend = [
+        'id' => $authorId,
+        'name' => $author['name'],
+        'slug' => $author['slug'],
+        'role' => !empty($author['role']) ? $author['role'] : 'Author',
+        
+        // --- CRITICAL FIX: Map expertise to the frontend response ---
+        'expertise' => $author['expertise'], 
+        
+        'bio' => $author['bio'],
+        'social_links' => $author['social_links'] ? json_decode($author['social_links'], true) : new stdClass(),
+        'profile_image_url' => !empty($author['upload_path']) ? rtrim($api_base_url, '/') . '/' . ltrim($author['upload_path'], '/') : null
+    ];
+
+    // --- 3. Fetch Total Posts Count ---
+    $sqlCount = "SELECT COUNT(id) as total FROM posts WHERE display_author_id = :id AND status = 'published'";
+    $stmtCount = $conn->prepare($sqlCount);
+    $stmtCount->execute([':id' => $authorId]);
+    $totalResult = $stmtCount->fetch(PDO::FETCH_ASSOC);
+    $totalRecords = $totalResult ? (int)$totalResult['total'] : 0;
+    $totalPages = ceil($totalRecords / $limit);
+
+    // --- 4. Fetch Posts (Direct Integer Interpolation for Pagination Boundaries) ---
+    $safeLimit = (int)$limit;
+    $safeOffset = (int)$offset;
+    
+    $sqlPosts = "
+        SELECT
+            p.id, p.title, p.slug, p.excerpt, p.read_time, p.created_at as published_date, p.updated_at,
+            (SELECT GROUP_CONCAT(c.name SEPARATOR ', ') FROM categories c JOIN post_categories pc ON c.id = pc.category_id WHERE pc.post_id = p.id) as category_name,
+            m.upload_path as featured_image_path
+        FROM posts p
+        LEFT JOIN media m ON p.featured_image_id = m.id
+        WHERE p.display_author_id = :id AND p.status = 'published'
+        ORDER BY p.created_at DESC
+        LIMIT {$safeLimit} OFFSET {$safeOffset}
+    ";
+    $stmtPosts = $conn->prepare($sqlPosts);
+    $stmtPosts->bindValue(':id', $authorId, PDO::PARAM_INT);
+    $stmtPosts->execute();
+    $posts_db = $stmtPosts->fetchAll(PDO::FETCH_ASSOC);
+
+    $posts_frontend = [];
+    foreach ($posts_db as $post_db) {
+        $posts_frontend[] = [
+            'id' => (int)$post_db['id'],
+            'title' => $post_db['title'],
+            'slug' => $post_db['slug'],
+            'excerpt' => $post_db['excerpt'],
+            'read_time' => (int)$post_db['read_time'],
+            'published_date' => $post_db['published_date'],
+            'updated_at' => $post_db['updated_at'],
+            'author_name' => $authorFrontend['name'],
+            'category_name' => $post_db['category_name'],
+            'featured_image_url' => !empty($post_db['featured_image_path']) ? rtrim($api_base_url, '/') . '/' . ltrim($post_db['featured_image_path'], '/') : null
+        ];
+    }
+
+    // --- 5. Fetch Global SEO Settings for Author Template ---
+    $sqlSeo = "SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('seo_author_title', 'seo_author_description', 'siteName')";
+    $stmtSeo = $conn->query($sqlSeo);
+    $seoSettings = [
+        'siteName' => 'CalcPro', 
+        'seo_author_title' => '%author_name% | %sitename%', 
+        'seo_author_description' => 'Read %expertise% and articles written by %author_name% on %sitename%.'
+    ];
+    while ($row = $stmtSeo->fetch(PDO::FETCH_ASSOC)) {
+        if (!empty($row['setting_value'])) {
+            $seoSettings[$row['setting_key']] = $row['setting_value'];
+        }
+    }
+
+    $responseData = [
+        'author' => $authorFrontend,
+        'posts' => $posts_frontend,
+        'pagination' => [
+            'currentPage' => $page,
+            'totalPages' => $totalPages,
+            'totalPosts' => $totalRecords
+        ],
+        'seo_template' => $seoSettings
+    ];
+
+    sendResponse(true, $responseData, 'Author profile fetched successfully.');
+
+} catch (Exception $e) {
+    error_log("Error in get_public_author.php: " . $e->getMessage());
+    sendResponse(false, null, 'An internal server error occurred.', 500, 'SERVER_ERROR');
+}
+
+$conn = null;
+?>

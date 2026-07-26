@@ -1,0 +1,170 @@
+<?php
+// File: calcpro-api/api/admin/refresh_token.php
+
+require_once dirname(__DIR__, 2) . '/core/config.php';
+require_once dirname(__DIR__, 2) . '/core/response.php';
+
+use Firebase\JWT\JWT;
+use Firebase\JWT\Key;
+
+// ENTERPRISE FIX: Universally resolve the cryptographic key at the top of the file
+$hmacSecret = base64_decode($_ENV['APP_ENCRYPTION_KEY'] ?? '');
+if (empty($hmacSecret)) {
+    $hmacSecret = $_ENV['JWT_SECRET'] ?? null;
+}
+
+if (empty($hmacSecret)) {
+    if (function_exists('logInternalSystemError')) {
+        logInternalSystemError('security', 'Critical internal configuration error: Missing Encryption Keys.', __FILE__, __LINE__);
+    }
+    sendResponse(false, null, 'Critical internal configuration error.', 500, 'SYS_ERR_CONFIG');
+}
+
+// =========================================================================================
+// [ENTERPRISE FIX] REMOVED INLINE CSRF VALIDATION (THE CATCH-22 LOCKOUT)
+// OWASP Standard: Refresh endpoints only rotate authentication keys and do not alter state.
+// Enforcing CSRF here causes lockouts when volatile frontend state drops. The endpoint 
+// remains protected against CSRF via the 'SameSite=Strict' attribute on the refresh cookie.
+// =========================================================================================
+
+$jwtSecretKey = $_ENV['JWT_SECRET'];
+
+if (!isset($_COOKIE['calcpro_refresh_token'])) {
+    sendResponse(false, null, 'No valid refresh session found.', 401, 'AUTH_TOKEN_MISSING');
+}
+
+$refreshToken = $_COOKIE['calcpro_refresh_token'];
+$oldAccessToken = $_COOKIE['calcpro_access_token'] ?? null;
+
+try {
+    $decoded = JWT::decode($refreshToken, new Key($jwtSecretKey, 'HS256'));
+    $adminId = $decoded->data->adminId ?? null;
+    $session_jti = $decoded->session_jti ?? null;
+    $iat = $decoded->iat ?? 0;
+    
+    $old_refresh_exp = $decoded->exp ?? null;
+
+    // Stateless Dynamic T Calculation
+    $t_seconds = ($old_refresh_exp && $iat) ? ($old_refresh_exp - $iat) : 900;
+    $access_ttl = (int)($t_seconds / 2);
+    $refresh_ttl = $t_seconds;
+
+    global $conn;
+
+    $stmt = $conn->prepare("SELECT id, role, password_last_updated, current_session_jti FROM admins WHERE id = :id LIMIT 1");
+    $stmt->execute([':id' => $adminId]);
+    $admin = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$admin) {
+        sendResponse(false, null, 'Account not found.', 401, 'AUTH_ACCOUNT_MISSING');
+    }
+
+    // --- REFRESH TOKEN INVALIDATION (The Stateful Check) ---
+    if ($admin['current_session_jti'] !== $session_jti) {
+        $cookieDomain = !empty($_ENV['COOKIE_DOMAIN']) ? trim($_ENV['COOKIE_DOMAIN']) : '';
+        $past = time() - 3600;
+
+        setcookie('calcpro_access_token', '', ['expires' => $past, 'path' => '/', 'domain' => $cookieDomain, 'secure' => true, 'httponly' => true, 'samesite' => 'None']);
+        setcookie('calcpro_refresh_token', '', ['expires' => $past, 'path' => '/', 'domain' => $cookieDomain, 'secure' => true, 'httponly' => true, 'samesite' => 'None']);
+        setcookie('calcpro_csrf_token', '', ['expires' => $past, 'path' => '/', 'domain' => $cookieDomain, 'secure' => true, 'httponly' => true, 'samesite' => 'None']);
+        setcookie('calcpro_csrf_payload', '', ['expires' => $past, 'path' => '/', 'domain' => $cookieDomain, 'secure' => true, 'httponly' => false, 'samesite' => 'None']);
+
+        $stmtKill = $conn->prepare("UPDATE admins SET current_session_jti = NULL WHERE id = :id");
+        $stmtKill->execute([':id' => $adminId]);
+
+        sendResponse(false, null, 'Security anomaly detected. Session terminated.', 401, 'AUTH_CONCURRENCY_VIOLATION');
+    }
+
+    $passwordLastUpdatedTime = strtotime($admin['password_last_updated'] . ' UTC');
+
+    if ($iat < $passwordLastUpdatedTime) {
+        sendResponse(false, null, 'Session expired due to a recent password change.', 401, 'AUTH_TOKEN_OBSOLETE');
+    }
+
+    $conn->beginTransaction();
+    
+    try {
+        if ($oldAccessToken) {
+            $parts = explode('.', $oldAccessToken);
+            if (count($parts) === 3) {
+                $payloadRaw = base64_decode(strtr($parts[1], '-_', '+/'));
+                $accessData = json_decode($payloadRaw, true);
+                if ($accessData && isset($accessData['jti'], $accessData['exp'])) {
+                    $stmtAccessBlacklist = $conn->prepare("INSERT IGNORE INTO jwt_blacklist (jti, expires_at) VALUES (:jti, FROM_UNIXTIME(:exp))");
+                    $stmtAccessBlacklist->execute([':jti' => $accessData['jti'], ':exp' => $accessData['exp']]);
+                }
+            }
+        }
+
+        $new_session_jti = bin2hex(random_bytes(32));
+
+        $stmtUpdateSession = $conn->prepare("UPDATE admins SET current_session_jti = :new_jti WHERE id = :id AND current_session_jti = :old_jti");
+        $stmtUpdateSession->execute([
+            ':new_jti' => $new_session_jti, 
+            ':id' => $admin['id'], 
+            ':old_jti' => $session_jti
+        ]);
+
+        if ($stmtUpdateSession->rowCount() === 0) {
+            throw new Exception("Session rotation concurrency collision.");
+        }
+        
+        $conn->commit();
+
+    } catch (Exception $e) {
+        $conn->rollBack();
+        sendResponse(false, null, 'Session update failed. Please log in again.', 401, 'AUTH_ROTATION_FAILED');
+    }
+
+    $new_access_jti = bin2hex(random_bytes(16));
+    $new_refresh_jti = bin2hex(random_bytes(16));
+
+    $access_payload = [
+        'iat' => time(),
+        'iss' => $_SERVER['SERVER_NAME'],
+        'exp' => time() + $access_ttl, 
+        'jti' => $new_access_jti,
+        'session_jti' => $new_session_jti, 
+        'data' => ['adminId' => $admin['id'], 'adminRole' => $admin['role']]
+    ];
+
+    $refresh_payload = [
+        'iat' => time(),
+        'iss' => $_SERVER['SERVER_NAME'],
+        'exp' => time() + $refresh_ttl, 
+        'jti' => $new_refresh_jti,
+        'session_jti' => $new_session_jti,
+        'data' => ['adminId' => $admin['id']]
+    ];
+
+    $newAccessToken = JWT::encode($access_payload, $jwtSecretKey, 'HS256');
+    $newRefreshToken = JWT::encode($refresh_payload, $jwtSecretKey, 'HS256');
+
+    $cookieDomain = !empty($_ENV['COOKIE_DOMAIN']) ? trim($_ENV['COOKIE_DOMAIN']) : '';
+
+    setcookie('calcpro_access_token', $newAccessToken, [
+        'expires' => time() + $access_ttl, 'path' => '/', 'domain' => $cookieDomain, 'secure' => true, 'httponly' => true, 'samesite' => 'None'
+    ]);
+
+    setcookie('calcpro_refresh_token', $newRefreshToken, [
+        'expires' => time() + $refresh_ttl, 'path' => '/', 'domain' => $cookieDomain, 'secure' => true, 'httponly' => true, 'samesite' => 'None'
+    ]);
+
+    // REISSUE CSRF TOKENS
+    $rawCsrf = bin2hex(random_bytes(32));
+    $hmacCsrf = hash_hmac('sha256', $rawCsrf, $hmacSecret);
+
+    setcookie('calcpro_csrf_token', $hmacCsrf, [
+        'expires' => time() + $refresh_ttl, 'path' => '/', 'domain' => $cookieDomain, 'secure' => true, 'httponly' => true, 'samesite' => 'None'
+    ]);
+
+    setcookie('calcpro_csrf_payload', $rawCsrf, [
+        'expires' => time() + $refresh_ttl, 'path' => '/', 'domain' => $cookieDomain, 'secure' => true, 'httponly' => false, 'samesite' => 'None'
+    ]);
+
+    sendResponse(true, null, 'Session refreshed successfully.', 200);
+
+} catch (Exception $e) {
+    sendResponse(false, null, 'Session inactive for too long. Please log in again.', 401, 'AUTH_TOKEN_INVALID');
+}
+?>

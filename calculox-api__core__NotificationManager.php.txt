@@ -1,0 +1,68 @@
+<?php
+/**
+ * NotificationManager Class
+ * * Centralizes the logic for creating system-wide notifications for administrators.
+ * Handles validation and secure database insertion via PDO.
+ */
+class NotificationManager {
+    private $conn;
+
+    public function __construct($dbConnection) {
+        $this->conn = $dbConnection;
+    }
+
+    /**
+     * Create a new notification.
+     * * @param string $type      'security', 'milestone', 'system'
+     * @param string $severity  'info', 'warning', 'critical'
+     * @param string $title     Short headline
+     * @param string $message   Detailed description
+     * @param string|null $link Optional relative URL for admin navigation
+     * @return bool True on success
+     */
+    public function create($type, $severity, $title, $message, $link = null) {
+       
+        // 1. Strict Input Validation
+        $allowedTypes = ['security', 'milestone', 'system']; // 'user' logic removed
+        $allowedSeverities = ['info', 'warning', 'critical'];
+
+        if (!in_array($type, $allowedTypes)) $type = 'system';
+        if (!in_array($severity, $allowedSeverities)) $severity = 'info';
+
+        // 2. Prepare & Execute Statement using PDO
+        try {
+            $sql = "INSERT INTO admin_notifications (type, severity, title, message, link, created_at) 
+                    VALUES (:type, :severity, :title, :message, :link, NOW())";
+            $stmt = $this->conn->prepare($sql);
+            
+            $stmt->execute([
+                ':type'     => $type,
+                ':severity' => $severity,
+                ':title'    => $title,
+                ':message'  => $message,
+                ':link'     => $link
+            ]);
+            
+            return true;
+        } catch (\PDOException $e) {
+            error_log("NotificationManager Execute Error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Optional: Prune old notifications to keep the table light.
+     * Can be called periodically via cron or probability.
+     */
+    public function pruneOldNotifications($days = 30) {
+        try {
+            // Cast to strict integer to avoid PDO interval binding syntax issues in MariaDB
+            $safeDays = (int)$days;
+            $sql = "DELETE FROM admin_notifications WHERE created_at < NOW() - INTERVAL {$safeDays} DAY AND is_read = 1";
+            $this->conn->exec($sql);
+        } catch (\PDOException $e) {
+            error_log("NotificationManager Prune Error: " . $e->getMessage());
+        }
+    }
+}
+?>

@@ -1,0 +1,78 @@
+<?php
+// calcpro-api/api/admin/manage_system_logs.php
+
+require_once __DIR__ . '/../../core/config.php';
+require_once __DIR__ . '/../../core/response.php';
+require_once __DIR__ . '/../../core/auth.php';
+
+$admin = verifyAdminToken();
+if (!$admin) {
+    sendResponse(false, null, 'Unauthorized access', 401);
+}
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    sendResponse(false, null, 'Method not allowed', 405);
+}
+
+$rawInput = file_get_contents('php://input');
+$data = json_decode($rawInput, true);
+
+$action = isset($data['action']) ? trim($data['action']) : '';
+
+// --- Handle Global Retention & Alert Settings Update ---
+if ($action === 'update_retention') {
+    $info_days = isset($data['info_days']) ? (int)$data['info_days'] : 30;
+    $resolved_days = isset($data['resolved_days']) ? (int)$data['resolved_days'] : 90;
+    
+    // SECURITY UPGRADE: Strict Whitelist Validation
+    $allowed_freqs = ['every_login', 'daily', 'every_3_days', 'weekly', 'off'];
+    $warning_freq = isset($data['warning_frequency']) && in_array(trim($data['warning_frequency']), $allowed_freqs) 
+                    ? trim($data['warning_frequency']) 
+                    : 'daily';
+    
+    try {
+        $stmt = $conn->prepare("INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?");
+        
+        $stmt->execute(['log_retention_info', $info_days, $info_days]);
+        $stmt->execute(['log_retention_resolved', $resolved_days, $resolved_days]);
+        $stmt->execute(['system_crash_warning_frequency', $warning_freq, $warning_freq]);
+
+        sendResponse(true, null, 'Policies updated successfully.');
+    } catch (\PDOException $e) {
+        error_log('Error updating log retention settings: ' . $e->getMessage());
+        sendResponse(false, null, 'Database configuration error: ' . $e->getMessage(), 500);
+    }
+}
+
+// --- Standard Bulk Actions ---
+$ids = isset($data['ids']) && is_array($data['ids']) ? array_map('intval', $data['ids']) : [];
+
+if (!in_array($action, ['delete', 'resolve', 'ignore', 'investigate']) || empty($ids)) {
+    sendResponse(false, null, 'Invalid or missing action parameters', 400);
+}
+
+$placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+try {
+    if ($action === 'delete') {
+        $stmt = $conn->prepare("DELETE FROM system_error_logs WHERE id IN ($placeholders)");
+    } else {
+        // FIX: Define default status to satisfy strict static analysis (Empty Box Fix)
+        $status = 'investigating'; 
+        
+        if ($action === 'resolve') $status = 'resolved';
+        elseif ($action === 'ignore') $status = 'ignored';
+        elseif ($action === 'investigate') $status = 'investigating';
+        
+        $stmt = $conn->prepare("UPDATE system_error_logs SET status = ?, updated_at = NOW() WHERE id IN ($placeholders)");
+        array_unshift($ids, $status);
+    }
+    
+    $stmt->execute($ids);
+    sendResponse(true, null, "Logs successfully marked as {$action}");
+
+} catch (\PDOException $e) {
+    error_log('Error managing system logs: ' . $e->getMessage());
+    sendResponse(false, null, 'Database error occurred while updating logs', 500);
+}
+?>
